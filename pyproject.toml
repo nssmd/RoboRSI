@@ -1,0 +1,98 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "roborsi"
+version = "0.1.0"
+description = "Reproducible, skill-evolving agent evaluation for LIBERO short tasks"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = "Apache-2.0"
+authors = [{name = "RoboRSI Contributors"}]
+keywords = ["robotics", "embodied-ai", "libero", "agents", "evaluation"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "openai>=2.8,<3",
+  "platformdirs>=4.3,<5",
+  "pydantic>=2.10,<3",
+  "pyyaml>=6.0,<7",
+  "rich>=13.9,<15",
+  "typer>=0.15,<1",
+]
+
+[project.optional-dependencies]
+runtime = [
+  "bddl==1.0.1",
+  "cloudpickle>=2.1,<4",
+  "easydict>=1.9,<2",
+  "gym==0.25.2",
+  "h5py>=3.8,<4",
+  "imageio>=2.36,<3",
+  "imageio-ffmpeg>=0.5,<1",
+  "msgpack>=1.1,<2",
+  "msgpack-numpy>=0.4.8,<1",
+  "mujoco>=2.3,<3",
+  "numpy>=1.24,<2",
+  "opencv-python>=4.10,<5",
+  "pandas>=2.1,<3",
+  "pillow>=10,<12",
+  "pyarrow>=15,<22",
+  "pyzmq>=26,<28",
+  "robosuite==1.4.0",
+  "scikit-learn>=1.5,<2",
+  "scipy>=1.11,<2",
+  "torch>=2.1,<3",
+  "transformers>=4.48,<5",
+]
+dev = [
+  "build>=1.2,<2",
+  "pytest>=8.3,<10",
+  "pytest-cov>=6,<7",
+  "ruff>=0.9,<1",
+]
+
+[project.scripts]
+roborsi = "roborsi_libero.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/roborsi_libero", "src/roborsi"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"evidence/adaptive-pass10-v1" = "roborsi_libero/evidence/adaptive-pass10-v1"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/configs",
+  "/evidence",
+  "/scripts",
+  "/tests",
+  "/.github",
+  "/CITATION.cff",
+  "/CONTRIBUTING.md",
+  "/README.md",
+  "/REPRODUCING.md",
+  "/SECURITY.md",
+  "/LICENSE",
+  "/roborsi",
+  "/setup.sh",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
