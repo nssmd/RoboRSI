@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -44,3 +45,33 @@ def test_checkout_cli_wrapper_runs_without_install() -> None:
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "Configure, evaluate, and inspect roborsi" in completed.stdout
+
+
+def test_checkout_cli_wrapper_prefers_local_venv(tmp_path: Path) -> None:
+    wrapper = tmp_path / "roborsi"
+    shutil.copy2(ROOT / "roborsi", wrapper)
+    wrapper.chmod(0o755)
+    python = tmp_path / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text(
+        "#!/usr/bin/env bash\nprintf 'local-venv:%s\\n' \"$*\"\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+
+    env = dict(os.environ)
+    env.pop("PYTHON", None)
+    completed = subprocess.run(
+        [str(wrapper), "results", "replay"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == (
+        "local-venv:-m roborsi_libero.cli results replay"
+    )
