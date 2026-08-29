@@ -99,3 +99,22 @@ def test_results_replay_defaults_to_packaged_public_bundle() -> None:
 
     assert result.exit_code == 0, result.output
     assert "95/120" in result.output.replace(" ", "")
+
+
+def test_visualize_skill_tree_writes_standalone_html(tmp_path: Path) -> None:
+    output = tmp_path / "skill-tree.html"
+
+    result = runner.invoke(
+        app,
+        [
+            "visualize",
+            "skill-tree",
+            "--output",
+            str(output),
+            "--no-browser",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert output.is_file()
+    assert "ROBORSI SELF-EVOLUTION" in output.read_text(encoding="utf-8")

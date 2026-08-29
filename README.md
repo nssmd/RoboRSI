@@ -77,7 +77,23 @@ diagnostics. It is safe to rerun.
 | `./roborsi eval libero-short --mode adaptive` | Evaluate with gated skill evolution |
 | `./roborsi eval libero-short --mode fixed` | Evaluate one immutable release |
 | `./roborsi results replay --manifest ...` | Recompute task-level coverage |
+| `./roborsi visualize skill-tree` | Render the interactive skill-evolution tree |
 | `./roborsi dashboard` | Open the local result console |
+
+## Skill-Tree Visualization
+
+RoboRSI includes a standalone, offline skill-evolution viewer derived from the
+retained 104-round case study. Internal run IDs and repair identifiers are
+removed from the packaged storyboard.
+
+```bash
+./roborsi visualize skill-tree \
+  --output artifacts/roborsi-skill-tree.html \
+  --no-browser
+```
+
+The generated HTML contains its data, layout, and animation controls in one
+file. A custom storyboard can be supplied with `--storyboard`.
 
 ## Configuration
 

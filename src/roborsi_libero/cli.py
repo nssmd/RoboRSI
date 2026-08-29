@@ -27,9 +27,11 @@ app = typer.Typer(
 results_app = typer.Typer(help="Replay and summarize retained evidence.")
 eval_app = typer.Typer(help="Run fixed or adaptive LIBERO short evaluation.")
 services_app = typer.Typer(help="Manage local motion-planning services.")
+visualize_app = typer.Typer(help="Render standalone evidence visualizations.")
 app.add_typer(results_app, name="results")
 app.add_typer(eval_app, name="eval")
 app.add_typer(services_app, name="services")
+app.add_typer(visualize_app, name="visualize")
 console = Console()
 
 
@@ -145,6 +147,29 @@ def replay_results(
     table.add_section()
     table.add_row("Total", f"{result.solved_tasks}/{result.total_tasks}", f"{100*result.rate:.1f}%")
     console.print(table)
+
+
+@visualize_app.command("skill-tree")
+def visualize_skill_tree(
+    storyboard: Annotated[
+        Path | None,
+        typer.Option("--storyboard", help="Optional RoboRSI storyboard JSON."),
+    ] = None,
+    output: Annotated[
+        Path,
+        typer.Option("--output", "-o", help="Standalone HTML output."),
+    ] = Path("roborsi-skill-tree.html"),
+    no_browser: Annotated[bool, typer.Option("--no-browser")] = False,
+) -> None:
+    """Render the interactive RoboRSI skill-evolution tree."""
+    import webbrowser
+
+    from roborsi_libero.skill_tree import write_skill_tree_html
+
+    destination = write_skill_tree_html(output, storyboard_path=storyboard)
+    console.print(f"[green]Skill tree written[/green] {destination}")
+    if not no_browser:
+        webbrowser.open(destination.as_uri())
 
 
 @app.command()

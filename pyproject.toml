@@ -67,6 +67,7 @@ packages = ["src/roborsi_libero", "src/roborsi"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "evidence/adaptive-pass10-v1" = "roborsi_libero/evidence/adaptive-pass10-v1"
+"src/roborsi_libero/assets/skill_tree_storyboard.json" = "roborsi_libero/assets/skill_tree_storyboard.json"
 
 [tool.hatch.build.targets.sdist]
 include = [
