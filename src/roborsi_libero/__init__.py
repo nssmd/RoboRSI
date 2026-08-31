@@ -1,4 +1,4 @@
-"""Public release tooling for roborsi LIBERO."""
+"""Public release tooling for RoboRSI LIBERO."""
 
 from roborsi_libero.config import ReleaseConfig
 

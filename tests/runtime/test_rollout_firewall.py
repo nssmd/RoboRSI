@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from roborsi.embodied.agent_loop import rollout
-from roborsi.embodied.agent_loop.env import Observation
+import pytest
+
+pytestmark = pytest.mark.runtime
 
 
 class FakeEnv:
@@ -13,7 +14,9 @@ class FakeEnv:
         self.predicate_calls = 0
         self.vlm_finished = False
 
-    def take_snapshot(self) -> Observation:
+    def take_snapshot(self):
+        from roborsi.embodied.agent_loop.env import Observation
+
         return Observation(images={}, state=[0.0], timestamp=0.0)
 
     def hook_physics_step(self, callback):
@@ -29,6 +32,8 @@ class FakeEnv:
 
 
 def test_simulator_predicate_runs_once_after_visible_tool_loop(monkeypatch, tmp_path) -> None:
+    from roborsi.embodied.agent_loop import rollout
+
     env = FakeEnv()
 
     def fake_vlm(model, messages, tools):

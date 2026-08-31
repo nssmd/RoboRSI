@@ -3,12 +3,19 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from roborsi.embodied.agent_loop.prompt_tools import _build_tool_specs
-from roborsi.embodied.skills import discover_compounds, get_ns
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+for import_root in (ROOT, SRC):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
+
+from roborsi.embodied.agent_loop.prompt_tools import _build_tool_specs  # noqa: E402
+from roborsi.embodied.skills import discover_compounds, get_ns  # noqa: E402
 
 FORBIDDEN = {
     "check_success",
@@ -122,6 +129,8 @@ def _resolve_visible_skill(name: str):
         (skill for skill in _visible_compound_skills() if skill.name == name),
         None,
     )
+
+
 FORBIDDEN_SKILL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "ground truth",
@@ -189,10 +198,7 @@ def _visible_libero_policy_files() -> list[tuple[str, Path]]:
 
 
 def libero_helper_policy_files() -> list[Path]:
-    root = (
-        Path(__file__).resolve().parents[1]
-        / "roborsi/embodied/skills/base/_lib/libero"
-    )
+    root = ROOT / "src/roborsi/embodied/skills/base/_lib/libero"
     return sorted(root.glob("*.py"))
 
 
@@ -204,10 +210,7 @@ def scan_libero_helper_policies() -> list[str]:
 
 
 def libero_atomic_skill_docs() -> list[Path]:
-    root = (
-        Path(__file__).resolve().parents[1]
-        / "roborsi/embodied/skills/atomic"
-    )
+    root = ROOT / "src/roborsi/embodied/skills/atomic"
     return sorted(
         path
         for parent in root.glob("libero*")
@@ -608,10 +611,10 @@ def scan_visible_libero_skill_docs() -> list[str]:
 def collect_findings() -> list[str]:
     return sorted(
         set(
-        scan_visible_tool_manifest()
-        + scan_visible_libero_policies()
-        + scan_visible_libero_skill_docs()
-        + scan_libero_atomic_skill_docs()
+            scan_visible_tool_manifest()
+            + scan_visible_libero_policies()
+            + scan_visible_libero_skill_docs()
+            + scan_libero_atomic_skill_docs()
         )
     )
 

@@ -32,7 +32,7 @@ def test_config_rejects_high_reasoning_and_non_responses_models(tmp_path: Path) 
         """
 schema_version: 1
 provider:
-  model: gpt-4
+  model: other-provider/not-public
   reasoning_effort: high
   api_key_env: OPENAI_API_KEY
 simulator:

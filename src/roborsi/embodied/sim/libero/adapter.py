@@ -725,8 +725,8 @@ class LiberoProBackend(Backend):
         with _torch_full_load():
             init_states = self._load_init_states(bench, task_id)
 
-        # Match OpenETA's standard-130 visual protocol. The cloud-size guards
-        # scale with image area, so 512 renders no longer reject valid masks.
+        # The cloud-size guards scale with image area, so 512-pixel renders do
+        # not reject otherwise valid masks.
         _res = int(os.environ.get("ROBORSI_LIBERO_RES", "512"))
         cam_h = cfg.get("camera_heights", _res)
         cam_w = cfg.get("camera_widths", _res)
@@ -740,7 +740,9 @@ class LiberoProBackend(Backend):
             camera_heights=cam_h,
             camera_widths=cam_w,
             camera_depths=cfg.get("camera_depths", True),  # enables unproject/pixel skills
-            horizon=int(os.environ.get("ROBORSI_LIBERO_HORIZON", "5000")),  # Match the OpenETA standard-130 protocol; 4000 exhausted before recovery in 267/444 formal Pass@5 failures.
+            # Leave enough room for bounded recovery without truncating the
+            # episode before the final placement attempt.
+            horizon=int(os.environ.get("ROBORSI_LIBERO_HORIZON", "5000")),
         )
         env.reset()
         return LiberoProEnv(

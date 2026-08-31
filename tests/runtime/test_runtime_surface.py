@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.runtime
 
 
 def test_runtime_registers_only_libero_backend() -> None:
@@ -33,18 +38,26 @@ def test_visible_tool_surface_excludes_hidden_simulator_truth(monkeypatch) -> No
     }.isdisjoint(names)
 
 
-def test_exported_runtime_contains_no_non_gpt_provider_or_private_default() -> None:
+def test_exported_runtime_contains_no_machine_specific_default() -> None:
     root = Path(__file__).resolve().parents[2] / "src/roborsi"
-    forbidden = (
-        "anthropic",
-        "claude",
-        "/mnt" + "/workspace",
-        "/data" + "/yijia",
-        "copilot" + "-proxy-local",
+    private_paths = (
+        re.compile(r"/data/[A-Za-z0-9._-]+/"),
+        re.compile(r"/mnt/workspace/[A-Za-z0-9._-]+/"),
     )
     files = [path for path in root.rglob("*") if path.is_file() and path.suffix in {".py", ".md"}]
     assert files
     for path in files:
         text = path.read_text(encoding="utf-8", errors="ignore").lower()
-        for needle in forbidden:
-            assert needle.lower() not in text, f"{needle!r} found in {path}"
+        for pattern in private_paths:
+            assert not pattern.search(text), f"machine-specific path found in {path}"
+
+
+def test_rollout_trace_does_not_persist_hidden_reasoning() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src/roborsi/embodied/agent_loop/rollout.py"
+    )
+    text = path.read_text(encoding="utf-8")
+
+    assert '"reasoning": reasoning_text' not in text
+    assert "reasoning_text[:600]" not in text

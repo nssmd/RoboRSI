@@ -44,7 +44,7 @@ def test_checkout_cli_wrapper_runs_without_install() -> None:
         check=False,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert "Configure, evaluate, and inspect roborsi" in completed.stdout
+    assert "Configure, evaluate, and inspect RoboRSI" in completed.stdout
 
 
 def test_checkout_cli_wrapper_prefers_local_venv(tmp_path: Path) -> None:
@@ -54,7 +54,9 @@ def test_checkout_cli_wrapper_prefers_local_venv(tmp_path: Path) -> None:
     python = tmp_path / ".venv/bin/python"
     python.parent.mkdir(parents=True)
     python.write_text(
-        "#!/usr/bin/env bash\nprintf 'local-venv:%s\\n' \"$*\"\n",
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$1\" == \"-c\" ]]; then exit 0; fi\n"
+        "printf 'local-venv:%s\\n' \"$*\"\n",
         encoding="utf-8",
     )
     python.chmod(0o755)
@@ -75,3 +77,90 @@ def test_checkout_cli_wrapper_prefers_local_venv(tmp_path: Path) -> None:
     assert completed.stdout.strip() == (
         "local-venv:-m roborsi_libero.cli results replay"
     )
+
+
+def test_release_check_rejects_case_insensitive_legacy_names(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    shutil.copytree(
+        ROOT,
+        checkout,
+        ignore=shutil.ignore_patterns(
+            ".git",
+            ".venv",
+            ".venv-pyroki",
+            ".deps",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".runtime",
+            "build",
+            "dist",
+            "runs",
+            "__pycache__",
+        ),
+    )
+    (checkout / "legacy-note.md").write_text(
+        "This note still uses " + "MaE" + "sTrO terminology.\n",
+        encoding="utf-8",
+    )
+
+    findings = collect_findings(checkout)
+
+    assert any("legacy public terminology" in finding for finding in findings)
+
+
+def test_release_check_rejects_machine_specific_paths(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    shutil.copytree(
+        ROOT,
+        checkout,
+        ignore=shutil.ignore_patterns(
+            ".git",
+            ".venv",
+            ".venv-pyroki",
+            ".deps",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".runtime",
+            "build",
+            "dist",
+            "runs",
+            "__pycache__",
+        ),
+    )
+    (checkout / "private-note.md").write_text(
+        "Workspace: /" + "data/example-user/project\n",
+        encoding="utf-8",
+    )
+
+    findings = collect_findings(checkout)
+
+    assert any("machine-specific path" in finding for finding in findings)
+
+
+def test_release_check_rejects_stale_tool_names(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    shutil.copytree(
+        ROOT,
+        checkout,
+        ignore=shutil.ignore_patterns(
+            ".git",
+            ".venv",
+            ".venv-pyroki",
+            ".deps",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".runtime",
+            "build",
+            "dist",
+            "runs",
+            "__pycache__",
+        ),
+    )
+    (checkout / "stale-note.md").write_text(
+        "Use verify_" + "holding_visual before transport.\n",
+        encoding="utf-8",
+    )
+
+    findings = collect_findings(checkout)
+
+    assert any("legacy public terminology" in finding for finding in findings)

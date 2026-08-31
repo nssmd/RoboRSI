@@ -76,7 +76,7 @@ def default_storyboard_text() -> str:
 
 
 def sanitize_storyboard(payload: dict[str, Any]) -> dict[str, Any]:
-    """Remove internal run identifiers and normalize public RoboRSI branding."""
+    """Remove run-local metadata and normalize public RoboRSI branding."""
     events = []
     for raw_event in payload.get("events") or []:
         if not isinstance(raw_event, dict):

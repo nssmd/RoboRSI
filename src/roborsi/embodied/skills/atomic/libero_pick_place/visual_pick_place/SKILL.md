@@ -38,16 +38,10 @@ when_NOT_to_use: |
 metadata:
   tags: [atomic, compound, solidified, libero, pure-vision, pick-place]
   compound: true
-  based_on:
-    release: libero-clean-20260811-r74-adaptive-roles
-    simulator_successes: 32
-    surface_calls_in_successes: 18
-    matched_surface_canary: libero_spatial_task/0-seed11
 ---
 
 # visual_pick_place
 
-This compound codifies the dominant successful short-task path observed in the
-S0 seed11 matrix. It composes only model-visible perception and existing
-code-backed LIBERO base skills. Final task success remains post-hoc simulator
-adjudication.
+This compound codifies a recurrent short-task path using only current visual
+perception and existing code-backed LIBERO base skills. Final task success
+remains post-hoc simulator adjudication.

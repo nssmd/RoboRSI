@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "roborsi"
 version = "0.1.0"
-description = "Reproducible, skill-evolving agent evaluation for LIBERO short tasks"
+description = "Evidence-driven robot-agent self-evolution for LIBERO short tasks"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 license = "Apache-2.0"
@@ -62,6 +62,11 @@ dev = [
 [project.scripts]
 roborsi = "roborsi_libero.cli:app"
 
+[project.urls]
+Homepage = "https://robo-rsi.com/"
+Repository = "https://github.com/nssmd/RoboRSI"
+Issues = "https://github.com/nssmd/RoboRSI/issues"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/roborsi_libero", "src/roborsi"]
 
@@ -84,12 +89,17 @@ include = [
   "/SECURITY.md",
   "/LICENSE",
   "/roborsi",
+  "/reproduce.sh",
   "/setup.sh",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+pythonpath = ["src", "."]
+markers = [
+  "runtime: requires the optional LIBERO/runtime dependencies",
+]
 
 [tool.ruff]
 line-length = 100

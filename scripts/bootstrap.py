@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create an isolated public roborsi LIBERO installation."""
+"""Create an isolated public RoboRSI LIBERO installation."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def bootstrap_commands(
     pyroki_venv = root / ".venv-pyroki"
     pyroki_python = pyroki_venv / "bin" / "python"
     if core_only:
-        extras = "runtime,dev" if with_dev else ""
+        extras = "dev" if with_dev else ""
     else:
         extras = "runtime,dev" if with_dev else "runtime"
     install_target = f".[{extras}]" if extras else "."

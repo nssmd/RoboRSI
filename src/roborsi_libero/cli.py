@@ -8,8 +8,10 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
+from roborsi_libero import __version__
 from roborsi_libero.catalog import SHORT_TASK_CATALOG
 from roborsi_libero.config import (
     ReleaseConfig,
@@ -18,21 +20,69 @@ from roborsi_libero.config import (
     write_config,
 )
 from roborsi_libero.evidence import default_manifest_path, replay_bundle
+from roborsi_libero.runs import (
+    discover_campaigns,
+    load_campaign_payload,
+    resolve_campaign,
+)
 
 app = typer.Typer(
     name="roborsi",
-    help="Configure, evaluate, and inspect roborsi on LIBERO short.",
+    help="Configure, evaluate, and inspect RoboRSI on LIBERO short.",
     no_args_is_help=True,
+    rich_markup_mode="markdown",
 )
 results_app = typer.Typer(help="Replay and summarize retained evidence.")
 eval_app = typer.Typer(help="Run fixed or adaptive LIBERO short evaluation.")
+runs_app = typer.Typer(help="List and inspect local evaluation campaigns.")
 services_app = typer.Typer(help="Manage local motion-planning services.")
 visualize_app = typer.Typer(help="Render standalone evidence visualizations.")
 app.add_typer(results_app, name="results")
 app.add_typer(eval_app, name="eval")
+app.add_typer(runs_app, name="runs")
 app.add_typer(services_app, name="services")
 app.add_typer(visualize_app, name="visualize")
 console = Console()
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        console.print(f"RoboRSI {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_version_callback,
+            is_eager=True,
+            help="Show the installed RoboRSI version.",
+        ),
+    ] = False,
+) -> None:
+    """Operate the RoboRSI LIBERO short reference runtime."""
+
+
+def _load_config_or_exit(path: Path) -> ReleaseConfig:
+    try:
+        return load_config(path)
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]Configuration error[/red] {exc}")
+        console.print("Run [bold]./roborsi configure --yes[/bold] to create roborsi.yaml.")
+        raise typer.Exit(2) from exc
+
+
+def _write_json(path: Path, payload: dict) -> Path:
+    destination = path.expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return destination
 
 
 @app.command()
@@ -92,7 +142,10 @@ def configure(
     )
     path = write_config(config, target)
     console.print(f"[green]Configuration written[/green] {path}")
-    console.print("Set OPENAI_API_KEY in your environment; no secret was written to disk.")
+    console.print(
+        f"Set {config.provider.api_key_env} in your environment; "
+        "no secret was written to disk."
+    )
 
 
 @eval_app.command("libero-short")
@@ -102,7 +155,7 @@ def eval_libero_short(
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ) -> None:
     """Evaluate the complete 120-task LIBERO short catalog."""
-    release = load_config(config)
+    release = _load_config_or_exit(config)
     resolved_mode = mode or release.evaluation.mode
     if resolved_mode not in {"adaptive", "fixed"}:
         raise typer.BadParameter("mode must be adaptive or fixed", param_hint="--mode")
@@ -116,7 +169,21 @@ def eval_libero_short(
     from roborsi_libero.launcher import launch_evaluation
 
     output = launch_evaluation(release, mode=resolved_mode)
-    console.print(f"[green]Evaluation started[/green] {output}")
+    console.print(
+        Panel.fit(
+            "\n".join(
+                [
+                    f"[bold green]Evaluation started[/bold green]  {output.name}",
+                    f"Run directory  {output}",
+                    f"Status         ./roborsi status {output.name}",
+                    f"Web console    ./roborsi web --run {output.name}",
+                    f"Supervisor     tail -f {output / 'supervisor.log'}",
+                ]
+            ),
+            title="RoboRSI",
+            border_style="green",
+        )
+    )
 
 
 @results_app.command("replay")
@@ -128,11 +195,7 @@ def replay_results(
     result = replay_bundle(manifest or default_manifest_path())
     payload = result.to_dict()
     if json_output is not None:
-        json_output.parent.mkdir(parents=True, exist_ok=True)
-        json_output.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        _write_json(json_output, payload)
 
     table = Table(title=f"{result.metric} ({result.claim_scope})")
     table.add_column("Suite")
@@ -147,6 +210,106 @@ def replay_results(
     table.add_section()
     table.add_row("Total", f"{result.solved_tasks}/{result.total_tasks}", f"{100*result.rate:.1f}%")
     console.print(table)
+
+
+@runs_app.command("list")
+def runs_list(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("roborsi.yaml"),
+) -> None:
+    """List local campaigns, newest first."""
+    release = _load_config_or_exit(config)
+    campaigns = discover_campaigns(release.runtime.results_root)
+    if not campaigns:
+        console.print(f"No campaigns found in {release.runtime.results_root}")
+        return
+    table = Table(title="RoboRSI campaigns", header_style="bold")
+    table.add_column("Run")
+    table.add_column("Mode")
+    table.add_column("Status")
+    table.add_column("Passes", justify="right")
+    table.add_column("Coverage", justify="right")
+    for campaign in campaigns:
+        table.add_row(
+            campaign.run_id,
+            campaign.mode,
+            campaign.status.upper(),
+            f"{campaign.completed_passes}/{campaign.protocol_passes}",
+            f"{campaign.solved_tasks}/{campaign.total_tasks}",
+        )
+    console.print(table)
+
+
+@app.command()
+def status(
+    run: Annotated[
+        str | None,
+        typer.Argument(help="Campaign id or path. Defaults to the latest run."),
+    ] = None,
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("roborsi.yaml"),
+    json_output: Annotated[
+        Path | None,
+        typer.Option("--json", help="Write normalized status JSON."),
+    ] = None,
+) -> None:
+    """Show one campaign's current status and resource totals."""
+    release = _load_config_or_exit(config)
+    try:
+        campaign = resolve_campaign(release.runtime.results_root, run)
+        payload = load_campaign_payload(campaign)
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]Campaign error[/red] {exc}")
+        raise typer.Exit(2) from exc
+    if json_output is not None:
+        destination = _write_json(json_output, payload)
+        console.print(f"[green]Status JSON written[/green] {destination}")
+
+    verdicts = dict(payload.get("verdicts") or {})
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="dim")
+    table.add_column()
+    table.add_row("Run", str(payload["run_id"]))
+    table.add_row("Status", str(payload["status"]).upper())
+    table.add_row("Mode", str(payload["mode"]))
+    table.add_row(
+        "Passes",
+        f"{payload['completed_passes']}/{payload['k']}",
+    )
+    table.add_row(
+        "Coverage",
+        f"{payload['solved_tasks']}/{payload['total_tasks']} "
+        f"({100 * float(payload['rate']):.1f}%)",
+    )
+    table.add_row(
+        "Verdicts",
+        (
+            f"{int(verdicts.get('task_success', 0))} success · "
+            f"{int(verdicts.get('task_failure', 0))} failure · "
+            f"{int(verdicts.get('implementation_failure', 0))} implementation · "
+            f"{int(verdicts.get('infrastructure_excluded', 0))} infrastructure"
+        ),
+    )
+    table.add_row(
+        "Resources",
+        (
+            f"{int(payload.get('total_tokens', 0)):,} tokens · "
+            f"{int(payload.get('total_vlm_calls', 0)):,} VLM calls · "
+            f"{float(payload.get('total_elapsed_s', 0.0)) / 3600:.2f} episode hours"
+        ),
+    )
+    table.add_row("Directory", str(campaign))
+    console.print(
+        Panel(
+            table,
+            title=f"RoboRSI · {payload['run_id']}",
+            border_style=(
+                "green"
+                if payload["status"] == "complete"
+                else "yellow"
+                if payload["status"] == "running"
+                else "red"
+            ),
+        )
+    )
 
 
 @visualize_app.command("skill-tree")
@@ -189,7 +352,7 @@ def doctor(
     from roborsi_libero.doctor import run_doctor
 
     report = run_doctor(
-        load_config(config),
+        _load_config_or_exit(config),
         offline=offline,
         check_services=not no_services and not replay_only,
         check_simulator=not replay_only,
@@ -202,19 +365,122 @@ def doctor(
         raise typer.Exit(1)
 
 
+def _open_web(
+    *,
+    config: Path,
+    run: str | None,
+    result: Path | None,
+    public: bool,
+    host: str,
+    port: int,
+    output: Path | None,
+    no_browser: bool,
+) -> None:
+    selected = sum((run is not None, result is not None, public))
+    if selected > 1:
+        raise typer.BadParameter("choose only one of --run, --result, or --public")
+
+    campaign_root: Path | None = None
+    result_path: Path | None = result
+    if run is not None:
+        release = _load_config_or_exit(config)
+        try:
+            campaign_root = resolve_campaign(release.runtime.results_root, run)
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]Campaign error[/red] {exc}")
+            raise typer.Exit(2) from exc
+    elif not public and result is None:
+        try:
+            release = load_config(config)
+            campaigns = discover_campaigns(release.runtime.results_root)
+        except (OSError, ValueError):
+            campaigns = []
+        if campaigns:
+            campaign_root = campaigns[0].path
+
+    import webbrowser
+
+    from roborsi_libero.dashboard import serve_dashboard, write_dashboard_html
+
+    if output is not None:
+        destination = write_dashboard_html(
+            output,
+            result_path=result_path,
+            campaign_root=campaign_root,
+        )
+        console.print(f"[green]Web console written[/green] {destination}")
+        if campaign_root is not None:
+            console.print(f"Source campaign: {campaign_root.name}")
+        if not no_browser:
+            webbrowser.open(destination.as_uri())
+        return
+    try:
+        serve_dashboard(
+            result_path=result_path,
+            campaign_root=campaign_root,
+            host=host,
+            port=port,
+            open_browser=not no_browser,
+        )
+    except RuntimeError as exc:
+        console.print(f"[red]Web console error[/red] {exc}")
+        raise typer.Exit(2) from exc
+
+
 @app.command()
-def dashboard(
+def web(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("roborsi.yaml"),
+    run: Annotated[
+        str | None,
+        typer.Option("--run", help="Campaign id or directory."),
+    ] = None,
     result: Annotated[
         Path | None, typer.Option("--result", help="Replay/result JSON path.")
     ] = None,
+    public: Annotated[
+        bool,
+        typer.Option("--public", help="Force the packaged public evidence."),
+    ] = False,
     host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port")] = 8765,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Write standalone HTML and exit."),
+    ] = None,
     no_browser: Annotated[bool, typer.Option("--no-browser")] = False,
 ) -> None:
-    """Open the local desktop results dashboard."""
-    from roborsi_libero.dashboard import serve_dashboard
+    """Open the Web console for the latest run or packaged evidence."""
+    _open_web(
+        config=config,
+        run=run,
+        result=result,
+        public=public,
+        host=host,
+        port=port,
+        output=output,
+        no_browser=no_browser,
+    )
 
-    serve_dashboard(result_path=result, host=host, port=port, open_browser=not no_browser)
+
+@app.command(hidden=True)
+def dashboard(
+    result: Annotated[Path | None, typer.Option("--result")] = None,
+    host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port")] = 8765,
+    output: Annotated[Path | None, typer.Option("--output", "-o")] = None,
+    no_browser: Annotated[bool, typer.Option("--no-browser")] = False,
+) -> None:
+    """Backward-compatible alias for `roborsi web --public`."""
+    _open_web(
+        config=Path("roborsi.yaml"),
+        run=None,
+        result=result,
+        public=result is None,
+        host=host,
+        port=port,
+        output=output,
+        no_browser=no_browser,
+    )
 
 
 @services_app.command("start")
@@ -257,4 +523,4 @@ def services_stop() -> None:
 
 
 if __name__ == "__main__":
-    app()
+    app(prog_name="roborsi")

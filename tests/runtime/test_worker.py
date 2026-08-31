@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from roborsi.embodied.sim.libero.run_records import load_records
 from roborsi_libero.config import ReleaseConfig
 from roborsi_libero.launcher import create_campaign
 from roborsi_libero.worker import run_assigned_tasks, skill_for_task
+
+pytestmark = pytest.mark.runtime
 
 
 def test_worker_routes_only_known_direct_manipulation_tasks() -> None:
@@ -16,8 +20,6 @@ def test_worker_routes_only_known_direct_manipulation_tasks() -> None:
 
 
 def test_worker_rejects_tasks_outside_short_catalog() -> None:
-    import pytest
-
     with pytest.raises(ValueError, match="short catalog"):
         skill_for_task("libero_10/0")
 

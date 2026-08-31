@@ -5,8 +5,13 @@
 ```bash
 ./setup.sh --core-only --dev
 source .venv/bin/activate
-pytest -q
+pytest -q -m "not runtime"
 ```
+
+The core environment covers configuration, evidence replay, the Web console,
+release hygiene, and package construction. Runtime tests are marked
+`runtime`; install the complete environment with `./setup.sh --dev` before
+running `pytest -q`.
 
 ## Required Invariants
 
@@ -35,4 +40,19 @@ Do not hard-code demonstration coordinates or tune against hidden task state.
 
 Keep changes scoped. Include the command and fresh output that verify the
 change, note any simulator/API test that could not run, and avoid committing
-generated runs or credentials. The release check must pass before review.
+generated runs or credentials. Before review, run:
+
+```bash
+pytest -q -m "not runtime"
+ruff check src/roborsi_libero tests scripts
+python scripts/release_check.py
+./reproduce.sh --skip-setup --output-dir /tmp/roborsi-reproduction
+python -m build
+```
+
+Changes to simulator execution, skills, workers, or promotion logic also require
+the complete runtime environment, a full `pytest -q`, and:
+
+```bash
+python scripts/check_libero_gt_leak.py
+```

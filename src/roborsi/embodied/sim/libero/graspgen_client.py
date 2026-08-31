@@ -89,10 +89,11 @@ def predict_grasps_with_mask(
     port: int | None = None,
     complete_symmetric: bool = False,
 ) -> list[dict[str, Any]]:
-    """Mask-guided: build the GraspGen input cloud from a 2D OBJECT MASK
-    (e.g. from Grounded-SAM) so only on-object pixels are unprojected. This
-    matches the GraspGen mask-conditioned input: feeding GraspGen a
-    bbox crop dominated by table/background gives degenerate edge grasps."""
+    """Build the GraspGen cloud from a 2D object mask.
+
+    Unprojecting only on-object pixels avoids degenerate edge grasps caused by
+    bounding-box crops dominated by the table or background.
+    """
     host = host or os.environ.get("GRASPGEN_HOST", "localhost")
     port = port or int(os.environ.get("GRASPGEN_PORT", "5556"))
 

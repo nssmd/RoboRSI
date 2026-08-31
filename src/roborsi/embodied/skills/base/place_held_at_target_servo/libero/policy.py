@@ -5,7 +5,8 @@ For tight-tolerance placement (onto a pad / plate / stand / rack) where both
 where AND how the object lands matter. Unlike place_object_in (drops from above
 a container region) this servos the end-effector to an exact pose with a tight
 position tolerance and, if a quat is given, aligns orientation before releasing.
-Perception-resolved target pose; single-arm OSC servo.
+The target pose is perception-resolved and executed through the configured
+single-arm controller.
 """
 
 from __future__ import annotations

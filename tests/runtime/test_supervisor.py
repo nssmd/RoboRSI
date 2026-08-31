@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from roborsi.embodied.sim.libero.run_records import (
     EpisodeIdentity,
     EpisodeRecord,
@@ -11,6 +13,8 @@ from roborsi.embodied.sim.libero.run_records import (
 from roborsi_libero.config import ReleaseConfig
 from roborsi_libero.launcher import create_campaign
 from roborsi_libero.supervisor import refresh_campaign_state, summarize_campaign
+
+pytestmark = pytest.mark.runtime
 
 
 def _append(campaign: Path, task: str, seed: int, category: str) -> None:

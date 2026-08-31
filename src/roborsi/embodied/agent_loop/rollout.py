@@ -69,9 +69,9 @@ def _fmt_args(args: dict[str, Any]) -> str:
             return f"{x:.3f}"
         if isinstance(x, (list, tuple)):
             body = ", ".join(_v(e) for e in list(x)[:4])
-            return f"[{body}{', …' if len(x) > 4 else ''}]"
+            return f"[{body}{', ...' if len(x) > 4 else ''}]"
         s = str(x)
-        return s if len(s) <= 40 else s[:37] + "…"
+        return s if len(s) <= 40 else s[:37] + "..."
     return ", ".join(f"{k}={_v(v)}" for k, v in list(args.items())[:6])
 
 
@@ -429,15 +429,9 @@ def run_rollout(
     # so downstream lerobot_build can ingest both. Backends without a steppable
     # physics loop (real robot, robosuite) inherit a no-op hook and capture
     # nothing mid-tool.
-    # Per-tick capture cost = a FULL env.take_snapshot() (LIBERO get_obs
-    # renders every camera + depth). At subsample 5 a long trajectory (the
-    # lift_pot pot-handle grasp cuRobo-plans hundreds of scene.step()s) did
-    # hundreds of full renders → impl.move 60-83s, and pick_actor's several
-    # moves blew the 300s per-tool WALL-CAP → false "cuRobo hang" (root-caused
-    # 2026-07-03 via py-spy: cuRobo plan was 0.1s, the time was all in per-tick
-    # rendering). 20 (4x sparser) keeps demo playback smooth; MAX_CAPTURES caps
-    # total renders so an unusually long trajectory can never O(N)-blow the
-    # tool budget (past the cap we still step physics, just skip the render).
+    # Each capture renders every camera and depth map. Sparse capture keeps
+    # playback smooth without letting a long motion spend the tool budget on
+    # rendering. Past the cap, physics continues while frame capture stops.
     subsample_every, max_captures = _trajectory_capture_config()
     tick_counter = {"n": 0, "captured": 0}
 
@@ -507,10 +501,8 @@ def run_rollout(
     completion_candidate = False
     outcome = "budget_exceeded"
     reflect_every = 8  # inject reflection prompt every N steps without done
-    # Trace summarization threshold: when convo exceeds this many turns,
-    # compact older trace into a synthetic "previously tried X failed Y"
-    # message so Engineer stays within ~20k tokens. Per 2026-06-15 user
-    # request "trace 累计加一下达到一定 token 就总结".
+    # Compact older trace into a synthetic summary before the conversation
+    # exceeds the bounded context budget.
     summarize_at_msgs = 30
     import time as _t
     phase_seconds = {
@@ -625,43 +617,17 @@ def run_rollout(
         # turn; we run them in order).
         any_done = False
         turn_action_failures = 0
-        # Capture VLM reasoning text emitted before this turn's tool calls.
-        # For Responses via litellm, msg.content is a string; for OpenAI it's
-        # also a string. Either way we strip and truncate for trace+overlay.
-        reasoning_raw = getattr(msg, "content", None)
-        if isinstance(reasoning_raw, list):
-            reasoning_raw = " ".join(
-                (
-                    getattr(block, "text", "")
-                    if hasattr(block, "text")
-                    else str(
-                        block.get("text", "")
-                        if isinstance(block, dict)
-                        else ""
-                    )
-                )
-                for block in reasoning_raw
-            )
-        reasoning_text = (str(reasoning_raw or "")).strip()
-        # Surface the agent's reasoning to the CLI. It was captured for the trace
-        # but never printed, so a run showed only "calling..." / "dispatching
-        # tool=X" and the user watched a silent spinner with no view of WHY the
-        # agent chose each action. Print it (trimmed) so the thinking is visible.
-        if reasoning_text:
-            print(f"[zeroshot] step={step_idx} 💭 "
-                  f"{reasoning_text[:600]}", flush=True)
         for tc in accepted_calls:
             name = tc.function.name
             try:
                 args = json.loads(tc.function.arguments or "{}")
             except (json.JSONDecodeError, TypeError):
                 args = {}
-            print(f"[zeroshot] step={step_idx} → {name}({_fmt_args(args)})",
+            print(f"[zeroshot] step={step_idx} -> {name}({_fmt_args(args)})",
                   flush=True)
             _t_dispatch = _t.time()
             trace.append({"step": step_idx, "tool_call": {"tool": name, "args": args},
-                          "tool_call_id": tc.id,
-                          "reasoning": reasoning_text[:600]})
+                          "tool_call_id": tc.id})
             if name == "done":
                 success = bool(args.get("success", False))
                 outcome = "vlm_declared_done"
@@ -670,12 +636,8 @@ def run_rollout(
                 any_done = True
                 break
             # exec_python lets Engineer write arbitrary sim loops; without
-            # a tight cap it can run 10+ min and bypass tool budget
-            # (V43/V44 hang root cause). Hard-cap at 60s to force Engineer
-            # back to atomic tools.
-            # cuRobo-heavy skills now run on SIGALRM-protected dispatch
-            # (V52 #1) so cap can be aggressive — 90s is plenty for any
-            # real plan_path; longer means the IK is infeasible.
+            # a tight cap it can bypass the tool budget. Hard-cap it so the
+            # Engineer returns to bounded atomic tools.
             # Once exec_python (or anything) times out, the worker thread
             # cannot be killed (Python GIL limit) — it's still holding
             # sim. Mark the state contaminated so subsequent dispatches
@@ -683,13 +645,13 @@ def run_rollout(
             # gets a clean restore_scene.
             if state._sim_contaminated:
                 result = ({"ok": False, "success": False,
-                            "reason": ("⚠ This attempt's sim state is "
-                                          "CONTAMINATED — a prior exec_python "
+                            "reason": ("This attempt's simulator state is "
+                                          "contaminated: a prior exec_python "
                                           "/ long tool call timed out and its "
                                           "worker thread is still holding the "
                                           "sim. All subsequent tool calls in "
                                           "this attempt will return ok=False. "
-                                          "Call done(success=False) now — the "
+                                          "Call done(success=False) now; the "
                                           "next attempt will restore a clean "
                                           "sim and you can try a different "
                                           "approach.")},
@@ -1093,11 +1055,9 @@ def _dispatch_with_timeout(state: DispatchContext, call: dict[str, Any],
     subsequent calls in this attempt, letting Engineer cleanly bail
     to next attempt (restore_scene gives a fresh sim).
 
-    Per 2026-06-15: tried SIGALRM as an "improvement" (V52-V56). It
-    was WORSE — SIGALRM can't be delivered while a C extension holds
-    GIL, so cuRobo hangs in main thread became 30+ min unrecoverable
-    freezes. ThreadPoolExecutor is the industry standard for
-    Python+C-extension timeouts. Reverted.
+    Process signals are not reliable here because a C extension may hold the
+    GIL. A worker thread keeps the main control path responsive long enough to
+    record the timeout and stop issuing commands in the contaminated attempt.
 
     Also tracks repeated identical timeouts for an even louder warning.
     """
@@ -1120,12 +1080,10 @@ def _dispatch_with_timeout(state: DispatchContext, call: dict[str, Any],
         repeat_warning = ""
         if repeat > 1:
             repeat_warning = (
-                f" ‼ YOU HAVE NOW TIMED OUT ON THIS EXACT CALL "
-                f"{repeat} TIMES. STOP retrying it. The args are "
-                f"geometrically infeasible — DIFFERENT actor / arm / "
-                f"skill needed.")
+                f" This exact call has timed out {repeat} times. "
+                f"Stop retrying it and use a different actor, arm, or skill.")
         print(f"[zeroshot] TIMEOUT after {timeout_s:.0f}s on tool={name} "
-              f"args={args} repeat={repeat} — worker thread leaked, "
+              f"args={args} repeat={repeat}; worker thread leaked, "
               f"contamination guard will refuse subsequent calls. "
               f"Returning ok=False to Engineer.", flush=True)
         # CRITICAL: do NOT snapshot here. Leaked worker is still holding
@@ -1134,12 +1092,12 @@ def _dispatch_with_timeout(state: DispatchContext, call: dict[str, Any],
         # dirty so subsequent calls fail fast until next attempt's
         # restore_scene.
         return ({"ok": False, "success": False,
-                 "reason": (f"⚠ TIMEOUT — \'{name}\' exceeded "
+                 "reason": (f"TIMEOUT: '{name}' exceeded "
                               f"{timeout_s:.0f}s wall-time. cuRobo IK stuck on "
                               f"infeasible pose. Worker thread cannot be killed "
                               f"(Python C-ext limit); sim CONTAMINATED for this "
                               f"attempt.{repeat_warning}\n"
-                              f"NEXT: call done(success=False) NOW — "
+                              f"Next: call done(success=False) now; "
                               f"subsequent calls in this attempt refuse anyway. "
                               f"Next attempt restore_scene gives clean sim. "
                               f"Try DIFFERENT arm / skill on retry.")},

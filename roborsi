@@ -6,7 +6,8 @@ export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 if [[ -n "${PYTHON:-}" ]]; then
   PYTHON_BIN="${PYTHON}"
-elif [[ -x "${ROOT}/.venv/bin/python" ]]; then
+elif [[ -x "${ROOT}/.venv/bin/python" ]] \
+  && "${ROOT}/.venv/bin/python" -c "import typer, yaml" >/dev/null 2>&1; then
   PYTHON_BIN="${ROOT}/.venv/bin/python"
 else
   PYTHON_BIN="python3"

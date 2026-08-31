@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from roborsi_libero.config import ReleaseConfig
 from roborsi_libero.evolution import process_pending_proposals, validate_proposal
 from roborsi_libero.launcher import create_campaign
+
+pytestmark = pytest.mark.runtime
 
 
 def _proposal(campaign: Path, *, proposal_id: str, code: str) -> Path:

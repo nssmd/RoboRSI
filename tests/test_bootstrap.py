@@ -5,6 +5,26 @@ from pathlib import Path
 from scripts.bootstrap import LIBERO_COMMIT, PYROKI_COMMIT, bootstrap_commands
 
 
+def test_core_dev_setup_does_not_install_runtime_extra(tmp_path: Path) -> None:
+    commands = bootstrap_commands(
+        repo_root=tmp_path,
+        python="python3",
+        core_only=True,
+        with_dev=True,
+    )
+
+    assert ["python3", "-m", "venv", str(tmp_path / ".venv")] in commands
+    assert [
+        str(tmp_path / ".venv/bin/python"),
+        "-m",
+        "pip",
+        "install",
+        "-e",
+        ".[dev]",
+    ] in commands
+    assert all(".[runtime,dev]" not in command for row in commands for command in row)
+
+
 def test_bootstrap_core_only_is_idempotent_and_skips_simulator_clone(tmp_path: Path) -> None:
     commands = bootstrap_commands(
         repo_root=tmp_path,
@@ -15,7 +35,8 @@ def test_bootstrap_core_only_is_idempotent_and_skips_simulator_clone(tmp_path: P
     rendered = [" ".join(command) for command in commands]
 
     assert any("-m venv" in command for command in rendered)
-    assert any("-e .[runtime,dev]" in command for command in rendered)
+    assert any("-e .[dev]" in command for command in rendered)
+    assert not any("-e .[runtime,dev]" in command for command in rendered)
     assert not any("git clone" in command for command in rendered)
     assert any("--replay-only" in command for command in rendered)
 

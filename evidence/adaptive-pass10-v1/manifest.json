@@ -2,7 +2,7 @@
   "claim_boundary": "Cross-release adaptive cumulative coverage. Not a frozen-policy result, not a single-release result, and not a conventional fixed-method Pass@10.",
   "claim_scope": "adaptive_cross_release_development_coverage",
   "episodes": "episodes.jsonl",
-  "evidence_compaction": "one canonical native-success row per solved task",
+  "evidence_compaction": "one canonical native-success row per solved task with run-local identifiers removed",
   "evidence_rows": 95,
   "expected_result": {
     "breakdown": {

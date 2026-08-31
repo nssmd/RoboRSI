@@ -48,7 +48,7 @@ def create_campaign(
     *,
     mode: Literal["adaptive", "fixed"],
     run_id: str,
-    release_id: str = "public-working-tree",
+    release_id: str = "roborsi-0.1.0",
 ) -> Path:
     if not _RUN_ID.fullmatch(run_id):
         raise ValueError("run_id must be a simple filesystem-safe identifier")

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 
-
 DEFAULT_MODEL = os.environ.get("ROBORSI_VLM_MODEL") or "responses/gpt-5.6-sol"
 
 
@@ -93,6 +92,6 @@ def _rules_for(ns: str) -> str:
 _POINT_SYSTEM_PROMPT = (
     "You locate a manipulation target in a fixed head-camera image. The image "
     "size is IMG_W x IMG_H with origin at the top-left. Return one JSON object: "
-    '{"u": <int>, "v": <int>, "confidence": <0-1>, "reasoning": "<short>"}. '
+    '{"u": <int>, "v": <int>, "confidence": <0-1>, "basis": "<short>"}. '
     'If absent, return {"found": false, "reason": "<short>"}.'
 )

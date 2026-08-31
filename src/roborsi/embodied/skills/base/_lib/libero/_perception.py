@@ -9,8 +9,8 @@ Flow: the object is located by a PIXEL (from ``find_pixel``); a point-prompted
 SAM mask under that pixel is unprojected through LIBERO's depth (the adapter now
 returns it top-down, matching the camera projection) into a world-frame cloud,
 z-filtered to the object; GraspGen returns 6-DoF grasps. GraspGen chooses WHERE
-to grasp; execution is an OSC top-down approach to that point (the robust LIBERO
-motion — matches the working ground-truth grasp path).
+to grasp; execution uses the configured bounded motion controller to approach
+that point.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def _fix_on() -> bool:
 
 
 def vlm_point(state, obj: str, location: str = ""):
-    """Point at `obj` in the head image with the perception VLM (sonnet).
+    """Point at `obj` in the head image with the configured perception VLM.
 
     A VLM distinguishes look-alikes (alphabet-soup can vs tomato-sauce can) that
     Grounded-DINO-tiny cannot at 256px. Returns (u, v) in head-image pixels, or
@@ -1686,7 +1686,7 @@ def graspgen_to_eef_quat(R_grasp_world):
 
 def _6dof_on() -> bool:
     """Execute at GraspGen's FULL 6-DoF orientation instead of top-down. DEFAULT
-    OFF: the OSC servo can't hold orientation AND hit the target position
+    OFF: the direct Cartesian correction can't hold orientation AND hit the target position
     precisely (no IK), so the tilted insert misses-seats the object and the jaws
     close loose (gap ~0.079 ≈ near max-open) — measured lift 15% vs top-down 29%.
     The frame mapping (graspgen_to_eef_quat) is validated and kept for when a real
@@ -1937,7 +1937,7 @@ def execute_topdown(
     """Grasp at GraspGen's chosen point. With ``ROBORSI_GRASP_6DOF`` on (default)
     and a grasp rotation available AND no explicit ``yaw`` override, execute the
     FULL 6-DoF pose (``execute_6dof``) so bowls/side-grasp objects get grasped;
-    otherwise fall back to the OSC top-down approach (open → hover → descend →
+    otherwise fall back to the bounded top-down approach (open → hover → descend →
     close → lift). The descend height is clamped to the object's body (from the
     cloud) so a too-low GraspGen point can't drive the fingers into the table.
     ``yaw`` rotates the gripper about world +Z so the jaws can straddle a thin rim

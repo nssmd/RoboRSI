@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-import numpy as np
+import pytest
 
-from roborsi.embodied.skills.base._lib.libero._perception import (
-    geometric_grasp_candidates,
-)
+pytestmark = pytest.mark.runtime
 
 
 def test_geometry_fallback_returns_bounded_topdown_candidate() -> None:
+    import numpy as np
+
+    from roborsi.embodied.skills.base._lib.libero._perception import (
+        geometric_grasp_candidates,
+    )
+
     cloud = np.array(
         [
             [0.10, 0.20, 0.74],

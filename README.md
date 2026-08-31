@@ -1,37 +1,293 @@
 # RoboRSI
 
-RoboRSI is a general harness for evidence-driven robot self-evolution. It
-connects robot backends, an agent and skill runtime, retained execution
-evidence, code or model evolution, and evaluation-gated capability promotion.
+[![CI](https://github.com/nssmd/RoboRSI/actions/workflows/ci.yml/badge.svg)](https://github.com/nssmd/RoboRSI/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](pyproject.toml)
 
-This repository contains the public LIBERO short reference runtime. The
-project website and media are maintained separately at
-https://robo-rsi.com/.
+RoboRSI is a robot-agent harness for turning execution experience into
+reusable capability. It coordinates agent roles, hierarchical skills, retained
+evidence, code-backed skill evolution, trajectory capture, and
+evaluation-gated promotion.
 
-## Core Features
+This repository is the public **LIBERO short reference runtime**. It includes:
 
-1. **Autonomous skill evolution:** compose existing skills, diagnose visible
-   failures, and author isolated candidate skills.
-2. **Code and model consolidation:** turn verified execution into reusable
-   compound code or predicate-gated training data.
-3. **Evidence-gated adaptation:** keep task, seed, visible tool trace, cost,
-   trajectory, and final environment verdict attached to every change.
+- a replayable evidence bundle for the reported `95/120` adaptive coverage;
+- the fixed and adaptive 120-task evaluation protocols;
+- the Planner, Engineer, Reviewer, supervisor, and worker runtime;
+- the public LIBERO skill library and hidden-state firewall;
+- a complete CLI for setup, execution, status, and replay;
+- a local Web console for public evidence and live campaign results.
 
-## Integrity Contract
+Project website: <https://robo-rsi.com/>
 
-- Planner, Engineer, Reviewer, skills, and prompts cannot read hidden
-  simulator state or the task-success predicate.
-- Only the post-episode simulator predicate counts as success.
-- Provider, transport, image, resource, and interrupted attempts are retained
-  but excluded from task denominators.
-- Successful task/seed pairs are protected from reruns.
-- Candidate code is isolated and scanned before evaluation.
-- Failed candidates, traces, trajectories, logs, and videos are preserved.
+## Start Here
+
+Choose the path that matches what you want to verify.
+
+| Goal | API key | Simulator | GPU | Command |
+| --- | --- | --- | --- | --- |
+| Replay the reported result | No | No | No | `./reproduce.sh` |
+| Inspect public evidence in a browser | No | No | No | `./roborsi web --public` |
+| Inspect the latest local campaign | No | No | No | `./roborsi status` |
+| Validate a full configuration | Yes | Yes | Recommended | `./roborsi doctor` |
+| Run a new 120-task campaign | Yes | Yes | Recommended | `./roborsi eval libero-short` |
+
+### 1. Replay the public evidence
+
+This is the fastest end-to-end check. It does not call a model or launch a
+simulator.
+
+```bash
+git clone https://github.com/nssmd/RoboRSI.git
+cd RoboRSI
+
+./reproduce.sh
+```
+
+The script creates a core virtual environment, replays the packaged evidence,
+and writes:
+
+```text
+artifacts/reproduction/replay.json
+artifacts/reproduction/dashboard.html
+```
+
+The equivalent manual commands are:
+
+```bash
+./setup.sh --core-only
+./roborsi results replay \
+  --manifest evidence/adaptive-pass10-v1/manifest.json \
+  --json artifacts/replay.json
+```
+
+Expected headline:
+
+```text
+Spatial    9/10
+Object    10/10
+Goal       9/10
+LIBERO-90 67/90
+Total     95/120
+```
+
+Generate a self-contained Web report:
+
+```bash
+./roborsi web \
+  --result artifacts/replay.json \
+  --output artifacts/dashboard.html \
+  --no-browser
+```
+
+Or open the local Web console:
+
+```bash
+./roborsi web --public
+```
+
+### 2. Run the LIBERO reference runtime
+
+Requirements:
+
+- Linux;
+- Python `3.10`, `3.11`, or `3.12`;
+- Git;
+- an OpenAI-compatible Responses endpoint with access to
+  `gpt-5.6-sol`;
+- a GPU is strongly recommended for practical simulation throughput.
+
+```bash
+export OPENAI_API_KEY="..."
+
+./setup.sh
+./roborsi eval libero-short --mode adaptive --dry-run
+./roborsi doctor
+./roborsi eval libero-short --mode adaptive
+./roborsi status
+./roborsi web
+```
+
+The full setup creates isolated environments, checks out pinned LIBERO and
+PyRoKi revisions, writes `roborsi.yaml`, starts the motion-planning service,
+and runs offline diagnostics. It is safe to rerun.
+
+## CLI And Web Console
+
+The CLI is the primary control surface:
+
+```bash
+./roborsi runs list
+./roborsi status
+./roborsi status <run-id> --json artifacts/status.json
+```
+
+`status` selects the latest campaign when no run is supplied. It reports
+campaign state, completed passes, task-level coverage, verdict counts, Token
+usage, VLM calls, elapsed episode time, and the run directory.
+
+The Web console selects the latest local campaign when available:
+
+```bash
+./roborsi web
+./roborsi web --run <run-id>
+./roborsi web --public
+```
+
+While a campaign is running, the served page reloads its retained state every
+15 seconds. To create a standalone HTML snapshot:
+
+```bash
+./roborsi web --run <run-id> --output artifacts/run.html --no-browser
+```
+
+The Web console shows cumulative coverage, suite results, episode verdicts,
+protocol fields, resource totals, and release history. It reads local campaign
+artifacts without sending them to an external service.
+
+## How RoboRSI Is Organized
+
+```text
+Human steering
+  objectives · values · expertise · safety boundaries
+                         |
+                         v
+Manager -> Planner -> Engineer -> LIBERO / robot backend
+   ^          |           |                 |
+   |          v           v                 v
+   +------ Reviewer <- plans, tool traces, video, trajectories, verdicts
+                         |
+                         v
+Task Family -> Atomic Task -> Base Skill
+                         |
+             validated code-backed skill
+                         |
+                         +----> next task / next pass
+```
+
+The public runtime keeps two responsibilities separate:
+
+- **Multi-Agent operation** reduces low-level human work by assigning task
+  management, planning, execution, diagnosis, and revision to explicit roles.
+- **Top-down Skill Refinement** gives the agent a bounded hierarchy in which
+  failures can be attributed and repaired locally instead of rewriting the
+  whole system.
+
+Execution trajectories are retained in a training-ready form so a separate
+policy-training pipeline can consume them without changing the evaluation
+contract.
+
+## Evaluation Modes
+
+| Mode | Skills may evolve? | Release identity | Reported metric |
+| --- | --- | --- | --- |
+| `adaptive` | Yes, after validation | May advance across passes | Task-level adaptive Pass@10 |
+| `fixed` | No | One immutable release | Task-level fixed Pass@10 |
+
+For both modes:
+
+- the catalog contains exactly 120 LIBERO short tasks;
+- ordered seeds are `0..9`;
+- any final simulator-confirmed success solves a task once;
+- successful task/seed pairs are protected from reruns;
+- provider, transport, image, resource, and interrupted attempts are retained
+  but excluded from task denominators;
+- hidden simulator state and task-success predicates remain outside all
+  agent-visible prompts, plans, skills, and tool outputs.
+
+## Configuration
+
+`./setup.sh` writes one canonical `roborsi.yaml`. To create or update it
+manually:
+
+```bash
+./roborsi configure \
+  --output roborsi.yaml \
+  --gpus auto \
+  --workers 8 \
+  --yes
+```
+
+The important fields are:
+
+```yaml
+provider:
+  model: responses/gpt-5.6-sol
+  reasoning_effort: medium
+  base_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+
+simulator:
+  root: .deps/LIBERO
+  mujoco_gl: egl
+  controller: JOINT_POSITION
+  image_size: 512
+  horizon: 5000
+
+runtime:
+  results_root: runs
+  workers: 8
+  gpu_devices: [0]
+
+evaluation:
+  mode: adaptive
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  task_count: 120
+  tool_budget: 120
+```
+
+Only the environment-variable name is stored. The secret itself is never
+written to the YAML file.
+
+## Command Reference
+
+| Command | Purpose |
+| --- | --- |
+| `./roborsi configure` | Write the canonical non-secret configuration |
+| `./roborsi doctor` | Check provider, simulator, paths, and services |
+| `./roborsi doctor --offline --replay-only` | Check only local replay requirements |
+| `./roborsi services start` | Start and warm the isolated PyRoKi service |
+| `./roborsi services status` | Check the managed PyRoKi process and port |
+| `./roborsi services stop` | Stop PyRoKi and retain its service record |
+| `./roborsi eval libero-short --mode adaptive` | Run evaluation with gated skill evolution |
+| `./roborsi eval libero-short --mode fixed` | Run one immutable release |
+| `./roborsi eval libero-short --dry-run` | Validate the campaign shape without launching |
+| `./roborsi results replay` | Recompute task-level coverage from retained evidence |
+| `./roborsi runs list` | List local campaigns newest first |
+| `./roborsi status [RUN]` | Inspect the latest or selected campaign |
+| `./roborsi web` | Open the latest campaign in the local Web console |
+| `./roborsi web --public` | Open the packaged public evidence |
+| `./roborsi web --output FILE` | Write a standalone Web report |
+| `./roborsi visualize skill-tree` | Write the interactive skill-evolution viewer |
+
+## Run Artifacts
+
+Each new campaign writes an append-only run directory:
+
+```text
+runs/<run-id>/
+  manifest.json
+  config.resolved.yaml
+  state.json
+  result.json
+  supervisor.log
+  journals/
+  logs/
+  media/
+  traces/
+  trajectories/
+  proposals/
+  candidate_overlays/
+```
+
+Failed runs and rejected candidates are retained. Adaptive proposals are loaded
+through an isolated overlay and cannot overwrite the active release before
+validation.
 
 ## Reported Evidence
 
-The compact evidence bundle replays cumulative adaptive task coverage over the
-120 LIBERO short tasks:
+The packaged evidence bundle replays cumulative coverage over the 120 LIBERO
+short tasks:
 
 ```text
 Spatial   9/10
@@ -41,50 +297,18 @@ LIBERO-90 67/90
 Total    95/120
 ```
 
-This is cross-release adaptive development coverage. It is not a frozen-policy
-score, a single-release result, or conventional fixed-method Pass@10.
+This is **cross-release adaptive development coverage**. It is not a
+single-release score or a conventional frozen-policy Pass@10 result. The
+compact bundle retains one canonical simulator-success row per solved task; it
+does not contain every failed or infrastructure attempt and therefore cannot
+reconstruct total campaign Token or wall-clock spend.
 
-## Quick Start
+See [REPRODUCING.md](REPRODUCING.md) for the exact protocols and comparison
+rules.
 
-Replay the retained result without a simulator or API:
+## Skill Tree
 
-```bash
-./setup.sh --core-only
-./roborsi results replay \
-  --manifest evidence/adaptive-pass10-v1/manifest.json
-```
-
-Run a new adaptive campaign:
-
-```bash
-export OPENAI_API_KEY="..."
-./setup.sh
-./roborsi doctor
-./roborsi eval libero-short --mode adaptive
-```
-
-`setup.sh` creates isolated environments, installs RoboRSI, checks out pinned
-LIBERO and PyRoKi revisions when needed, writes `roborsi.yaml`, and runs
-diagnostics. It is safe to rerun.
-
-## Commands
-
-| Command | Purpose |
-| --- | --- |
-| `./roborsi configure` | Write one non-secret YAML configuration |
-| `./roborsi doctor` | Validate provider, simulator, paths, and services |
-| `./roborsi services start` | Start and warm the isolated PyRoKi service |
-| `./roborsi eval libero-short --mode adaptive` | Evaluate with gated skill evolution |
-| `./roborsi eval libero-short --mode fixed` | Evaluate one immutable release |
-| `./roborsi results replay --manifest ...` | Recompute task-level coverage |
-| `./roborsi visualize skill-tree` | Render the interactive skill-evolution tree |
-| `./roborsi dashboard` | Open the local result console |
-
-## Skill-Tree Visualization
-
-RoboRSI includes a standalone, offline skill-evolution viewer derived from the
-retained 104-round case study. Internal run IDs and repair identifiers are
-removed from the packaged storyboard.
+Render the packaged 104-round case study:
 
 ```bash
 ./roborsi visualize skill-tree \
@@ -92,67 +316,67 @@ removed from the packaged storyboard.
   --no-browser
 ```
 
-The generated HTML contains its data, layout, and animation controls in one
-file. A custom storyboard can be supplied with `--storyboard`.
+The output is a standalone HTML file with embedded data and interaction
+controls. Run-local metadata is excluded from the packaged storyboard.
 
-## Configuration
+## Optional GraspGen Service
 
-```yaml
-provider:
-  model: responses/gpt-5.6-sol
-  reasoning_effort: medium
-  base_url: https://api.openai.com/v1
-  api_key_env: OPENAI_API_KEY
-evaluation:
-  mode: adaptive
-  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-  task_count: 120
-  tool_budget: 120
-integrity:
-  success_source: posthoc_simulator_predicate
-  expose_task_checker: false
-  action_success_latch: false
-  allow_hidden_object_state: false
-```
+The default runtime can produce a bounded geometric top-down grasp candidate
+without GraspGen. Historical releases also used an external GraspGen service
+for some object shapes. GraspGen is not installed automatically and retains its
+own non-commercial terms. Setup details are in
+[REPRODUCING.md](REPRODUCING.md).
 
-The API key remains in the named environment variable.
-
-## Run Artifacts
+## Repository Layout
 
 ```text
-runs/<run-id>/
-  manifest.json
-  config.resolved.yaml
-  state.json
-  result.json
-  journals/
-  episodes/
-  media/
-  trajectories/
-  proposals/
-  candidate_overlays/
-  releases/
+src/roborsi/             robot-agent runtime and LIBERO skills
+src/roborsi_libero/      public CLI, configuration, evaluation, and evidence
+scripts/                 setup helpers, services, and release checks
+configs/                 reference configuration
+evidence/                compact replayable result bundle
+tests/                   public-contract and runtime tests
+reproduce.sh             one-command public-result replay
 ```
+
+The project website and unrelated research assets are maintained separately.
 
 ## Development
 
+Core-only checks:
+
 ```bash
-python -m pip install -e ".[dev]"
-pytest -q
-ruff check src tests scripts
+./setup.sh --core-only --dev
+source .venv/bin/activate
+
+pytest -q -m "not runtime"
+ruff check src/roborsi_libero tests scripts
 python scripts/release_check.py
+roborsi results replay --json /tmp/roborsi-replay.json
+roborsi web \
+  --result /tmp/roborsi-replay.json \
+  --output /tmp/roborsi-dashboard.html \
+  --no-browser
 python -m build
 ```
 
-See [REPRODUCING.md](REPRODUCING.md) for protocol details and
-[CONTRIBUTING.md](CONTRIBUTING.md) before changing a visible skill or
-evaluation contract.
+Complete runtime checks require `./setup.sh --dev`; after the runtime
+dependencies and pinned simulator checkout are installed, run:
 
-## Scope
+```bash
+pytest -q
+python scripts/check_libero_gt_leak.py
+```
 
-The interfaces are backend-agnostic, but this public release ships only the
-LIBERO short backend. It does not contain private endpoints, credentials,
-operator launchers, raw internal logs, the website, or long-horizon work.
+CI uses this complete test path.
 
-RoboRSI is licensed under Apache-2.0. LIBERO and PyRoKi retain their upstream
-licenses. GraspGen is an optional external dependency with its own terms.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing a visible skill,
+evaluation contract, or promotion rule. Security and secret-handling guidance
+is in [SECURITY.md](SECURITY.md).
+
+## Citation And License
+
+Citation metadata is provided in [CITATION.cff](CITATION.cff).
+
+RoboRSI is licensed under Apache-2.0. LIBERO, PyRoKi, and optional external
+services retain their upstream licenses and terms.

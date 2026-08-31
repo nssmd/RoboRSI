@@ -1,9 +1,9 @@
 cff-version: 1.2.0
-message: "If you use roborsi LIBERO, please cite this software."
-title: "roborsi LIBERO: Skill-First Adaptive Robot Evaluation"
+message: "If you use RoboRSI LIBERO, please cite this software."
+title: "RoboRSI LIBERO: Skill-First Adaptive Robot Evaluation"
 type: software
 authors:
-  - name: "roborsi Contributors"
+  - name: "RoboRSI Contributors"
 url: "https://robo-rsi.com/"
 license: Apache-2.0
 version: 0.1.0

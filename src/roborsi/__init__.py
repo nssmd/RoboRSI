@@ -1,3 +1,3 @@
-"""roborsi LIBERO public runtime."""
+"""RoboRSI LIBERO public runtime."""
 
 __version__ = "0.1.0"

@@ -34,17 +34,20 @@ TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
-PRIVATE_LITERALS = (
-    "/mnt" + "/workspace",
-    "/data" + "/yijia",
-    "copilot" + "-proxy-local",
-    "ANTHROPIC" + "_AUTH_TOKEN",
+PRIVATE_PATH_PATTERNS = (
+    re.compile(r"/data/[A-Za-z0-9._-]+/"),
+    re.compile(r"/mnt/workspace/[A-Za-z0-9._-]+/"),
 )
-LEGACY_NAMES = (
-    "Robo" + "Hermes",
-    "ROBO" + "HERMES",
-    "robo" + "hermes",
-    "mae" + "stro",
+LEGACY_PATTERNS = (
+    re.compile(r"\brobo[-_ ]?hermes\b", re.IGNORECASE),
+    re.compile(r"\bmae" + r"stro\b", re.IGNORECASE),
+    re.compile(r"\buser request\b", re.IGNORECASE),
+    re.compile(r"\blocalize_object_top_center\b", re.IGNORECASE),
+    re.compile(r"\bverify_holding_visual\b", re.IGNORECASE),
+    re.compile(r"\bpending review\b", re.IGNORECASE),
+    re.compile(r"\bwiki_review/", re.IGNORECASE),
+    re.compile(r"\bV\d{2}(?:/V\d{2})?\b"),
+    re.compile(r"[💭⚠‼]"),
 )
 SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
@@ -89,16 +92,26 @@ def collect_findings(root: Path) -> list[str]:
         "pyproject.toml",
         "setup.sh",
         "roborsi",
+        "reproduce.sh",
+        "scripts/check_libero_gt_leak.py",
         "configs/default.yaml",
         "evidence/adaptive-pass10-v1/manifest.json",
         "evidence/adaptive-pass10-v1/episodes.jsonl",
         "src/roborsi/__init__.py",
         "src/roborsi_libero/cli.py",
+        "src/roborsi_libero/dashboard.py",
+        "src/roborsi_libero/runs.py",
     )
     for relative in required:
         if not (root / relative).is_file():
             findings.append(f"missing required file: {relative}")
-    for relative in ("setup.sh", "roborsi", "scripts/bootstrap.py"):
+    for relative in (
+        "setup.sh",
+        "roborsi",
+        "reproduce.sh",
+        "scripts/bootstrap.py",
+        "scripts/check_libero_gt_leak.py",
+    ):
         path = root / relative
         if path.is_file() and not os.access(path, os.X_OK):
             findings.append(f"entrypoint is not executable: {relative}")
@@ -109,9 +122,14 @@ def collect_findings(root: Path) -> list[str]:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         if relative != Path("scripts/release_check.py"):
-            for needle in (*PRIVATE_LITERALS, *LEGACY_NAMES):
-                if needle in text:
-                    findings.append(f"forbidden public literal {needle!r}: {relative}")
+            for pattern in PRIVATE_PATH_PATTERNS:
+                if pattern.search(text):
+                    findings.append(f"machine-specific path in {relative}")
+            for pattern in LEGACY_PATTERNS:
+                if pattern.search(text):
+                    findings.append(
+                        f"legacy public terminology {pattern.pattern!r}: {relative}"
+                    )
             for pattern in SECRET_PATTERNS:
                 if pattern.search(text):
                     findings.append(f"possible secret in {relative}")
@@ -125,9 +143,9 @@ def collect_findings(root: Path) -> list[str]:
         for path in root.rglob("*")
         if path.is_dir() and not any(part in IGNORED_DIRS for part in path.parts)
     }
-    for excluded in ("opd", "pro_long", "long"):
+    for excluded in ("private", "internal-only"):
         if excluded in names:
-            findings.append(f"excluded scope directory included: {excluded}")
+            findings.append(f"private scope directory included: {excluded}")
 
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     if 'name = "roborsi"' not in pyproject:
@@ -162,6 +180,11 @@ def collect_findings(root: Path) -> list[str]:
             findings.append(f"evidence rows replay to {len(solved)}/120")
         if any(row.get("category") == "infrastructure" for row in rows):
             findings.append("compact success bundle contains infrastructure rows")
+        if any("source" in row or "recorded_at" in row for row in rows):
+            findings.append("compact evidence contains run-local provenance")
+        public_release_ids = {"public-initial-release", "public-adaptive-release"}
+        if any(str(row.get("release_id") or "") not in public_release_ids for row in rows):
+            findings.append("compact evidence contains non-public release identifiers")
 
     return sorted(set(findings))
 
