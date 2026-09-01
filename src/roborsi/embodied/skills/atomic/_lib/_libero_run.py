@@ -119,38 +119,6 @@ def prompts_for(skill: str) -> tuple[str, str]:
     return str(instruction).strip(), str(expected).strip()
 
 
-def _code_fingerprint() -> str:
-    release_id = os.environ.get("ROBORSI_RELEASE_ID", "").strip()
-    return f"release:{release_id or 'unbound'}"
-
-
-def _config_fingerprint(payload: dict[str, Any]) -> str:
-    episode_meta = dict(payload.get("episode_meta") or {})
-    fields = (
-        ("task", payload.get("task")),
-        ("seed", payload.get("seed")),
-        ("budget", payload.get("tool_budget")),
-        ("model", payload.get("model")),
-        ("backend", payload.get("backend")),
-        ("run", episode_meta.get("run_id")),
-        ("shard", episode_meta.get("shard")),
-        ("attempt", episode_meta.get("attempt")),
-        ("roles", os.environ.get("ROBORSI_LIBERO_ROLES", "0")),
-        (
-            "runtime_task_authoritative",
-            episode_meta.get("runtime_task_authoritative", False),
-        ),
-    )
-
-    def clean(value: Any) -> str:
-        return str(value).replace("|", "/").replace("\n", " ")
-
-    return "config:" + "|".join(
-        f"{name}={clean(value)}"
-        for name, value in fields
-    )
-
-
 def _role_orchestrated_instruction(
     *,
     skill: str,
@@ -203,14 +171,9 @@ def _review_role_episode(
     trace = list(result.trace or [])
     rollout_meta = dict(result.rollout.meta or {})
     vlm_declared = bool(rollout_meta.get("vlm_declared", False))
-    completion_candidate = bool(
-        rollout_meta.get("tool_completion_candidate", False)
-    )
-    visible_success = vlm_declared or completion_candidate
+    visible_success = vlm_declared
     if vlm_declared:
         visible_outcome = "engineer_declared_done"
-    elif completion_candidate:
-        visible_outcome = "engineer_completion_candidate"
     else:
         visible_outcome = "engineer_not_done"
     for hidden_key in (
@@ -268,7 +231,7 @@ def run_libero_episode(
     if not ok:
         raise RuntimeError(f"{backend} unavailable: {reason}")
     identity = EpisodeIdentity(
-        run_id=str(episode_meta.get("run_id") or "legacy-run"),
+        run_id=str(episode_meta.get("run_id") or "standalone"),
         task_key=str(episode_meta.get("task_key") or task),
         seed=int(episode_meta.get("seed", seed)),
         shard=int(episode_meta.get("shard", 0)),
@@ -348,7 +311,6 @@ def run_libero_episode(
     meta = dict(res.rollout.meta or {})
     trace = list(res.trace or [])
     meta.update(_code_backed_trace_metrics(skill, trace))
-    meta["efficiency_schema"] = "roborsi.efficiency.v2"
     if roles_enabled and role_workspace is not None:
         engineer_usage = _normalized_usage(meta)
         reviewer_usage = _empty_usage()
@@ -384,21 +346,6 @@ def run_libero_episode(
             planner_time_s + reviewer_time_s,
             3,
         )
-    meta.setdefault("vlm_declared", bool(meta.get("vlm_declared", False)))
-    meta.setdefault("code_fingerprint", _code_fingerprint())
-    meta.setdefault(
-        "config_fingerprint",
-        _config_fingerprint(
-            {
-                "task": task,
-                "seed": seed,
-                "tool_budget": tool_budget,
-                "model": model,
-                "backend": backend,
-                "episode_meta": episode_meta,
-            }
-        ),
-    )
     return {
         "seed": seed,
         "success": res.success,

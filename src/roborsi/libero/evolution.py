@@ -16,22 +16,14 @@ _FORBIDDEN_ATTRS = {
     "__dict__",
     "_env",
     "_raw",
-    "check_success",
-    "goal_state",
-    "parsed_problem",
-    "region_box",
-}
-_FORBIDDEN_TEXT = {
-    "_raw",
     "check_task",
     "check_success",
-    "describe_scene",
     "get_object_pose",
+    "goal_state",
     "object_pose",
+    "parsed_problem",
     "raw_obs",
-    "sim_ground_truth",
-    "simulator object pose",
-    "hidden object state",
+    "region_box",
 }
 _FORBIDDEN_IMPORT_ROOTS = {"libero", "mujoco", "robosuite"}
 
@@ -67,10 +59,6 @@ def validate_proposal(proposal: dict[str, Any]) -> ProposalValidation:
     except SyntaxError as exc:
         findings.append(f"syntax error: {exc.msg} at line {exc.lineno}")
         return ProposalValidation(False, tuple(findings))
-    lowered_code = code.lower()
-    for text in _FORBIDDEN_TEXT:
-        if text in lowered_code:
-            findings.append(f"forbidden hidden-state reference: {text}")
     if not any(
         isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name == "dispatch_runtime"
@@ -80,6 +68,19 @@ def validate_proposal(proposal: dict[str, Any]) -> ProposalValidation:
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_ATTRS:
             findings.append(f"forbidden hidden-state attribute: {node.attr}")
+        if isinstance(node, ast.Name) and node.id in _FORBIDDEN_ATTRS:
+            findings.append(f"forbidden hidden-state name: {node.id}")
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in _FORBIDDEN_ATTRS
+        ):
+            findings.append(
+                f"forbidden hidden-state attribute: {node.args[1].value}"
+            )
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name.split(".", 1)[0] in _FORBIDDEN_IMPORT_ROOTS:
@@ -90,11 +91,6 @@ def validate_proposal(proposal: dict[str, Any]) -> ProposalValidation:
                 findings.append(f"forbidden direct simulator import: {module}")
             if module.startswith("roborsi.embodied.sim"):
                 findings.append(f"forbidden direct simulator import: {module}")
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            lowered = node.value.lower()
-            for text in _FORBIDDEN_TEXT:
-                if text in lowered:
-                    findings.append(f"forbidden hidden-state reference: {text}")
     if kind == "new":
         skill_md = str(payload.get("skill_md") or "")
         if not skill_md.startswith("---"):
@@ -189,7 +185,7 @@ def _default_harness(
         for row in load_records(journal)
         if row.identity.task_key == task
         and int(row.identity.seed) == seed
-        and row.code_fingerprint == f"release:{release_id}"
+        and row.release_id == release_id
     ]
     if not candidates:
         return {

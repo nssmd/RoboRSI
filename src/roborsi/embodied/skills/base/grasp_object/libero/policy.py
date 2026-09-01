@@ -37,13 +37,6 @@ _SOURCE_STATIC_MAD_MAX = 3.0
 _CABINET_EXIT_DISTANCE = 0.16
 
 
-def _fix_on() -> bool:
-    """Pure-vision grasp fixes (SAM3-first localize, self-correcting re-localize,
-    rim yaw-sweep) are ON by default — verified 46cm→4cm grasp error, 25%→82%
-    right-object. ``ROBORSI_GRASP_FIX=0`` restores the old unguarded path."""
-    return os.environ.get("ROBORSI_GRASP_FIX", "1") != "0"
-
-
 def _is_sentinel(uv) -> bool:
     if uv is None:
         return False
@@ -447,7 +440,7 @@ def _perception_grasp(state, args):
     grasps, _cloud = grasps_at_pixel(env, u, v, top_k=3)
 
     def _rim_plan_for(cloud):
-        if not _fix_on() or cloud is None or len(cloud) < 30:
+        if cloud is None or len(cloud) < 30:
             return None
         try:
             base_xy = np.asarray(env.robot_base_pos(), dtype=float)[:2]
@@ -459,7 +452,7 @@ def _perception_grasp(state, args):
         )
 
     rim_plan = _rim_plan_for(_cloud) if use_hollow_base_grip else None
-    if not grasps and _fix_on() and rim_plan is None:
+    if not grasps and rim_plan is None:
         # The VLM's pixel yielded a rejected (whole-scene) mask. Rather than bounce
         # back to the VLM — which loops on re-perception until budget_exceeded —
         # self-correct with the detector: re-point via localize_precise and retry.
@@ -521,8 +514,7 @@ def _perception_grasp(state, args):
                         else None
                     )
     if not grasps and not (
-        _fix_on()
-        and use_hollow_base_grip
+        use_hollow_base_grip
         and _cloud is not None
         and len(_cloud) >= 30
     ):
@@ -542,11 +534,7 @@ def _perception_grasp(state, args):
     package_side_entry_succeeded = False
     package_side_candidates_attempted = 0
     package_side_candidate_index = None
-    if (
-        _fix_on()
-        and use_hollow_base_grip
-        and rim_plan is not None
-    ):
+    if use_hollow_base_grip and rim_plan is not None:
         p, ee, gq = execute_rim_grip(
             env,
             rim_plan,
@@ -558,7 +546,6 @@ def _perception_grasp(state, args):
         grasped = grip_state is GripperState.HELD
     if (
         not grasped
-        and _fix_on()
         and use_hollow_base_grip
         and rim_plan is not None
         and grip_state is GripperState.CLOSED_EMPTY
@@ -578,8 +565,6 @@ def _perception_grasp(state, args):
         grasped = grip_state is GripperState.HELD
     if (
         not grasped
-        and
-        _fix_on()
         and use_hollow_base_grip
         and _cloud is not None
         and len(_cloud) >= 30
@@ -596,7 +581,6 @@ def _perception_grasp(state, args):
         grasped = grip_state is GripperState.HELD
     if (
         not grasped
-        and _fix_on()
         and _uses_floor_level_package_grip(requested_object)
         and grasps
         and _cloud is not None
@@ -625,7 +609,6 @@ def _perception_grasp(state, args):
                         break
     if (
         not grasped
-        and _fix_on()
         and _uses_floor_level_package_grip(requested_object)
         and grasps
         and _cloud is not None

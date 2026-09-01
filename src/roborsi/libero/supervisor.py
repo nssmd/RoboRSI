@@ -72,8 +72,7 @@ def refresh_campaign_state(campaign_root: Path | str) -> CampaignState:
             value.identity.attempt,
         ),
     ):
-        release_id = str(row.code_fingerprint or "").removeprefix("release:")
-        release_id = release_id or manifest["release_id"]
+        release_id = str(row.release_id or manifest["release_id"])
         state.begin_release(release_id)
         state.record(
             EpisodeVerdict(
@@ -167,7 +166,7 @@ def _run_workers(config, commands) -> list[int]:
     return [process.wait() for process in processes]
 
 
-def run_supervisor(campaign_root: Path | str, *, max_stalled_retries: int = 6) -> dict[str, Any]:
+def run_supervisor(campaign_root: Path | str) -> dict[str, Any]:
     root = Path(campaign_root).resolve()
     config = load_config(root / "config.resolved.yaml")
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
@@ -180,7 +179,6 @@ def run_supervisor(campaign_root: Path | str, *, max_stalled_retries: int = 6) -
     for seed in manifest["seeds"]:
         if seed in state.completed_seeds:
             continue
-        stalled = 0
         while True:
             state = refresh_campaign_state(root)
             pending = schedule_round(state, seed=seed)
@@ -198,11 +196,11 @@ def run_supervisor(campaign_root: Path | str, *, max_stalled_retries: int = 6) -
             return_codes = _run_workers(config, commands)
             refreshed = refresh_campaign_state(root)
             remaining = schedule_round(refreshed, seed=seed)
+            if not remaining:
+                refreshed.completed_seeds = sorted({*refreshed.completed_seeds, seed})
+                _atomic_json(root / "state.json", refreshed.to_dict())
+                break
             if len(remaining) >= len(pending) or any(code != 0 for code in return_codes):
-                stalled += 1
-            else:
-                stalled = 0
-            if stalled >= max_stalled_retries:
                 refreshed.status = "blocked"
                 _atomic_json(root / "state.json", refreshed.to_dict())
                 return summarize_campaign(root)

@@ -20,8 +20,9 @@ arm joint angles. Frame alignment (world ↔ pyroki-base) is the CLIENT's job (s
 ``_control._goal_config``) — this service is a pure solver, frame-agnostic.
 
 Wire format: raw ZMQ REP + pickle (matching ``_perception.locate_by_sam3``).
-Requests (dispatched on ``op``, default ``"ik"`` for back-compat):
-  ``{"target_wxyz", "target_pos", "current_joints"}``  → ``{"joints": [q1..q7]}``
+Requests are dispatched by ``op``:
+  ``{"op": "ik", "target_wxyz", "target_pos", "current_joints"}``
+  → ``{"joints": [q1..q7]}``
   ``{"op": "trajopt", "start_wxyz", "start_pos", "end_wxyz", "end_pos",
      "start_joints", "timesteps"}``  → ``{"traj": [[q1..q7], ...]}``
 
@@ -131,10 +132,10 @@ class Solver:
         )
 
     def handle(self, req: dict) -> dict:
-        """Dispatch on ``op`` (default ``"ik"`` for back-compat)."""
+        """Dispatch one solver request."""
         if req.get("protocol") != WIRE_PROTOCOL:
             raise ValueError("PyRoKi wire protocol mismatch")
-        op = req.get("op", "ik")
+        op = req.get("op")
         if op == "joint_trajopt":
             start_joints = validate_arm_joints(
                 req.get("start_joints"), field="start_joints"
@@ -166,15 +167,17 @@ class Solver:
                 "traj": traj,
                 "start_error_max": start_error,
             }
-        current_joints = validate_arm_joints(
-            req.get("current_joints"), field="current_joints"
-        )
-        return {
-            "protocol": WIRE_PROTOCOL,
-            "joints": self.solve_ik(
-                req["target_wxyz"], req["target_pos"], current_joints
-            ),
-        }
+        if op == "ik":
+            current_joints = validate_arm_joints(
+                req.get("current_joints"), field="current_joints"
+            )
+            return {
+                "protocol": WIRE_PROTOCOL,
+                "joints": self.solve_ik(
+                    req["target_wxyz"], req["target_pos"], current_joints
+                ),
+            }
+        raise ValueError(f"unsupported PyRoKi operation: {op}")
 
 
 def _warm(solver: Solver) -> None:

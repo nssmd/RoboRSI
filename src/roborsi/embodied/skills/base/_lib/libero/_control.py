@@ -183,6 +183,7 @@ def _solve_ik_zmq(
     resp = _request(
         {
             "protocol": _PYROKI_WIRE_PROTOCOL,
+            "op": "ik",
             "target_wxyz": [float(x) for x in wxyz],
             "target_pos": [float(x) for x in pos_in_base],
             "current_joints": [float(x) for x in current_joints],

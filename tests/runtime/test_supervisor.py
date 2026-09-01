@@ -31,7 +31,7 @@ def _append(campaign: Path, task: str, seed: int, category: str) -> None:
             total_tokens=10,
             vlm_calls=1,
             elapsed_s=2.0,
-            code_fingerprint="release:r1",
+            release_id="r1",
         ),
     )
 

@@ -221,18 +221,7 @@ class LiberoProEnv(Env):
         return timestep >= horizon
 
     def _bind_gl_context(self) -> None:
-        """Make MuJoCo's offscreen GL context current on the CALLING thread.
-
-        ROOT CAUSE of the torn-stripe garbage frames: the rollout dispatches every
-        tool (grasp/place servos) on a ``ThreadPoolExecutor`` worker thread
-        (``rollout._dispatch_with_timeout``). MuJoCo's OSMesa/EGL render context is
-        THREAD-AFFINE — it was created on the main thread at ``make_env``/``reset``,
-        so ``sim.render`` fired from a worker thread reads an uninitialized/wrong
-        buffer and returns frozen RGB-stripe noise (verified: main-thread step
-        std~41 = real scene, worker-thread step std~85 = garbage; ``make_current``
-        restores std~41). Rebinding the context to whatever thread is about to
-        render (cheap, idempotent) fixes it for every consumer — tick frames, the
-        ``look`` tool, the VLM image, and the SAM3 grasp/place clouds."""
+        """Make the MuJoCo offscreen context current before rendering."""
         rc = getattr(self._env.env.sim, "_render_context_offscreen", None)
         ctx = getattr(rc, "gl_ctx", None) if rc is not None else None
         if ctx is not None:
@@ -331,7 +320,7 @@ class LiberoProEnv(Env):
                     "horizon": horizon,
                 },
             )
-        self._bind_gl_context()            # render on the CALLING thread's context
+        self._bind_gl_context()
         raw, reward, done, info = self._env.step(
             np.asarray(action, dtype=np.float64).flatten()
         )

@@ -30,23 +30,15 @@ _MOVABLE_OBJECT_WORDS = frozenset(
 
 
 def write_image_atomic(path, image) -> None:
-    import cv2
     from pathlib import Path
+
+    import cv2
 
     out = Path(path)
     tmp = out.with_name(f".{out.name}.{os.getpid()}.tmp.png")
     if not cv2.imwrite(str(tmp), image):
         raise OSError(f"cv2.imwrite failed: {tmp}")
     os.replace(tmp, out)
-
-
-def _fix_on() -> bool:
-    """The pure-vision grasp fixes (SAM3-first localize, whole-scene mask reject +
-    DBSCAN cleaning, self-correcting re-localize, object-body descend, rim
-    yaw-sweep) are ON by default — verified to cut the grasp-target error from
-    ~46cm to ~4cm and lift the right-object rate 25%→82%. Set
-    ``ROBORSI_GRASP_FIX=0`` to fall back to the old unguarded path."""
-    return os.environ.get("ROBORSI_GRASP_FIX", "1") != "0"
 
 
 def vlm_point(state, obj: str, location: str = ""):
@@ -57,7 +49,9 @@ def vlm_point(state, obj: str, location: str = ""):
     None if the VLM can't find it. Falls back to the detector via locate_pixel at
     the call site."""
     import os
+
     import cv2
+
     from roborsi.embodied.agent_loop.config import _POINT_SYSTEM_PROMPT
     from roborsi.embodied.agent_loop.vlm_io import _call_vlm_image, _parse_json
     rgb = state.env.take_snapshot().images.get("head_camera")
@@ -252,6 +246,7 @@ def local_vlm_point(state, obj: str):
     img = (cv2.resize(rgb, (rgb.shape[1] * scale, rgb.shape[0] * scale),
                       interpolation=cv2.INTER_CUBIC) if scale > 1 else rgb)
     import pickle
+
     import zmq
     sock = zmq.Context.instance().socket(zmq.REQ)
     sock.setsockopt(zmq.RCVTIMEO, 40000)
@@ -402,6 +397,7 @@ def _choose_localization_candidate(
         return int(candidates[0]["u"]), int(candidates[0]["v"])
 
     import cv2
+
     from roborsi.embodied.agent_loop.vlm_io import (
         _call_vlm_image,
         _parse_json,
@@ -754,6 +750,7 @@ def locate_pixel(rgb, query: str, scale: int = 3):
     256px and objects are small, so upscale ~3× before detection, then scale the
     centroid back. Returns (u, v) or None."""
     import cv2
+
     from roborsi.embodied.skills.base._lib.libero.detector import detect
     rgb = np.asarray(rgb)
     up = cv2.resize(rgb, (rgb.shape[1] * scale, rgb.shape[0] * scale),
@@ -774,7 +771,9 @@ def zoom_localize(state, obj: str, coarse_uv, half: int = 40, upscale: int = 4,
     small-object localization: on the full frame an object is ~20px and the VLM
     points imprecisely / on a look-alike; in a 4× crop it's ~80px and crisp."""
     import os
+
     import cv2
+
     from roborsi.embodied.agent_loop.config import _POINT_SYSTEM_PROMPT
     from roborsi.embodied.agent_loop.vlm_io import _call_vlm_image, _parse_json
     rgb = state.env.take_snapshot().images.get(camera)
@@ -815,7 +814,7 @@ def _load_owlv2():
     if "mod" in _OWLV2:
         return _OWLV2
     import torch
-    from transformers import Owlv2Processor, Owlv2ForObjectDetection
+    from transformers import Owlv2ForObjectDetection, Owlv2Processor
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     _OWLV2["proc"] = Owlv2Processor.from_pretrained("google/owlv2-large-patch14-ensemble")
     _OWLV2["mod"] = Owlv2ForObjectDetection.from_pretrained(
@@ -897,15 +896,6 @@ def locate_by_sam3(rgb, target: str, threshold: float = 0.1):
     bi = int(np.asarray(r["scores"]).argmax())
     b = r["boxes"][bi]
     return int((b[0] + b[2]) / 2), int((b[1] + b[3]) / 2)
-
-
-def _place_fix_on() -> bool:
-    """The CaP-style 'retreat out of the head view before localizing the place
-    target' discipline is ON by default. The old fix only lifted the held object
-    STRAIGHT UP (+0.18), leaving the forearm/wrist and the object hanging between
-    the agentview camera (at +x, high) and the workspace, so reflections still
-    read 'arm occludes the plate'. Set ``ROBORSI_PLACE_CLEAR=0`` to disable."""
-    return os.environ.get("ROBORSI_PLACE_CLEAR", "1") != "0"
 
 
 def _retreat_height(
@@ -1166,6 +1156,7 @@ def sam_mask_at_point(rgb, u: int, v: int) -> np.ndarray:
     look-alikes."""
     import torch
     from PIL import Image
+
     from roborsi.embodied.skills.base._lib.libero.detector import _load
     _, _, sp, sm = _load()
     inp = sp(images=Image.fromarray(np.asarray(rgb)),
@@ -1176,9 +1167,7 @@ def sam_mask_at_point(rgb, u: int, v: int) -> np.ndarray:
         out.pred_masks.cpu(), inp["original_sizes"].cpu(),
         inp["reshaped_input_sizes"].cpu())[0][0].numpy()
     scores = out.iou_scores.cpu().numpy().reshape(-1)
-    if _fix_on():
-        return _pick_object_mask(masks, scores, int(u), int(v))
-    return masks[int(scores.argmax())].astype(bool)
+    return _pick_object_mask(masks, scores, int(u), int(v))
 
 
 def _pick_object_mask(masks, scores, u: int, v: int):
@@ -1254,14 +1243,13 @@ def object_cloud(env, u: int, v: int, camera: str = _HEAD, z_band: float = 0.10)
     ])
     zmed = float(np.median(pts[:, 2]))
     pts = pts[np.abs(pts[:, 2] - zmed) < z_band]
-    if _fix_on():
-        pts = _densest_cluster(pts)
-        point_limit = max(
-            1,
-            int(round(3500 * (float(h * w) / float(256 * 256)))),
-        )
-        if len(pts) > point_limit:             # still whole-table after cleaning → reject
-            return None
+    pts = _densest_cluster(pts)
+    point_limit = max(
+        1,
+        int(round(3500 * (float(h * w) / float(256 * 256)))),
+    )
+    if len(pts) > point_limit:
+        return None
     return pts if len(pts) >= 30 else None
 
 
@@ -1966,16 +1954,9 @@ def execute_topdown(
     ctrl = LiberoControl(env)
     p = np.asarray(grasp["translation_tcp_world"], dtype=float).copy()
     if cloud is not None and len(cloud) >= 10:
-        zmed, zmax = float(np.median(cloud[:, 2])), float(cloud[:, 2].max())
-        if _fix_on():
-            zmin = float(cloud[:, 2].min())
-            # Descend into the object BODY (≤ median), not the rim/top: the old
-            # clamp to zmax closed the fingers on air even on ACCURATE grasps
-            # (verified: 2cm-accurate grasp, +3cm-high descend → gap 0.002). Floor
-            # just above the lowest object point so we never drive into the table.
-            p[2] = float(np.clip(p[2], zmin + 0.005, zmed))
-        else:
-            p[2] = float(np.clip(p[2], zmed - 0.01, zmax))   # keep the grasp on the object body
+        zmed = float(np.median(cloud[:, 2]))
+        zmin = float(cloud[:, 2].min())
+        p[2] = float(np.clip(p[2], zmin + 0.005, zmed))
     p[2] += float(z_offset)
     if cloud is not None and len(cloud) >= 10:
         p[2] = float(

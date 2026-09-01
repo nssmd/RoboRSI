@@ -36,7 +36,7 @@ class Skill:
 
 
 def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
-    """Parse YAML frontmatter, with a line-by-line ``k:v`` fallback."""
+    """Parse YAML frontmatter from a skill document."""
     if not content.startswith("---"):
         return {}, content
     end = re.search(r"\n---\s*\n", content[3:])
@@ -44,22 +44,10 @@ def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
         return {}, content
     yaml_text = content[3 : end.start() + 3]
     body = content[end.end() + 3 :]
-    try:
-        import yaml
+    import yaml
 
-        parsed = yaml.safe_load(yaml_text)
-        if isinstance(parsed, dict):
-            return parsed, body
-    except Exception:
-        pass
-    # Fallback: simple k:v parsing
-    fm: dict[str, Any] = {}
-    for line in yaml_text.strip().splitlines():
-        if ":" not in line:
-            continue
-        k, v = line.split(":", 1)
-        fm[k.strip()] = v.strip()
-    return fm, body
+    parsed = yaml.safe_load(yaml_text)
+    return (parsed if isinstance(parsed, dict) else {}), body
 
 
 def _discover_root(root: Path, is_user: bool) -> list[Skill]:

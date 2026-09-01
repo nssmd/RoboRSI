@@ -70,6 +70,7 @@ def test_worker_records_native_success_and_skips_it_on_resume(tmp_path: Path) ->
     assert rows[0].category == "task_success"
     assert rows[0].success is True
     assert rows[0].total_tokens == 12
+    assert rows[0].release_id == "release-public"
 
 
 def test_worker_retains_provider_failure_without_consuming_task_seed(tmp_path: Path) -> None:
@@ -110,3 +111,4 @@ def test_worker_retains_provider_failure_without_consuming_task_seed(tmp_path: P
     assert attempts == 2
     assert [row.category for row in rows] == ["provider_failure", "provider_failure"]
     assert [row.identity.attempt for row in rows] == [1, 2]
+    assert {row.release_id for row in rows} == {"release-public"}

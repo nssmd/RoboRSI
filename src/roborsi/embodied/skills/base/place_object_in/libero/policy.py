@@ -726,55 +726,20 @@ def dispatch_runtime(state, args: dict[str, Any]):
     # it through the perceived-cloud drop, so placement uses no ground truth.
     if pixel is None and pos is None and target_name and _perception:
         from roborsi.embodied.skills.base._lib.libero._perception import (
-            _fix_on,
-            _place_fix_on,
-            localize_precise,
             retreat_from_head_view,
         )
 
-        if _fix_on():
-            # CaP-style: the held object / arm / forearm OCCLUDES the place target
-            # in the agentview head view, so RETREAT it out of view FIRST — lift
-            # high AND slide laterally toward the robot base — THEN localize with a
-            # clear view and a self-correcting side-step. A straight-up lift alone
-            # leaves the arm hovering over the workspace (reflections still read
-            # "arm occludes the plate"). Pure-vision, relative → frame-safe.
-            if _place_fix_on():
-                retreat_reached = retreat_from_head_view(
-                    env,
-                    ctrl,
-                    **motion_quat,
-                )
-            else:
-                ee, _, _ = ctrl.read_pose()
-                retreat_reached, _ = ctrl.servo_to(
-                    [float(ee[0]), float(ee[1]), float(ee[2]) + 0.18],
-                    gripper="close",
-                    max_iters=50,
-                    **motion_quat,
-                )
-            if not retreat_reached:
-                return (
-                    _failure("could not clear the head-camera view while holding"),
-                    env.take_snapshot(),
-                )
-            loc = _clear_localize(state, ctrl, target_name)
-        else:
-            loc = localize_precise(state, target_name)
-            if loc is None:
-                ee, _, _ = ctrl.read_pose()
-                retry_reached, _ = ctrl.servo_to(
-                    [float(ee[0]), float(ee[1]), 0.38],
-                    gripper="close",
-                    max_iters=45,
-                    **motion_quat,
-                )
-                if not retry_reached:
-                    return (
-                        _failure("could not clear the target for re-localization"),
-                        env.take_snapshot(),
-                    )
-                loc = localize_precise(state, target_name)
+        retreat_reached = retreat_from_head_view(
+            env,
+            ctrl,
+            **motion_quat,
+        )
+        if not retreat_reached:
+            return (
+                _failure("could not clear the head-camera view while holding"),
+                env.take_snapshot(),
+            )
+        loc = _clear_localize(state, ctrl, target_name)
         if loc is None:
             return (
                 _failure(

@@ -213,13 +213,11 @@ def _responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def _retry(call: Callable[[], Any], attempts: int = 6) -> Any:
-    last: Exception | None = None
-    for attempt in range(attempts):
+def _retry(call: Callable[[], Any]) -> Any:
+    for attempt in range(3):
         try:
             return call()
         except Exception as exc:  # noqa: BLE001
-            last = exc
             text = f"{type(exc).__name__}: {exc}".lower()
             transient = any(
                 marker in text
@@ -235,11 +233,9 @@ def _retry(call: Callable[[], Any], attempts: int = 6) -> Any:
                     "status code: 504",
                 )
             )
-            if not transient or attempt + 1 >= attempts:
+            if not transient or attempt == 2:
                 raise
-            time.sleep(min(8.0, 0.5 * (2**attempt)))
-    assert last is not None
-    raise last
+            time.sleep(0.5 * (2**attempt))
 
 
 def _responses_client():

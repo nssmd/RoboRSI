@@ -55,7 +55,6 @@ def _runtime_env(
         {
             "ROBORSI_LIBERO_ROLES": "1",
             "ROBORSI_ATOMIC_COMPOUND": "1",
-            "ROBORSI_RELEASE_ID": release_id,
             "ROBORSI_PROPOSAL_DIR": str(campaign_root / "proposals"),
             "ROBORSI_WORKSPACE": str(workspace_root or campaign_root / "workspace"),
             "ROBORSI_DATA_ROOT": str(campaign_root / "trajectories"),
@@ -171,8 +170,7 @@ def run_assigned_tasks(
                 unmetered_vlm_calls=int(usage.get("unmetered_vlm_calls", 0) or 0),
                 detail=str(getattr(exc, "detail", "") or f"{type(exc).__name__}: {exc}"),
                 preview_path=str(getattr(exc, "preview_path", "") or "") or None,
-                model=config.provider.model,
-                code_fingerprint=f"release:{release_id}",
+                release_id=release_id,
             )
             append_record(journal, record)
             existing.append(record)
@@ -210,17 +208,11 @@ def run_assigned_tasks(
             code_backed_hit=bool(meta.get("code_backed_hit", False)),
             code_backed_call_count=int(meta.get("code_backed_call_count", 0) or 0),
             code_backed_tools=tuple(meta.get("code_backed_tools") or ()),
-            efficiency_schema=str(meta.get("efficiency_schema") or ""),
             video_path=str(meta.get("rollout_video") or meta.get("demo_video") or "") or None,
             preview_path=str(meta.get("preview_video") or "") or None,
             trajectory_path=str(meta.get("trajectory_path") or "") or None,
             detail=str(meta.get("media_error") or "") or None,
-            model=config.provider.model,
-            served_model=str(meta.get("served_model") or config.provider.model),
-            model_mapping=str(meta.get("model_mapping") or "") or None,
-            vlm_declared=bool(meta.get("vlm_declared", False)),
-            code_fingerprint=str(meta.get("code_fingerprint") or f"release:{release_id}"),
-            config_fingerprint=str(meta.get("config_fingerprint") or "") or None,
+            release_id=release_id,
         )
         append_record(journal, record)
         existing.append(record)

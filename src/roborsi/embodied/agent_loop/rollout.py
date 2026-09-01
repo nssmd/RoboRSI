@@ -244,66 +244,6 @@ def _is_action_tool(
     return tool_name in _ACTION_TOOLS or tool_name in compound_tool_names
 
 
-def _is_strong_surface_completion(
-    tool_name: str,
-    result: object,
-) -> bool:
-    if tool_name != "place_on_surface" or not isinstance(result, dict):
-        return False
-    if not all(
-        result.get(field) is True
-        for field in (
-            "ok",
-            "reached",
-            "released",
-            "gripper_opened",
-            "source_clear_verified",
-            "gripper_hold_continuity",
-        )
-    ):
-        return False
-    if result.get("object_release_verified") is False:
-        return False
-    try:
-        error = float(result.get("pre_release_error"))
-    except (TypeError, ValueError, OverflowError):
-        return False
-    return 0.0 <= error <= 0.015
-
-
-def _auto_complete_strong_place_enabled() -> bool:
-    return (
-        os.environ.get(
-            "ROBORSI_AUTO_COMPLETE_STRONG_PLACE",
-            "0",
-        )
-        == "1"
-    )
-
-
-def _task_completion_latch_enabled() -> bool:
-    """Task completion is host-adjudicated only; action evidence never latches it."""
-    return False
-
-
-def _is_code_backed_completion(tool_name: str, result: object) -> bool:
-    if tool_name != "visual_pick_place" or not isinstance(result, dict):
-        return False
-    if not all(result.get(field) is True for field in ("ok", "grasped", "placed", "released")):
-        return False
-    phases = {
-        str(row.get("phase")): row for row in result.get("trace") or () if isinstance(row, dict)
-    }
-    grasp = phases.get("grasp") or {}
-    place = phases.get("place") or {}
-    return bool(
-        grasp.get("holding") is True
-        and grasp.get("identity_verified") is True
-        and place.get("ok") is True
-        and place.get("released") is True
-    )
-
-
 def partition_same_turn_image_calls(tool_calls):
     accepted = []
     rejected = []
@@ -331,10 +271,7 @@ class RolloutResult:
 
 @dataclass
 class DispatchContext:
-    """Per-episode dispatch state. ``env`` is any backend ``Env``; the loop
-    reaches the backend only through its seam methods. The trailing fields are
-    dynamic runtime state (contamination guard, per-call timeout history,
-    memoized tool registry) — declared here so they survive as real fields."""
+    """Per-episode environment and tool-dispatch state."""
 
     env: Any
     workdir: Path
@@ -343,8 +280,6 @@ class DispatchContext:
     # Running atomic task name — scopes opt-in solidified compounds
     # (atomic/<task>/<name>/policy.py) to their own task at dispatch time.
     task: str = ""
-    _sim_contaminated: bool = False
-    _timeout_history: dict[str, int] = field(default_factory=dict)
     _tool_handlers: dict[str, Callable] | None = None
     _attached_image_path: Path | None = None
     _allowed_tools: set[str] | None = None
@@ -475,7 +410,6 @@ def run_rollout(
 
         compound_tool_names = {skill.name for skill in discover_compounds(task_name)}
     success = False
-    completion_candidate = False
     outcome = "budget_exceeded"
     reflect_every = 8  # inject reflection prompt every N steps without done
     # Compact older trace into a synthetic summary before the conversation
@@ -546,48 +480,28 @@ def run_rollout(
         )
         tool_calls = list(getattr(msg, "tool_calls", None) or [])
         if not tool_calls:
-            # VLM produced text instead of a tool call. Retry up to 2 times by
-            # nudging it to act, then give up. Without this, GPT-5.4 sometimes
-            # returns a "let me think" text and we abandon the whole atomic.
-            for retry_idx in range(2):
-                trace.append(
-                    {
-                        "step": step_idx,
-                        "tool_call": None,
-                        "raw": (getattr(msg, "content", "") or "")[:200],
-                        "no_tool_retry": retry_idx,
-                    }
-                )
-                convo.append({"role": "assistant", "content": getattr(msg, "content", "") or " "})
-                convo.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "You returned no tool_use blocks. You MUST call at least "
-                            "one tool per turn — write text-only responses are not "
-                            "valid here. Look at the latest image, decide on the next "
-                            "action, and emit at least one tool_use block now. If you "
-                            "believe the goal is met, call done(success=True). If "
-                            "stuck, call look() and reassess."
-                        ),
-                    }
-                )
-                retry_started = _t.time()
-                msg = _call_vlm_tools(model or DEFAULT_MODEL, convo, tools)
-                phase_seconds["vlm"] += _t.time() - retry_started
-                tool_calls = list(getattr(msg, "tool_calls", None) or [])
-                if tool_calls:
-                    break
+            trace.append(
+                {
+                    "step": step_idx,
+                    "tool_call": None,
+                    "raw": (getattr(msg, "content", "") or "")[:200],
+                }
+            )
+            convo.append({"role": "assistant", "content": getattr(msg, "content", "") or " "})
+            convo.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Call one registered tool now. Use done only when the "
+                        "visible task is complete."
+                    ),
+                }
+            )
+            retry_started = _t.time()
+            msg = _call_vlm_tools(model or DEFAULT_MODEL, convo, tools)
+            phase_seconds["vlm"] += _t.time() - retry_started
+            tool_calls = list(getattr(msg, "tool_calls", None) or [])
             if not tool_calls:
-                trace.append(
-                    {
-                        "step": step_idx,
-                        "tool_call": None,
-                        "raw": (getattr(msg, "content", "") or "")[:200],
-                        "no_tool_retry": "exhausted",
-                    }
-                )
-                convo.append({"role": "assistant", "content": getattr(msg, "content", "") or " "})
                 outcome = "vlm_no_tool_call"
                 break
 
@@ -644,61 +558,7 @@ def run_rollout(
                 )
                 any_done = True
                 break
-            # exec_python lets Engineer write arbitrary sim loops; without
-            # a tight cap it can bypass the tool budget. Hard-cap it so the
-            # Engineer returns to bounded atomic tools.
-            # Once exec_python (or anything) times out, the worker thread
-            # cannot be killed (Python GIL limit) — it's still holding
-            # sim. Mark the state contaminated so subsequent dispatches
-            # fail fast and Engineer surrenders the attempt; next attempt
-            # gets a clean restore_scene.
-            if state._sim_contaminated:
-                result = (
-                    {
-                        "ok": False,
-                        "success": False,
-                        "reason": (
-                            "This attempt's simulator state is "
-                            "contaminated: a prior exec_python "
-                            "/ long tool call timed out and its "
-                            "worker thread is still holding the "
-                            "sim. All subsequent tool calls in "
-                            "this attempt will return ok=False. "
-                            "Call done(success=False) now; the "
-                            "next attempt will restore a clean "
-                            "sim and you can try a different "
-                            "approach."
-                        ),
-                    },
-                    Observation(),
-                )
-                after_obs = result[1]
-                result = result[0]
-                # Synthesize an "instant dispatch" log line.
-                print(
-                    f"[zeroshot] step={step_idx} tool={name} "
-                    f"dispatched in 0.0s ok=False (contaminated)",
-                    flush=True,
-                )
-            else:
-                # Per-tool wall-time cap. SIGALRM-backed (main thread).
-                # exec_python = 60s (Engineer code, should be quick).
-                # Other cuRobo-heavy tools = 600s. Raised from 300s: under
-                # heavy GPU contention (a co-tenant training job pinning the
-                # GPU to 100%) SAPIEN physics stepping slows ~30-90x, so a
-                # single pick_actor (which internally tries 2 candidate grasps
-                # at ~90s exec each) legitimately needs 180-300s and the old
-                # 300s cap killed grasps that WOULD have completed (measured on
-                # lift_pot). 600s lets contention-slowed-but-valid plans finish;
-                # a true infinite hang still bails, just later.
-                tool_timeout = 60.0 if name == "exec_python" else 600.0
-                result, after_obs = _dispatch_with_timeout(
-                    state, {"tool": name, "args": args}, timeout_s=tool_timeout
-                )
-                # Contamination check: if this call timed out AND the
-                # reason marker mentions wall-time, mark state dirty.
-                if isinstance(result, dict) and "TIMEOUT" in str(result.get("reason", ""))[:20]:
-                    state._sim_contaminated = True
+            result, after_obs = _dispatch(state, {"tool": name, "args": args})
             dispatch_elapsed = _t.time() - _t_dispatch
             if name in _PERCEPTION_TOOLS:
                 phase_seconds["perception"] += dispatch_elapsed
@@ -736,30 +596,6 @@ def run_rollout(
                     "content": json.dumps(result, ensure_ascii=False),
                 }
             )
-            code_completion = _is_code_backed_completion(name, result)
-            surface_completion = bool(
-                _auto_complete_strong_place_enabled()
-                and _is_strong_surface_completion(name, result)
-            )
-            if (
-                _task_completion_latch_enabled()
-                and use_sim_predicate
-                and ns == "libero"
-                and (code_completion or surface_completion)
-            ):
-                completion_candidate = True
-                outcome = (
-                    "code_backed_completion_candidate"
-                    if code_completion
-                    else "tool_completion_candidate"
-                )
-                any_done = True
-                print(
-                    "[zeroshot] verified tool completion latched; "
-                    "ending tool loop for simulator adjudication",
-                    flush=True,
-                )
-                break
         if any_done:
             break
 
@@ -838,27 +674,20 @@ def run_rollout(
         (workdir / "trace_error.txt").write_text(f"{type(exc).__name__}: {exc}")
 
     vlm_declared = success
-    adjudication_claim = vlm_declared or completion_candidate
     success, outcome, real_success = adjudicate(
         env,
-        vlm_declared=adjudication_claim,
+        vlm_declared=vlm_declared,
         outcome=outcome,
         use_sim_predicate=use_sim_predicate,
     )
 
-    # NOTE: zeroshot trace persistence is now ONLY done by the LH triangle
-    # (LHExecutor) AFTER atomic_judge runs and returns success. We used to
-    # persist here on vlm_declared=True, but VLM frequently overclaims (declares
-    # done(success=true) even when the grasp missed), polluting the RAG corpus
-    # with false positives. The judge-gated persistence in LHExecutor is the
-    # source of truth.
     rollout.success = success
     rollout.outcome = outcome
     # Keep demo videos for every verdict category; retention is handled outside
     # the evaluator.
     meta = dict(episode_meta or {})
     identity = EpisodeIdentity(
-        run_id=str(meta.get("run_id") or "legacy-run"),
+        run_id=str(meta.get("run_id") or "standalone"),
         task_key=str(meta.get("task_key") or task_name),
         seed=int(meta.get("seed", seed)),
         shard=int(meta.get("shard", 0)),
@@ -903,7 +732,6 @@ def run_rollout(
         "recovery_reviewer_calls": recovery_reviewer_calls,
         "recovery_reviewer_errors": recovery_reviewer_errors,
         "vlm_declared": vlm_declared,
-        "tool_completion_candidate": completion_candidate,
         "predicate_check": real_success,
         "physics_ticks": tick_counter["n"],
         "subsample_every": subsample_every,
@@ -1071,78 +899,6 @@ def _finalize_demo_video(
 # ────────────────────────────────────────────────────────────────────────
 # Tool dispatcher
 # ────────────────────────────────────────────────────────────────────────
-
-
-def _dispatch_with_timeout(
-    state: DispatchContext, call: dict[str, Any], timeout_s: float = 300.0
-) -> tuple[dict[str, Any], Observation]:
-    """Run _dispatch with a wall-time cap via ThreadPoolExecutor.
-
-    Main thread does future.result(timeout) which is pure Python wait —
-    main always responsive regardless of worker state. Worker may leak
-    (Python can't kill threads holding GIL in C extensions) but the
-    contamination guard upstream sees the TIMEOUT marker and refuses
-    subsequent calls in this attempt, letting Engineer cleanly bail
-    to next attempt (restore_scene gives a fresh sim).
-
-    Process signals are not reliable here because a C extension may hold the
-    GIL. A worker thread keeps the main control path responsive long enough to
-    record the timeout and stop issuing commands in the contaminated attempt.
-
-    Also tracks repeated identical timeouts for an even louder warning.
-    """
-    import concurrent.futures as _cf
-    import json as _json
-
-    name = call.get("tool", "?")
-    args = call.get("args") or {}
-    key = name + "|" + _json.dumps(args, sort_keys=True, default=str)[:300]
-
-    pool = _cf.ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(_dispatch, state, call)
-    try:
-        result = future.result(timeout=timeout_s)
-        pool.shutdown(wait=False)
-        return result
-    except _cf.TimeoutError:
-        state._timeout_history[key] = state._timeout_history.get(key, 0) + 1
-        repeat = state._timeout_history[key]
-        repeat_warning = ""
-        if repeat > 1:
-            repeat_warning = (
-                f" This exact call has timed out {repeat} times. "
-                f"Stop retrying it and use a different actor, arm, or skill."
-            )
-        print(
-            f"[zeroshot] TIMEOUT after {timeout_s:.0f}s on tool={name} "
-            f"args={args} repeat={repeat}; worker thread leaked, "
-            f"contamination guard will refuse subsequent calls. "
-            f"Returning ok=False to Engineer.",
-            flush=True,
-        )
-        # CRITICAL: do NOT snapshot here. Leaked worker is still holding
-        # sim; take_snapshot would deadlock waiting for sim access.
-        # Return dummy obs; contamination guard upstream marks state
-        # dirty so subsequent calls fail fast until next attempt's
-        # restore_scene.
-        return (
-            {
-                "ok": False,
-                "success": False,
-                "reason": (
-                    f"TIMEOUT: '{name}' exceeded "
-                    f"{timeout_s:.0f}s wall-time. cuRobo IK stuck on "
-                    f"infeasible pose. Worker thread cannot be killed "
-                    f"(Python C-ext limit); sim CONTAMINATED for this "
-                    f"attempt.{repeat_warning}\n"
-                    f"Next: call done(success=False) now; "
-                    f"subsequent calls in this attempt refuse anyway. "
-                    f"Next attempt restore_scene gives clean sim. "
-                    f"Try DIFFERENT arm / skill on retry."
-                ),
-            },
-            Observation(),
-        )
 
 
 def _dispatch(

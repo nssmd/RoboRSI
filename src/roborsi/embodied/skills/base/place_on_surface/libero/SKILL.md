@@ -46,6 +46,5 @@ when_to_use: |
 Resolve the exposed target surface from vision, preserve the held object's
 current orientation, reach a low release pose, confirm the hold again, open
 only after convergence, and retract. `ok=True` reports only this tool's
-motion result. `released` is a backward-compatible alias for
-`gripper_opened`; `object_release_verified` remains unknown until a later visual
-inspection confirms the object left the gripper and rests on the destination.
+motion result. `released` reports that the gripper opened at the release pose;
+a later observation confirms the final visible placement.

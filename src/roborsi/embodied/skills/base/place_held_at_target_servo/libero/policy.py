@@ -163,21 +163,12 @@ def dispatch_runtime(state, args: dict[str, Any]):
         # over the workspace), localize the target with SAM3, and take the
         # perceived cloud centroid + surface.
         from roborsi.embodied.skills.base._lib.libero._perception import (
-            _place_fix_on,
             localize_precise,
             object_cloud,
             retreat_from_head_view,
         )
 
-        if _place_fix_on():
-            retreat_reached = retreat_from_head_view(env, ctrl)
-        else:
-            e0, _, _ = ctrl.read_pose()
-            retreat_reached, _ = ctrl.servo_to(
-                [float(e0[0]), float(e0[1]), float(e0[2]) + 0.18],
-                gripper="close",
-                max_iters=50,
-            )
+        retreat_reached = retreat_from_head_view(env, ctrl)
         if not retreat_reached:
             return (
                 _failure(

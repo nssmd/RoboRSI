@@ -1,7 +1,7 @@
 """Grounding-DINO plus SAM object grounding shared by LIBERO skills.
 
 The module lazy-loads both models and exposes deterministic image-only
-detections with a bounded per-frame cache.
+detections.
 
 Each Detection has:
   bbox:    (x0, y0, x1, y1) ints in image coords
@@ -24,28 +24,6 @@ from PIL import Image
 
 _MODELS: dict[str, Any] = {}
 _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-
-# ── per-frame detect cache ────────────────────────────────────────────
-# Multi-step executor and many composite skills call find_pixel /
-# detect_object / segment_object_pointcloud multiple times on the same
-# camera frame within one sub-step. Re-running Grounding-DINO + SAM on
-# an identical (image, query, params) tuple is wasted work. Cache here.
-_DETECT_CACHE: dict[tuple, list["Detection"]] = {}
-_DETECT_CACHE_MAX = 128
-_DETECT_CACHE_STATS = {"hits": 0, "misses": 0}
-
-
-def _image_key(image_rgb: np.ndarray) -> bytes:
-    """Fast 8-byte digest of an image. uint8 ndarrays hash via tobytes."""
-    import hashlib
-
-    arr = image_rgb
-    if arr.dtype != np.uint8:
-        arr = arr.astype(np.uint8)
-    if not arr.flags["C_CONTIGUOUS"]:
-        arr = np.ascontiguousarray(arr)
-    return hashlib.blake2b(arr.tobytes(), digest_size=8).digest()
 
 
 def _load() -> tuple[Any, Any, Any, Any]:
@@ -94,19 +72,6 @@ def detect(
             if image_rgb.max() <= 1
             else image_rgb.astype(np.uint8)
         )
-    # ── cache lookup (same frame + same query + same params) ──
-    cache_key = (
-        _image_key(image_rgb),
-        query.lower().strip(),
-        float(box_threshold),
-        float(text_threshold),
-        int(top_k),
-    )
-    cached = _DETECT_CACHE.get(cache_key)
-    if cached is not None:
-        _DETECT_CACHE_STATS["hits"] += 1
-        return cached
-    _DETECT_CACHE_STATS["misses"] += 1
     pil = Image.fromarray(image_rgb)
     gdp, gdm, sp, sm = _load()
     inp = gdp(images=pil, text=query.lower().strip() + ".", return_tensors="pt").to(_DEVICE)
@@ -150,10 +115,6 @@ def detect(
                 centroid=(cu, cv),
             )
         )
-    # ── cache store (bounded; drop oldest on overflow) ──
-    if len(_DETECT_CACHE) >= _DETECT_CACHE_MAX:
-        _DETECT_CACHE.pop(next(iter(_DETECT_CACHE)))
-    _DETECT_CACHE[cache_key] = out_dets
     return out_dets
 
 
