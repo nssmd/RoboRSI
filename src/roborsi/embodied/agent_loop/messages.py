@@ -13,7 +13,6 @@ def _initial_messages(
     expected: str,
     *,
     task_name: str = "",
-    restrict_to_names: set[str] | None = None,
     ns: str = "libero",
     include_skill_task_truth: bool = True,
 ) -> list[dict[str, Any]]:
@@ -32,16 +31,22 @@ def _initial_messages(
         stable_goal = str(prompts.get("instruction") or "").strip()
         stable_expected = str(prompts.get("expected_on_success") or "").strip()
         if stable_goal or stable_expected:
+            completion = (
+                f"\nStable visible completion condition: {stable_expected}"
+                if stable_expected
+                else ""
+            )
             task_definition = (
                 "\nStable task definition from the registered skill:\n"
                 + stable_goal
-                + (f"\nStable visible completion condition: {stable_expected}" if stable_expected else "")
-                + "\nThe runtime instruction remains authoritative when supplied by the evaluator.\n"
+                + completion
+                + "\nThe runtime instruction remains authoritative when supplied "
+                "by the evaluator.\n"
             )
     return [
         {
             "role": "system",
-            "content": _system_prompt(restrict_to_names=restrict_to_names, ns=ns),
+            "content": _system_prompt(ns=ns),
         },
         {
             "role": "user",
@@ -90,9 +95,8 @@ def _image_media_type(raw: bytes, path: Path) -> str:
 
 def _append_image(convo: list[dict[str, Any]], path: Path) -> list[dict[str, Any]]:
     raw = path.read_bytes()
-    image_url = (
-        f"data:{_image_media_type(raw, path)};base64,"
-        + base64.b64encode(raw).decode("ascii")
+    image_url = f"data:{_image_media_type(raw, path)};base64," + base64.b64encode(raw).decode(
+        "ascii"
     )
     from roborsi.embodied.agent_loop.vlm_io import _compact_responses_image_url
 

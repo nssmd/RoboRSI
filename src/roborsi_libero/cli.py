@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from roborsi_libero import __version__
+from roborsi import __version__
 from roborsi_libero.catalog import SHORT_TASK_CATALOG
 from roborsi_libero.config import (
     ReleaseConfig,
@@ -143,8 +143,7 @@ def configure(
     path = write_config(config, target)
     console.print(f"[green]Configuration written[/green] {path}")
     console.print(
-        f"Set {config.provider.api_key_env} in your environment; "
-        "no secret was written to disk."
+        f"Set {config.provider.api_key_env} in your environment; no secret was written to disk."
     )
 
 
@@ -208,7 +207,9 @@ def replay_results(
             f"{100 * float(row['rate']):.1f}%",
         )
     table.add_section()
-    table.add_row("Total", f"{result.solved_tasks}/{result.total_tasks}", f"{100*result.rate:.1f}%")
+    table.add_row(
+        "Total", f"{result.solved_tasks}/{result.total_tasks}", f"{100 * result.rate:.1f}%"
+    )
     console.print(table)
 
 
@@ -276,8 +277,7 @@ def status(
     )
     table.add_row(
         "Coverage",
-        f"{payload['solved_tasks']}/{payload['total_tasks']} "
-        f"({100 * float(payload['rate']):.1f}%)",
+        f"{payload['solved_tasks']}/{payload['total_tasks']} ({100 * float(payload['rate']):.1f}%)",
     )
     table.add_row(
         "Verdicts",
@@ -455,27 +455,6 @@ def web(
         run=run,
         result=result,
         public=public,
-        host=host,
-        port=port,
-        output=output,
-        no_browser=no_browser,
-    )
-
-
-@app.command(hidden=True)
-def dashboard(
-    result: Annotated[Path | None, typer.Option("--result")] = None,
-    host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
-    port: Annotated[int, typer.Option("--port")] = 8765,
-    output: Annotated[Path | None, typer.Option("--output", "-o")] = None,
-    no_browser: Annotated[bool, typer.Option("--no-browser")] = False,
-) -> None:
-    """Backward-compatible alias for `roborsi web --public`."""
-    _open_web(
-        config=Path("roborsi.yaml"),
-        run=None,
-        result=result,
-        public=result is None,
         host=host,
         port=port,
         output=output,

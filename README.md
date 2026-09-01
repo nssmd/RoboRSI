@@ -332,7 +332,6 @@ own non-commercial terms. Setup details are in
 src/roborsi/             robot-agent runtime and LIBERO skills
 src/roborsi_libero/      public CLI, configuration, evaluation, and evidence
 scripts/                 setup helpers, services, and release checks
-configs/                 reference configuration
 evidence/                compact replayable result bundle
 tests/                   public-contract and runtime tests
 reproduce.sh             one-command public-result replay

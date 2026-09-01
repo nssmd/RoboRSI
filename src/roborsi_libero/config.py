@@ -38,11 +38,7 @@ def detect_gpu_devices(
         )
     except (OSError, subprocess.SubprocessError):
         return []
-    return [
-        int(line.strip())
-        for line in result.stdout.splitlines()
-        if line.strip().isdigit()
-    ]
+    return [int(line.strip()) for line in result.stdout.splitlines() if line.strip().isdigit()]
 
 
 class ProviderConfig(BaseModel):
@@ -177,9 +173,7 @@ class ReleaseConfig(BaseModel):
             "MUJOCO_GL": self.simulator.mujoco_gl,
         }
         if self.runtime.gpu_devices:
-            env["ROBORSI_GPU_LIST"] = ",".join(
-                str(device) for device in self.runtime.gpu_devices
-            )
+            env["ROBORSI_GPU_LIST"] = ",".join(str(device) for device in self.runtime.gpu_devices)
         return env
 
 
@@ -212,10 +206,6 @@ def load_config(path: Path | str) -> ReleaseConfig:
             ),
         }
     )
-
-
-def write_default_config(path: Path | str, *, repo_root: Path) -> Path:
-    return write_config(ReleaseConfig.default(repo_root=repo_root), path)
 
 
 def write_config(config: ReleaseConfig, path: Path | str) -> Path:

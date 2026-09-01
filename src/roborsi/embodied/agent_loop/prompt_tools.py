@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import importlib.util
 import json
 import os
-from pathlib import Path
 import sys
-from typing import Any
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 from roborsi.embodied.agent_loop.config import _embodiment_line, _rules_for
-
 
 _PLUGIN_CACHE: dict[tuple[str, str], Any] = {}
 _COMPOUND_CACHE: dict[tuple[str, str], Any] = {}
@@ -70,7 +69,10 @@ def _try_load_compound_dispatcher(name: str, task: str):
     if key not in _COMPOUND_CACHE:
         from roborsi.embodied.skills import discover_compounds
 
-        skill = next((candidate for candidate in discover_compounds(task) if candidate.name == name), None)
+        skill = next(
+            (candidate for candidate in discover_compounds(task) if candidate.name == name),
+            None,
+        )
         _COMPOUND_CACHE[key] = (
             None
             if skill is None
@@ -246,25 +248,7 @@ def _build_tool_specs(ns: str = "libero", task: str = "") -> list[dict[str, Any]
     return specs
 
 
-def _build_tools_block(
-    restrict_to_names: set[str] | None = None,
-    ns: str = "libero",
-) -> str:
-    rows = []
-    for spec in _build_tool_specs(ns=ns):
-        function = spec["function"]
-        if function["name"] in _META or function["name"] == "done":
-            continue
-        if restrict_to_names is not None and function["name"] not in restrict_to_names:
-            continue
-        rows.append(f"{function['name']}: {function['description']}")
-    return "\n".join(rows)
-
-
-def _system_prompt(
-    restrict_to_names: set[str] | None = None,
-    ns: str = "libero",
-) -> str:
+def _system_prompt(ns: str = "libero") -> str:
     prompt = _embodiment_line(ns) + "\n\n" + _rules_for(ns)
     if os.environ.get("ROBORSI_SELFEVO_FREEZE", "0") == "0":
         prompt += (
@@ -272,24 +256,7 @@ def _system_prompt(
             "closest skill and queue a complete camera/proprioception-only proposal. "
             "A proposal cannot change the current episode and requires a later harness gate."
         )
-    if restrict_to_names:
-        prompt += "\n\nEnabled skills:\n" + _build_tools_block(restrict_to_names, ns)
     return prompt
-
-
-SYSTEM_PROMPT = _system_prompt()
-
-
-def _maybe_shortlist_skills(
-    instruction: str,
-    task_name: str,
-    seed: int,
-    ns: str = "libero",
-) -> None:
-    del instruction, task_name, seed
-    if ns != "libero":
-        raise ValueError(f"unsupported public skill namespace: {ns}")
-    return None
 
 
 def _build_status_check_prompt() -> str:
@@ -308,8 +275,7 @@ def _proposal_root() -> Path:
 
 def _queue_proposal(kind: str, payload: dict[str, Any], task: str) -> str:
     proposal_id = (
-        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        + f"-{kind}-{uuid.uuid4().hex[:8]}"
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-{kind}-{uuid.uuid4().hex[:8]}"
     )
     record = {
         "schema": "roborsi.libero_skill_proposal.v1",

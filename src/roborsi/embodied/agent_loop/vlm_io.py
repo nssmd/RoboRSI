@@ -5,13 +5,12 @@ from __future__ import annotations
 import base64
 import json
 import os
-from pathlib import Path
 import re
-from types import SimpleNamespace
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
-
 
 _USAGE_LOCK = threading.Lock()
 _USAGE_METRICS = {
@@ -68,8 +67,7 @@ def _log_tokens(response: Any) -> None:
         _USAGE_METRICS["completion_tokens"] += completion
         _USAGE_METRICS["total_tokens"] += total
     print(
-        "[tokens] "
-        + json.dumps({"prompt": prompt, "completion": completion, "total": total}),
+        "[tokens] " + json.dumps({"prompt": prompt, "completion": completion, "total": total}),
         flush=True,
     )
 
@@ -133,7 +131,9 @@ def _responses_request_parts(
                 instructions.append(content)
             continue
         if role == "tool":
-            output = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+            output = (
+                content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+            )
             items.append(
                 {
                     "type": "function_call_output",
@@ -305,10 +305,6 @@ def _call_vlm_no_tools(model: str, messages: list[dict[str, Any]]) -> str:
     return str(_call_vlm_tools(model, messages, tools=[]).content or "")
 
 
-def _call_vlm(model: str, messages: list[dict[str, Any]]) -> str:
-    return _call_vlm_no_tools(model, messages)
-
-
 def _call_vlm_image(model: str, system: str, user_text: str, image_path: Path) -> str:
     raw = Path(image_path).read_bytes()
     media = "image/png" if raw.startswith(b"\x89PNG") else "image/jpeg"
@@ -340,17 +336,3 @@ def _parse_json(text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
-
-
-def _parse_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
-    parsed = _parse_json(text)
-    name = str(parsed.get("tool") or parsed.get("name") or "")
-    args = parsed.get("args") or parsed.get("arguments") or {}
-    return (name, dict(args)) if name and isinstance(args, dict) else None
-
-
-def _image_dims(path: Path) -> tuple[int, int]:
-    from PIL import Image
-
-    with Image.open(path) as image:
-        return int(image.width), int(image.height)

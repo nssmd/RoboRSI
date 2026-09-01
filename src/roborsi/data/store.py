@@ -1,69 +1,20 @@
-"""DataStore — where collected rollouts live.
-
-Default root: ``~/.roborsi/data`` (will become ``~/.roborsi/data`` after
-the package rename sweep). Callers pass a ``skill`` label; the store issues
-a fresh ``run_id`` and writes under ``<root>/<skill>/<run_id>/``.
-
-Run-id scheme: ``YYYYMMDD-HHMMSS-<shortuuid>``. Collision-safe under
-parallel workers (different processes get different uuids).
-
-Browse:
-
-    ds = DataStore()
-    for ep in ds.list("beat_block_hammer"):
-        print(ep.run_id, ep.frames, ep.success)
-"""
+"""Append-only trajectory storage for completed RoboRSI rollouts."""
 
 from __future__ import annotations
 
-import json
-import os
 import uuid
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from roborsi.data.trajectory import WrittenEpisode, write_rollout
-from roborsi.embodied.paths import data_root
 from roborsi.embodied.agent_loop.env import Rollout
-
-
-def _default_root() -> Path:
-    return data_root()
-
-
-@dataclass
-class EpisodeSummary:
-    skill: str
-    run_id: str
-    dir: Path
-    success: bool
-    frames: int
-    task: str
-    seed: int
-    outcome: str
-
-    @classmethod
-    def from_meta(cls, skill: str, run_id: str, dir_: Path, meta: dict[str, Any]) -> "EpisodeSummary":
-        return cls(
-            skill=skill,
-            run_id=run_id,
-            dir=dir_,
-            success=bool(meta.get("success", False)),
-            frames=int(meta.get("frames_written", 0)),
-            task=str(meta.get("task", "")),
-            seed=int(meta.get("seed", -1)),
-            outcome=str(meta.get("outcome", "")),
-        )
+from roborsi.embodied.paths import data_root
 
 
 class DataStore:
     def __init__(self, root: Path | None = None) -> None:
-        self.root = (root or _default_root()).resolve()
-
-    def ensure(self) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root = (root or data_root()).resolve()
 
     @staticmethod
     def _new_run_id() -> str:
@@ -80,7 +31,7 @@ class DataStore:
         judge_scores: list[dict[str, Any]] | None = None,
         extra_meta: dict[str, Any] | None = None,
     ) -> WrittenEpisode:
-        self.ensure()
+        self.root.mkdir(parents=True, exist_ok=True)
         rid = run_id or self._new_run_id()
         return write_rollout(
             rollout,
@@ -91,18 +42,3 @@ class DataStore:
             judge_scores=judge_scores,
             extra_meta=extra_meta,
         )
-
-    def list(self, skill: str | None = None) -> Iterable[EpisodeSummary]:
-        if not self.root.exists():
-            return
-        skills = [skill] if skill else [p.name for p in self.root.iterdir() if p.is_dir()]
-        for sk in skills:
-            skill_dir = self.root / sk
-            if not skill_dir.is_dir():
-                continue
-            for run_dir in sorted(skill_dir.iterdir()):
-                meta_path = run_dir / "meta.json"
-                if not meta_path.exists():
-                    continue
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                yield EpisodeSummary.from_meta(sk, run_dir.name, run_dir, meta)

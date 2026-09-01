@@ -94,7 +94,6 @@ def collect_findings(root: Path) -> list[str]:
         "roborsi",
         "reproduce.sh",
         "scripts/check_libero_gt_leak.py",
-        "configs/default.yaml",
         "evidence/adaptive-pass10-v1/manifest.json",
         "evidence/adaptive-pass10-v1/episodes.jsonl",
         "src/roborsi/__init__.py",
@@ -127,9 +126,7 @@ def collect_findings(root: Path) -> list[str]:
                     findings.append(f"machine-specific path in {relative}")
             for pattern in LEGACY_PATTERNS:
                 if pattern.search(text):
-                    findings.append(
-                        f"legacy public terminology {pattern.pattern!r}: {relative}"
-                    )
+                    findings.append(f"legacy public terminology {pattern.pattern!r}: {relative}")
             for pattern in SECRET_PATTERNS:
                 if pattern.search(text):
                     findings.append(f"possible secret in {relative}")

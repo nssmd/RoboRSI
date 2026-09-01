@@ -13,24 +13,6 @@ def _skill_namespace(backend_name: str | None) -> str:
     return "libero"
 
 
-_SHORTLIST_ALWAYS = {
-    "look",
-    "find_pixel",
-    "find_by_pointing",
-    "unproject_pixel",
-    "get_arm_pose",
-    "is_holding",
-    "is_reachable",
-    "grasp_object",
-    "place_object_in",
-    "place_on_surface",
-    "place_beside",
-    "move_to_pose",
-    "move_ee_delta",
-    "gripper",
-}
-
-
 _RULES_LIBERO = """\
 ESSENTIAL RULES (single-arm LIBERO / Franka Panda, JOINT_POSITION):
 
@@ -66,9 +48,6 @@ DONE: call done(success=True) only after the visible instruction is satisfied.
 The host evaluates the simulator predicate after the episode. That predicate is
 not a tool and is never visible during planning or execution.
 """
-
-_RULES = _RULES_LIBERO
-SYSTEM_PROMPT_LEGACY = "Use _system_prompt() to build the live LIBERO prompt."
 
 _EMBODIMENT = (
     "You are an embodied robot agent driving a single 7-DOF Franka Panda arm "

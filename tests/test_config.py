@@ -8,14 +8,14 @@ from roborsi_libero.config import (
     ReleaseConfig,
     detect_gpu_devices,
     load_config,
-    write_default_config,
+    write_config,
 )
 
 
 def test_default_config_uses_public_gpt_responses_contract(tmp_path: Path) -> None:
     path = tmp_path / "roborsi.yaml"
 
-    write_default_config(path, repo_root=tmp_path)
+    write_config(ReleaseConfig.default(repo_root=tmp_path), path)
     config = load_config(path)
 
     assert config.provider.model == "responses/gpt-5.6-sol"

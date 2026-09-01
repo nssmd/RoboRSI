@@ -77,7 +77,6 @@ packages = ["src/roborsi_libero", "src/roborsi"]
 [tool.hatch.build.targets.sdist]
 include = [
   "/src",
-  "/configs",
   "/evidence",
   "/scripts",
   "/tests",

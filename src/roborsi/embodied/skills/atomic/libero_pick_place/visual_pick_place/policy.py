@@ -172,7 +172,3 @@ def dispatch_runtime(state: Any, args: dict[str, Any]):
         placed=True,
         released=True,
     )
-
-
-def run(env: Any, **_: Any):
-    raise RuntimeError("visual_pick_place is a compound tool for VLM dispatch")

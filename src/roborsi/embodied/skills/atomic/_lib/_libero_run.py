@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +28,6 @@ from roborsi.embodied.agent_loop.vlm_io import (
 from roborsi.embodied.sim.libero.run_records import (
     EpisodeIdentity,
     classify_infrastructure_exception,
-    episode_workdir,
 )
 from roborsi.embodied.skills import get as get_skill
 
@@ -252,70 +250,6 @@ def _review_role_episode(
         ns="libero",
         posthoc_behavior_review=False,
     )
-
-def run_libero_atomic(
-    skill: str,
-    *,
-    task: str,
-    episodes: int = 1,
-    seed_start: int = 0,
-    tool_budget: int = 30,
-    model: str | None = None,
-    workdir: str | None = None,
-    backend: str = "libero",
-) -> dict[str, Any]:
-    be = get_backend(backend)
-    ok, reason = be.available()
-    if not ok:
-        raise RuntimeError(f"{backend} unavailable: {reason}")
-    work = Path(workdir).expanduser() if workdir else Path("/tmp/roborsi")
-    safe_task = str(task).replace("/", "__")
-    run_id = (
-        f"atomic-{safe_task}-{time.time_ns()}-{uuid.uuid4().hex[:8]}"
-    )
-    shard = 0
-
-    eps_out: list[dict[str, Any]] = []
-    for i in range(episodes):
-        seed = seed_start + i
-        identity = EpisodeIdentity(
-            run_id=run_id,
-            task_key=task,
-            seed=int(seed),
-            shard=shard,
-            attempt=1,
-        )
-        seed_workdir = episode_workdir(work, identity)
-        eps_out.append(
-            run_libero_episode(
-                skill,
-                task=task,
-                seed=seed,
-                tool_budget=tool_budget,
-                model=model,
-                workdir=seed_workdir,
-                backend=backend,
-                episode_meta={
-                    "run_id": run_id,
-                    "task_key": task,
-                    "seed": int(seed),
-                    "shard": shard,
-                    "attempt": 1,
-                    "media_root": str(work / "media"),
-                },
-            ),
-        )
-    successes = sum(1 for e in eps_out if e["success"])
-    return {
-        "skill": f"atomic.{skill}.zeroshot",
-        "task": task,
-        "backend": backend,
-        "episodes": eps_out,
-        "total": len(eps_out),
-        "successes": successes,
-        "success_rate": (successes / len(eps_out)) if eps_out else 0.0,
-    }
-
 
 def run_libero_episode(
     skill: str,

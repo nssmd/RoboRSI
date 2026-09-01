@@ -4,16 +4,12 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
-from roborsi_libero.cli import app
 from roborsi_libero.dashboard import (
     load_dashboard_payload,
     render_dashboard_html,
     write_dashboard_html,
 )
-
-runner = CliRunner()
 
 
 def _payload() -> dict:
@@ -59,19 +55,6 @@ def test_write_dashboard_html_from_json(tmp_path: Path) -> None:
 
     assert destination == output.resolve()
     assert "RoboRSI Evidence Console" in output.read_text(encoding="utf-8")
-
-
-def test_dashboard_cli_writes_standalone_html(tmp_path: Path) -> None:
-    output = tmp_path / "dashboard.html"
-
-    result = runner.invoke(
-        app,
-        ["dashboard", "--output", str(output), "--no-browser"],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert output.is_file()
-    assert "95 / 120" in output.read_text(encoding="utf-8")
 
 
 def test_dashboard_loads_campaign_directory(tmp_path: Path) -> None:

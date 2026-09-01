@@ -33,7 +33,6 @@ from roborsi.embodied.agent_loop.prompt_tools import (
     _build_status_check_prompt,
     _build_tool_specs,
     _dispatch_meta_tool,
-    _maybe_shortlist_skills,
     _try_load_compound_dispatcher,
     _try_load_plugin_dispatcher,
 )
@@ -64,6 +63,7 @@ def _fmt_args(args: dict[str, Any]) -> str:
     WHAT the agent is doing each step (e.g. press_button_at_xyz(x=0.1, y=-0.05,
     z=0.29)) instead of just the arg key names. Floats round to 3 dp; long
     strings / lists are truncated."""
+
     def _v(x: Any) -> str:
         if isinstance(x, float):
             return f"{x:.3f}"
@@ -72,6 +72,7 @@ def _fmt_args(args: dict[str, Any]) -> str:
             return f"[{body}{', ...' if len(x) > 4 else ''}]"
         s = str(x)
         return s if len(s) <= 40 else s[:37] + "..."
+
     return ", ".join(f"{k}={_v(v)}" for k, v in list(args.items())[:6])
 
 
@@ -195,11 +196,7 @@ def _build_recovery_review_messages(
                 "step": event.get("step"),
                 "tool": tool,
                 "args": tool_call.get("args") or {},
-                "result": {
-                    key: result[key]
-                    for key in allowed_result_fields
-                    if key in result
-                },
+                "result": {key: result[key] for key in allowed_result_fields if key in result},
             }
         )
     return [
@@ -275,10 +272,13 @@ def _is_strong_surface_completion(
 
 
 def _auto_complete_strong_place_enabled() -> bool:
-    return os.environ.get(
-        "ROBORSI_AUTO_COMPLETE_STRONG_PLACE",
-        "0",
-    ) == "1"
+    return (
+        os.environ.get(
+            "ROBORSI_AUTO_COMPLETE_STRONG_PLACE",
+            "0",
+        )
+        == "1"
+    )
 
 
 def _task_completion_latch_enabled() -> bool:
@@ -289,15 +289,10 @@ def _task_completion_latch_enabled() -> bool:
 def _is_code_backed_completion(tool_name: str, result: object) -> bool:
     if tool_name != "visual_pick_place" or not isinstance(result, dict):
         return False
-    if not all(
-        result.get(field) is True
-        for field in ("ok", "grasped", "placed", "released")
-    ):
+    if not all(result.get(field) is True for field in ("ok", "grasped", "placed", "released")):
         return False
     phases = {
-        str(row.get("phase")): row
-        for row in result.get("trace") or ()
-        if isinstance(row, dict)
+        str(row.get("phase")): row for row in result.get("trace") or () if isinstance(row, dict)
     }
     grasp = phases.get("grasp") or {}
     place = phases.get("place") or {}
@@ -361,7 +356,7 @@ class DispatchContext:
 
 
 def run_rollout(
-    env: Any,                                           # Env with reset() already called
+    env: Any,  # Env with reset() already called
     *,
     seed: int,
     task_name: str,
@@ -371,7 +366,6 @@ def run_rollout(
     tool_budget: int = 25,
     workdir: Path | None = None,
     use_sim_predicate: bool = True,
-    restrict_to_names: set[str] | None = None,
     prior_messages: list[dict[str, Any]] | None = None,
     episode_meta: dict[str, Any] | None = None,
     include_skill_task_truth: bool = True,
@@ -382,11 +376,6 @@ def run_rollout(
     If the VLM declared done(success=True) but the sim predicate disagrees →
     vlm_overclaimed (success=False); if the predicate passes without a done →
     predicate_passed_without_done (success=True).
-
-    `restrict_to_names`: optional set of base skill names. When provided,
-    only those skills appear in the inner VLM's tool list for the entire
-    episode. Engineer (agents/engineer.py) uses this with the SkillSelector
-    top-K when total skill count exceeds SKILL_LIST_SOFT_CAP.
 
     `prior_messages` is an API guard. Public short evaluation always starts a
     fresh episode conversation and rejects carried context."""
@@ -403,8 +392,7 @@ def run_rollout(
     trace: list[dict[str, Any]] = []
     # Resolve the active backend's skill namespace once per episode.
     ns = _skill_namespace(getattr(env, "backend_name", None))
-    state = DispatchContext(env=env, workdir=workdir, last_image_path=None,
-                            ns=ns, task=task_name)
+    state = DispatchContext(env=env, workdir=workdir, last_image_path=None, ns=ns, task=task_name)
     # Memoize the backend's tool registry once per episode (was the old
     # module-global _ensure_registry cache). Env-agnostic: each backend
     # supplies its own _do_* map via tool_handlers().
@@ -443,28 +431,25 @@ def run_rollout(
             return
         tick_counter["captured"] += 1
         sim_obs = env.take_snapshot()
-        rollout.steps.append(Step(
-            obs=sim_obs,
-            action=(
-                controller_action
-                if controller_action is not None
-                else sim_obs.state
-            ),
-            info={
-                "tick": tick_counter["n"],
-                "source": "scene_step",
-                "action_type": (
-                    "controller"
-                    if controller_action is not None
-                    else "state_proxy"
-                ),
-            },
-        ))
+        rollout.steps.append(
+            Step(
+                obs=sim_obs,
+                action=(controller_action if controller_action is not None else sim_obs.state),
+                info={
+                    "tick": tick_counter["n"],
+                    "source": "scene_step",
+                    "action_type": (
+                        "controller" if controller_action is not None else "state_proxy"
+                    ),
+                },
+            )
+        )
         # Also dump a head_camera RGB frame for the demo renderer. Cheap:
         # one ~25KB jpg every 5 ticks gives us smooth-ish playback later.
         head_rgb = sim_obs.images.get("head_camera")
         if head_rgb is not None:
             import cv2 as _cv2
+
             tick_path = workdir / f"tick_{tick_counter['n']:05d}.jpg"
             _cv2.imwrite(str(tick_path), _cv2.cvtColor(head_rgb, _cv2.COLOR_RGB2BGR))
 
@@ -472,21 +457,15 @@ def run_rollout(
 
     if prior_messages is not None:
         raise ValueError("public LIBERO short episodes do not accept carried conversations")
-    if restrict_to_names is None:
-        restrict_to_names = _maybe_shortlist_skills(instruction, task_name, seed, ns=ns)
     convo = _initial_messages(
         instruction,
         expected_on_success,
         task_name=task_name,
-        restrict_to_names=restrict_to_names,
         ns=ns,
         include_skill_task_truth=include_skill_task_truth,
     )
     tools = _build_tool_specs(ns=ns, task=task_name)
-    state._allowed_tools = {
-        str(row["function"]["name"])
-        for row in tools
-    }
+    state._allowed_tools = {str(row["function"]["name"]) for row in tools}
     compound_tool_names: set[str] = set()
     if (
         os.environ.get("ROBORSI_ATOMIC_COMPOUND") == "1"
@@ -494,9 +473,7 @@ def run_rollout(
     ):
         from roborsi.embodied.skills import discover_compounds
 
-        compound_tool_names = {
-            skill.name for skill in discover_compounds(task_name)
-        }
+        compound_tool_names = {skill.name for skill in discover_compounds(task_name)}
     success = False
     completion_candidate = False
     outcome = "budget_exceeded"
@@ -505,6 +482,7 @@ def run_rollout(
     # exceeds the bounded context budget.
     summarize_at_msgs = 30
     import time as _t
+
     phase_seconds = {
         "vlm": 0.0,
         "perception": 0.0,
@@ -519,16 +497,17 @@ def run_rollout(
         # Summarize old trace if conversation got too long.
         if len(convo) > summarize_at_msgs:
             convo = _summarize_old_trace(convo, keep_recent=12)
-            print(f"[zeroshot] step={step_idx} convo summarized to "
-                   f"{len(convo)} msgs", flush=True)
+            print(f"[zeroshot] step={step_idx} convo summarized to {len(convo)} msgs", flush=True)
         print(f"[zeroshot] step={step_idx} convo_msgs={len(convo)} tools={len(tools)}", flush=True)
         # Embed the newest view into the convo ONCE, but keep last_image_path
         # pointing at it so crop tools (zoom_in, find_pixel-on-view) can still
         # read the file this turn. Nulling it here used to make zoom_in fail
         # every call ("no recent image") — the VLM sees an image it can never
         # zoom into. Re-embed guard = the path we last attached.
-        if (state.last_image_path is not None
-                and state.last_image_path != state._attached_image_path):
+        if (
+            state.last_image_path is not None
+            and state.last_image_path != state._attached_image_path
+        ):
             convo = _append_image(convo, state.last_image_path)
             state._attached_image_path = state.last_image_path
 
@@ -536,43 +515,63 @@ def run_rollout(
         # without stepping back. Zero-shot loop pattern: "describe what happened,
         # identify cause, plan next steps".
         if step_idx > 0 and step_idx % reflect_every == 0:
-            convo.append({"role": "user", "content": (
-                f"REFLECTION CHECKPOINT (step {step_idx}/{tool_budget}). Stop and analyse:\n"
-                "  1. What's the current state of the scene + arms? (look at the latest image)\n"
-                "  2. What have you tried? Which tool calls failed and why?\n"
-                "  3. What's the failure pattern? (e.g. 'fingers close above the cube' / "
-                "'gripper grabs bowl rim instead of cube')\n"
-                "  4. What's the next plan? Try a DIFFERENT strategy than what already failed.\n"
-                "  5. Issue your next tool call(s) — you may emit MULTIPLE tool_use blocks "
-                "in one assistant turn to compose a multi-step plan (e.g. unproject + "
-                "move_to_pose hover + move_to_pose descend + gripper close in one turn)."
-            )})
+            convo.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"REFLECTION CHECKPOINT (step {step_idx}/{tool_budget}). "
+                        "Stop and analyse:\n"
+                        "  1. What's the current state of the scene + arms? "
+                        "(look at the latest image)\n"
+                        "  2. What have you tried? Which tool calls failed and why?\n"
+                        "  3. What's the failure pattern? (e.g. 'fingers close above the cube' / "
+                        "'gripper grabs bowl rim instead of cube')\n"
+                        "  4. What's the next plan? Try a DIFFERENT strategy than "
+                        "what already failed.\n"
+                        "  5. Issue your next tool call(s) — you may emit MULTIPLE tool_use blocks "
+                        "in one assistant turn to compose a multi-step plan (e.g. unproject + "
+                        "move_to_pose hover + move_to_pose descend + gripper close in one turn)."
+                    ),
+                }
+            )
 
         print(f"[zeroshot] step={step_idx} calling _call_vlm_tools...", flush=True)
         msg = _call_vlm_tools(model or DEFAULT_MODEL, convo, tools)
         vlm_elapsed = _t.time() - _t0
         phase_seconds["vlm"] += vlm_elapsed
-        print(f"[zeroshot] step={step_idx} got response in {vlm_elapsed:.1f}s "
-              f"tool_calls={len(getattr(msg,'tool_calls',None) or [])}", flush=True)
+        print(
+            f"[zeroshot] step={step_idx} got response in {vlm_elapsed:.1f}s "
+            f"tool_calls={len(getattr(msg, 'tool_calls', None) or [])}",
+            flush=True,
+        )
         tool_calls = list(getattr(msg, "tool_calls", None) or [])
         if not tool_calls:
             # VLM produced text instead of a tool call. Retry up to 2 times by
             # nudging it to act, then give up. Without this, GPT-5.4 sometimes
             # returns a "let me think" text and we abandon the whole atomic.
             for retry_idx in range(2):
-                trace.append({"step": step_idx, "tool_call": None,
-                              "raw": (getattr(msg, "content", "") or "")[:200],
-                              "no_tool_retry": retry_idx})
-                convo.append({"role": "assistant",
-                              "content": getattr(msg, "content", "") or " "})
-                convo.append({"role": "user", "content": (
-                    "You returned no tool_use blocks. You MUST call at least "
-                    "one tool per turn — write text-only responses are not "
-                    "valid here. Look at the latest image, decide on the next "
-                    "action, and emit at least one tool_use block now. If you "
-                    "believe the goal is met, call done(success=True). If "
-                    "stuck, call look() and reassess."
-                )})
+                trace.append(
+                    {
+                        "step": step_idx,
+                        "tool_call": None,
+                        "raw": (getattr(msg, "content", "") or "")[:200],
+                        "no_tool_retry": retry_idx,
+                    }
+                )
+                convo.append({"role": "assistant", "content": getattr(msg, "content", "") or " "})
+                convo.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "You returned no tool_use blocks. You MUST call at least "
+                            "one tool per turn — write text-only responses are not "
+                            "valid here. Look at the latest image, decide on the next "
+                            "action, and emit at least one tool_use block now. If you "
+                            "believe the goal is met, call done(success=True). If "
+                            "stuck, call look() and reassess."
+                        ),
+                    }
+                )
                 retry_started = _t.time()
                 msg = _call_vlm_tools(model or DEFAULT_MODEL, convo, tools)
                 phase_seconds["vlm"] += _t.time() - retry_started
@@ -580,11 +579,15 @@ def run_rollout(
                 if tool_calls:
                     break
             if not tool_calls:
-                trace.append({"step": step_idx, "tool_call": None,
-                              "raw": (getattr(msg, "content", "") or "")[:200],
-                              "no_tool_retry": "exhausted"})
-                convo.append({"role": "assistant",
-                              "content": getattr(msg, "content", "") or " "})
+                trace.append(
+                    {
+                        "step": step_idx,
+                        "tool_call": None,
+                        "raw": (getattr(msg, "content", "") or "")[:200],
+                        "no_tool_retry": "exhausted",
+                    }
+                )
+                convo.append({"role": "assistant", "content": getattr(msg, "content", "") or " "})
                 outcome = "vlm_no_tool_call"
                 break
 
@@ -623,16 +626,22 @@ def run_rollout(
                 args = json.loads(tc.function.arguments or "{}")
             except (json.JSONDecodeError, TypeError):
                 args = {}
-            print(f"[zeroshot] step={step_idx} -> {name}({_fmt_args(args)})",
-                  flush=True)
+            print(f"[zeroshot] step={step_idx} -> {name}({_fmt_args(args)})", flush=True)
             _t_dispatch = _t.time()
-            trace.append({"step": step_idx, "tool_call": {"tool": name, "args": args},
-                          "tool_call_id": tc.id})
+            trace.append(
+                {"step": step_idx, "tool_call": {"tool": name, "args": args}, "tool_call_id": tc.id}
+            )
             if name == "done":
                 success = bool(args.get("success", False))
                 outcome = "vlm_declared_done"
-                convo.append({"role": "tool", "tool_call_id": tc.id, "name": name,
-                              "content": json.dumps({"acknowledged": True}, ensure_ascii=False)})
+                convo.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "name": name,
+                        "content": json.dumps({"acknowledged": True}, ensure_ascii=False),
+                    }
+                )
                 any_done = True
                 break
             # exec_python lets Engineer write arbitrary sim loops; without
@@ -644,24 +653,33 @@ def run_rollout(
             # fail fast and Engineer surrenders the attempt; next attempt
             # gets a clean restore_scene.
             if state._sim_contaminated:
-                result = ({"ok": False, "success": False,
-                            "reason": ("This attempt's simulator state is "
-                                          "contaminated: a prior exec_python "
-                                          "/ long tool call timed out and its "
-                                          "worker thread is still holding the "
-                                          "sim. All subsequent tool calls in "
-                                          "this attempt will return ok=False. "
-                                          "Call done(success=False) now; the "
-                                          "next attempt will restore a clean "
-                                          "sim and you can try a different "
-                                          "approach.")},
-                           Observation())
+                result = (
+                    {
+                        "ok": False,
+                        "success": False,
+                        "reason": (
+                            "This attempt's simulator state is "
+                            "contaminated: a prior exec_python "
+                            "/ long tool call timed out and its "
+                            "worker thread is still holding the "
+                            "sim. All subsequent tool calls in "
+                            "this attempt will return ok=False. "
+                            "Call done(success=False) now; the "
+                            "next attempt will restore a clean "
+                            "sim and you can try a different "
+                            "approach."
+                        ),
+                    },
+                    Observation(),
+                )
                 after_obs = result[1]
                 result = result[0]
                 # Synthesize an "instant dispatch" log line.
-                print(f"[zeroshot] step={step_idx} tool={name} "
-                       f"dispatched in 0.0s ok=False (contaminated)",
-                       flush=True)
+                print(
+                    f"[zeroshot] step={step_idx} tool={name} "
+                    f"dispatched in 0.0s ok=False (contaminated)",
+                    flush=True,
+                )
             else:
                 # Per-tool wall-time cap. SIGALRM-backed (main thread).
                 # exec_python = 60s (Engineer code, should be quick).
@@ -675,11 +693,11 @@ def run_rollout(
                 # a true infinite hang still bails, just later.
                 tool_timeout = 60.0 if name == "exec_python" else 600.0
                 result, after_obs = _dispatch_with_timeout(
-                    state, {"tool": name, "args": args}, timeout_s=tool_timeout)
+                    state, {"tool": name, "args": args}, timeout_s=tool_timeout
+                )
                 # Contamination check: if this call timed out AND the
                 # reason marker mentions wall-time, mark state dirty.
-                if (isinstance(result, dict)
-                        and "TIMEOUT" in str(result.get("reason", ""))[:20]):
+                if isinstance(result, dict) and "TIMEOUT" in str(result.get("reason", ""))[:20]:
                     state._sim_contaminated = True
             dispatch_elapsed = _t.time() - _t_dispatch
             if name in _PERCEPTION_TOOLS:
@@ -688,25 +706,36 @@ def run_rollout(
                 phase_seconds["action"] += dispatch_elapsed
             else:
                 phase_seconds["recovery"] += dispatch_elapsed
-            print(f"[zeroshot] step={step_idx} tool={name} "
-                  f"dispatched in {dispatch_elapsed:.1f}s ok={result.get('ok')}", flush=True)
+            print(
+                f"[zeroshot] step={step_idx} tool={name} "
+                f"dispatched in {dispatch_elapsed:.1f}s ok={result.get('ok')}",
+                flush=True,
+            )
             if _is_action_tool(name, compound_tool_names):
                 if _action_result_is_failure(name, result):
                     turn_action_failures += 1
             trace[-1]["result"] = result
             trace[-1]["tick_end"] = tick_counter["n"]
-            rollout.steps.append(Step(
-                obs=after_obs,
-                action=after_obs.state,
-                info={
-                    "step": step_idx,
-                    "tool": name,
-                    "source": "tool_boundary",
-                    "action_type": "state_proxy",
-                },
-            ))
-            convo.append({"role": "tool", "tool_call_id": tc.id, "name": name,
-                          "content": json.dumps(result, ensure_ascii=False)})
+            rollout.steps.append(
+                Step(
+                    obs=after_obs,
+                    action=after_obs.state,
+                    info={
+                        "step": step_idx,
+                        "tool": name,
+                        "source": "tool_boundary",
+                        "action_type": "state_proxy",
+                    },
+                )
+            )
+            convo.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "name": name,
+                    "content": json.dumps(result, ensure_ascii=False),
+                }
+            )
             code_completion = _is_code_backed_completion(name, result)
             surface_completion = bool(
                 _auto_complete_strong_place_enabled()
@@ -767,8 +796,7 @@ def run_rollout(
                         }
                     )
                     print(
-                        f"[reviewer-recovery] step={step_idx} "
-                        f"{advice[:600]}",
+                        f"[reviewer-recovery] step={step_idx} {advice[:600]}",
                         flush=True,
                     )
             except Exception as exc:  # noqa: BLE001
@@ -777,14 +805,11 @@ def run_rollout(
                     {
                         "step": step_idx,
                         "event": "recovery_review_error",
-                        "result": {
-                            "error": f"{type(exc).__name__}: {exc}"[:1000]
-                        },
+                        "result": {"error": f"{type(exc).__name__}: {exc}"[:1000]},
                     }
                 )
                 print(
-                    f"[reviewer-recovery] step={step_idx} error="
-                    f"{type(exc).__name__}: {exc}",
+                    f"[reviewer-recovery] step={step_idx} error={type(exc).__name__}: {exc}",
                     flush=True,
                 )
             finally:
@@ -797,8 +822,7 @@ def run_rollout(
         # Skip when the turn was pure-observation (look/find_pixel/etc.) —
         # only inject after ACTION-class tools, where state actually changed.
         had_action = any(
-            _is_action_tool(tc.function.name, compound_tool_names)
-            for tc in accepted_calls
+            _is_action_tool(tc.function.name, compound_tool_names) for tc in accepted_calls
         )
         if had_action and step_idx < tool_budget - 1:
             convo.append({"role": "user", "content": _build_status_check_prompt()})
@@ -900,8 +924,9 @@ def run_rollout(
         episode_meta=meta,
     )
     rollout.meta["trajectory_path"] = trajectory_path
-    return RolloutResult(rollout=rollout, success=success, outcome=outcome,
-                         trace=trace, messages=convo)
+    return RolloutResult(
+        rollout=rollout, success=success, outcome=outcome, trace=trace, messages=convo
+    )
 
 
 def _persist_episode(
@@ -926,11 +951,13 @@ def _persist_episode(
     exact failure the predicate exists to catch. Set ROBORSI_COLLECT=0 to skip.
     """
     import os
+
     if os.environ.get("ROBORSI_COLLECT", "1") == "0" or not success:
         return None
     if not rollout.steps:
         return None
     from roborsi.data.store import DataStore
+
     episode_meta = dict(episode_meta or {})
     extra_meta = {
         "seed": seed,
@@ -942,11 +969,14 @@ def _persist_episode(
         "attempt": episode_meta.get("attempt"),
     }
     written = DataStore().write(
-        rollout, skill=task_name, plan_trace=trace,
+        rollout,
+        skill=task_name,
+        plan_trace=trace,
         extra_meta=extra_meta,
     )
-    print(f"[collect] {task_name} seed={seed} -> {written.dir} "
-          f"({rollout.length} steps)", flush=True)
+    print(
+        f"[collect] {task_name} seed={seed} -> {written.dir} ({rollout.length} steps)", flush=True
+    )
     if getattr(written, "parquet_path", None):
         return str(written.parquet_path)
     return str(written.dir)
@@ -1043,9 +1073,9 @@ def _finalize_demo_video(
 # ────────────────────────────────────────────────────────────────────────
 
 
-def _dispatch_with_timeout(state: DispatchContext, call: dict[str, Any],
-                            timeout_s: float = 300.0
-                            ) -> tuple[dict[str, Any], Observation]:
+def _dispatch_with_timeout(
+    state: DispatchContext, call: dict[str, Any], timeout_s: float = 300.0
+) -> tuple[dict[str, Any], Observation]:
     """Run _dispatch with a wall-time cap via ThreadPoolExecutor.
 
     Main thread does future.result(timeout) which is pure Python wait —
@@ -1081,27 +1111,38 @@ def _dispatch_with_timeout(state: DispatchContext, call: dict[str, Any],
         if repeat > 1:
             repeat_warning = (
                 f" This exact call has timed out {repeat} times. "
-                f"Stop retrying it and use a different actor, arm, or skill.")
-        print(f"[zeroshot] TIMEOUT after {timeout_s:.0f}s on tool={name} "
-              f"args={args} repeat={repeat}; worker thread leaked, "
-              f"contamination guard will refuse subsequent calls. "
-              f"Returning ok=False to Engineer.", flush=True)
+                f"Stop retrying it and use a different actor, arm, or skill."
+            )
+        print(
+            f"[zeroshot] TIMEOUT after {timeout_s:.0f}s on tool={name} "
+            f"args={args} repeat={repeat}; worker thread leaked, "
+            f"contamination guard will refuse subsequent calls. "
+            f"Returning ok=False to Engineer.",
+            flush=True,
+        )
         # CRITICAL: do NOT snapshot here. Leaked worker is still holding
         # sim; take_snapshot would deadlock waiting for sim access.
         # Return dummy obs; contamination guard upstream marks state
         # dirty so subsequent calls fail fast until next attempt's
         # restore_scene.
-        return ({"ok": False, "success": False,
-                 "reason": (f"TIMEOUT: '{name}' exceeded "
-                              f"{timeout_s:.0f}s wall-time. cuRobo IK stuck on "
-                              f"infeasible pose. Worker thread cannot be killed "
-                              f"(Python C-ext limit); sim CONTAMINATED for this "
-                              f"attempt.{repeat_warning}\n"
-                              f"Next: call done(success=False) now; "
-                              f"subsequent calls in this attempt refuse anyway. "
-                              f"Next attempt restore_scene gives clean sim. "
-                              f"Try DIFFERENT arm / skill on retry.")},
-                Observation())
+        return (
+            {
+                "ok": False,
+                "success": False,
+                "reason": (
+                    f"TIMEOUT: '{name}' exceeded "
+                    f"{timeout_s:.0f}s wall-time. cuRobo IK stuck on "
+                    f"infeasible pose. Worker thread cannot be killed "
+                    f"(Python C-ext limit); sim CONTAMINATED for this "
+                    f"attempt.{repeat_warning}\n"
+                    f"Next: call done(success=False) now; "
+                    f"subsequent calls in this attempt refuse anyway. "
+                    f"Next attempt restore_scene gives clean sim. "
+                    f"Try DIFFERENT arm / skill on retry."
+                ),
+            },
+            Observation(),
+        )
 
 
 def _dispatch(
@@ -1150,18 +1191,21 @@ def _dispatch(
         handler = _try_load_plugin_dispatcher(name, state.ns)
     # Opt-in atomic-scoped compound (atomic/<task>/<name>/policy.py), resolved
     # only after base tools miss and only for the running task.
-    if handler is None and state.task and \
-            os.environ.get("ROBORSI_ATOMIC_COMPOUND") == "1" and \
-            os.environ.get("ROBORSI_SELFEVO_FREEZE", "0") == "0":
+    if (
+        handler is None
+        and state.task
+        and os.environ.get("ROBORSI_ATOMIC_COMPOUND") == "1"
+        and os.environ.get("ROBORSI_SELFEVO_FREEZE", "0") == "0"
+    ):
         handler = _try_load_compound_dispatcher(name, state.task)
     if handler is None:
         return ({"ok": False, "reason": f"unknown tool '{name}'"}, state.env.take_snapshot())
     return handler(state, args)
 
 
-def _dispatch_tool(state: "DispatchContext", tool_name: str,
-                    args: dict[str, Any] | None = None
-                    ) -> tuple[dict[str, Any], Observation]:
+def _dispatch_tool(
+    state: "DispatchContext", tool_name: str, args: dict[str, Any] | None = None
+) -> tuple[dict[str, Any], Observation]:
     """Thin wrapper: call another base tool by name from inside a
     dispatch_runtime. Useful for composing base skills (e.g.
     `press_button_at_xyz` composes `move_fingertip_to`, `gripper`,
@@ -1171,20 +1215,3 @@ def _dispatch_tool(state: "DispatchContext", tool_name: str,
         {"tool": tool_name, "args": args or {}},
         internal=True,
     )
-
-
-# ────────────────────────────────────────────────────────────────────────
-# Backend-agnostic snapshot / success helpers (thin wrappers over the Env
-# seam, kept as module functions for the many `_do_*` handlers that call
-# `_snapshot(state.env)` directly).
-# ────────────────────────────────────────────────────────────────────────
-
-
-def _snapshot(env: Any) -> Observation:
-    """Fresh observation via the backend's seam method."""
-    return env.take_snapshot()
-
-
-def _check_success(env: Any) -> bool | None:
-    """Ground-truth task predicate via the backend's seam method."""
-    return env.check_success()

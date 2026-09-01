@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 
-class BackendUnavailable(RuntimeError):
+class BackendUnavailable(RuntimeError):  # noqa: N818
     """Raised when a backend is requested but its deps are missing."""
 
 
@@ -59,7 +59,7 @@ class Rollout:
     seed: int
     steps: list[Step] = field(default_factory=list)
     success: bool = False
-    outcome: str = ""                # "success" | "failure" | "aborted"
+    outcome: str = ""  # "success" | "failure" | "aborted"
     meta: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -109,9 +109,7 @@ class Env(ABC):
     # the loop locally stay instantiable.
 
     def take_snapshot(self) -> Observation:
-        """Fresh observation, valid pre/post step. Replaces the old
-        module-level ``_snapshot(env)``. Backends that drive the local
-        rollout loop MUST override this."""
+        """Return a fresh observation before or after a tool step."""
         raise NotImplementedError(
             f"{type(self).__name__}.take_snapshot() not implemented — "
             "required to drive the universal rollout loop locally."
@@ -122,9 +120,7 @@ class Env(ABC):
         none (e.g. real robot / open-ended task). Default: None."""
         return None
 
-    def hook_physics_step(
-        self, on_tick: Callable[..., None]
-    ) -> Callable[[], None]:
+    def hook_physics_step(self, on_tick: Callable[..., None]) -> Callable[[], None]:
         """Register a callback for each simulated physics tick.
 
         Backends may pass the exact low-level controller action as the first
