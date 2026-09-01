@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from roborsi_libero.config import (
+from roborsi.libero.config import (
     ReleaseConfig,
     detect_gpu_devices,
     load_config,

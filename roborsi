@@ -13,4 +13,4 @@ else
   PYTHON_BIN="python3"
 fi
 
-exec "${PYTHON_BIN}" -m roborsi_libero.cli "$@"
+exec "${PYTHON_BIN}" -m roborsi.libero.cli "$@"

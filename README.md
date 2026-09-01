@@ -329,8 +329,7 @@ own non-commercial terms. Setup details are in
 ## Repository Layout
 
 ```text
-src/roborsi/             robot-agent runtime and LIBERO skills
-src/roborsi_libero/      public CLI, configuration, evaluation, and evidence
+src/roborsi/             runtime, skills, CLI, evaluation, and evidence tooling
 scripts/                 setup helpers, services, and release checks
 evidence/                compact replayable result bundle
 tests/                   public-contract and runtime tests
@@ -348,7 +347,7 @@ Core-only checks:
 source .venv/bin/activate
 
 pytest -q -m "not runtime"
-ruff check src/roborsi_libero tests scripts
+ruff check src/roborsi/libero tests scripts
 python scripts/release_check.py
 roborsi results replay --json /tmp/roborsi-replay.json
 roborsi web \

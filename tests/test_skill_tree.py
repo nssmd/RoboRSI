@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from roborsi_libero.skill_tree import (
+from roborsi.libero.skill_tree import (
     SCHEMA,
     load_storyboard,
     sanitize_storyboard,

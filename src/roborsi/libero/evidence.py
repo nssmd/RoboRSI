@@ -9,7 +9,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-from roborsi_libero.catalog import suite_for, validate_short_catalog
+from roborsi.libero.catalog import suite_for, validate_short_catalog
 
 TERMINAL = {"task_success", "task_failure"}
 INFRASTRUCTURE = {
@@ -28,12 +28,12 @@ class EvidenceConflict(ValueError):  # noqa: N818 - public schema terminology
 
 def default_manifest_path() -> Path:
     source = (
-        Path(__file__).resolve().parents[2]
+        Path(__file__).resolve().parents[3]
         / "evidence/adaptive-pass10-v1/manifest.json"
     )
     if source.is_file():
         return source
-    resource = importlib.resources.files("roborsi_libero").joinpath(
+    resource = importlib.resources.files("roborsi.libero").joinpath(
         "evidence/adaptive-pass10-v1/manifest.json"
     )
     return Path(str(resource))

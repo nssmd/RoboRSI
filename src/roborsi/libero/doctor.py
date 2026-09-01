@@ -7,8 +7,8 @@ import socket
 from dataclasses import dataclass
 from pathlib import Path
 
-from roborsi_libero.catalog import SHORT_TASK_CATALOG
-from roborsi_libero.config import PUBLIC_MODEL, ReleaseConfig
+from roborsi.libero.catalog import SHORT_TASK_CATALOG
+from roborsi.libero.config import PUBLIC_MODEL, ReleaseConfig
 
 
 @dataclass(frozen=True)

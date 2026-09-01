@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from roborsi_libero.runs import (
+from roborsi.libero.runs import (
     discover_campaigns,
     load_campaign_payload,
     resolve_campaign,

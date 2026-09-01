@@ -71,7 +71,7 @@ PRIVATE_EVENT_FIELDS = {
 
 
 def default_storyboard_text() -> str:
-    resource = resources.files("roborsi_libero").joinpath("assets/skill_tree_storyboard.json")
+    resource = resources.files("roborsi.libero").joinpath("assets/skill_tree_storyboard.json")
     return resource.read_text(encoding="utf-8")
 
 

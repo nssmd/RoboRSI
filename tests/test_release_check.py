@@ -75,7 +75,7 @@ def test_checkout_cli_wrapper_prefers_local_venv(tmp_path: Path) -> None:
 
     assert completed.returncode == 0
     assert completed.stdout.strip() == (
-        "local-venv:-m roborsi_libero.cli results replay"
+        "local-venv:-m roborsi.libero.cli results replay"
     )
 
 

@@ -10,9 +10,9 @@ from roborsi.embodied.sim.libero.run_records import (
     EpisodeRecord,
     append_record,
 )
-from roborsi_libero.config import ReleaseConfig
-from roborsi_libero.launcher import create_campaign
-from roborsi_libero.supervisor import refresh_campaign_state, summarize_campaign
+from roborsi.libero.config import ReleaseConfig
+from roborsi.libero.launcher import create_campaign
+from roborsi.libero.supervisor import refresh_campaign_state, summarize_campaign
 
 pytestmark = pytest.mark.runtime
 

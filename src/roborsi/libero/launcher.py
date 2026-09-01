@@ -14,9 +14,9 @@ from typing import Literal
 
 import yaml
 
-from roborsi_libero.catalog import SHORT_TASK_CATALOG
-from roborsi_libero.config import ReleaseConfig
-from roborsi_libero.protocol import CampaignState
+from roborsi.libero.catalog import SHORT_TASK_CATALOG
+from roborsi.libero.config import ReleaseConfig
+from roborsi.libero.protocol import CampaignState
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -132,7 +132,7 @@ def build_worker_commands(
         argv = (
             python,
             "-m",
-            "roborsi_libero.worker",
+            "roborsi.libero.worker",
             "--config",
             str(campaign_root / "config.resolved.yaml"),
             "--campaign",
@@ -180,7 +180,7 @@ def launch_evaluation(
     command = [
         config.runtime.python or sys.executable,
         "-m",
-        "roborsi_libero.supervisor",
+        "roborsi.libero.supervisor",
         "--campaign",
         str(campaign),
     ]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from roborsi_libero.catalog import SHORT_TASK_CATALOG
-from roborsi_libero.protocol import CampaignState, EpisodeVerdict, schedule_round
+from roborsi.libero.catalog import SHORT_TASK_CATALOG
+from roborsi.libero.protocol import CampaignState, EpisodeVerdict, schedule_round
 
 
 def test_short_catalog_contains_exact_official_120_tasks() -> None:

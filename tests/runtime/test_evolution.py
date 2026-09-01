@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from roborsi_libero.config import ReleaseConfig
-from roborsi_libero.evolution import process_pending_proposals, validate_proposal
-from roborsi_libero.launcher import create_campaign
+from roborsi.libero.config import ReleaseConfig
+from roborsi.libero.evolution import process_pending_proposals, validate_proposal
+from roborsi.libero.launcher import create_campaign
 
 pytestmark = pytest.mark.runtime
 

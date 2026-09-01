@@ -60,7 +60,7 @@ dev = [
 ]
 
 [project.scripts]
-roborsi = "roborsi_libero.cli:app"
+roborsi = "roborsi.libero.cli:app"
 
 [project.urls]
 Homepage = "https://robo-rsi.com/"
@@ -68,11 +68,11 @@ Repository = "https://github.com/nssmd/RoboRSI"
 Issues = "https://github.com/nssmd/RoboRSI/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/roborsi_libero", "src/roborsi"]
+packages = ["src/roborsi"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"evidence/adaptive-pass10-v1" = "roborsi_libero/evidence/adaptive-pass10-v1"
-"src/roborsi_libero/assets/skill_tree_storyboard.json" = "roborsi_libero/assets/skill_tree_storyboard.json"
+"evidence/adaptive-pass10-v1" = "roborsi/libero/evidence/adaptive-pass10-v1"
+"src/roborsi/libero/assets/skill_tree_storyboard.json" = "roborsi/libero/assets/skill_tree_storyboard.json"
 
 [tool.hatch.build.targets.sdist]
 include = [

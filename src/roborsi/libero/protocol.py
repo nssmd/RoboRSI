@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Literal
 
-from roborsi_libero.catalog import SHORT_TASK_CATALOG
+from roborsi.libero.catalog import SHORT_TASK_CATALOG
 
 TaskCategory = Literal[
     "task_success",

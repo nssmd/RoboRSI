@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from roborsi_libero.evidence import EvidenceConflict, replay_bundle
+from roborsi.libero.evidence import EvidenceConflict, replay_bundle
 
 
 def _write_bundle(root: Path, records: list[dict]) -> Path:

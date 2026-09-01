@@ -11,10 +11,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from roborsi_libero.catalog import SHORT_TASK_CATALOG, suite_for
-from roborsi_libero.config import load_config
-from roborsi_libero.launcher import build_worker_commands
-from roborsi_libero.protocol import CampaignState, EpisodeVerdict, schedule_round
+from roborsi.libero.catalog import SHORT_TASK_CATALOG, suite_for
+from roborsi.libero.config import load_config
+from roborsi.libero.launcher import build_worker_commands
+from roborsi.libero.protocol import CampaignState, EpisodeVerdict, schedule_round
 
 INFRASTRUCTURE = {
     "provider_failure",
@@ -208,7 +208,7 @@ def run_supervisor(campaign_root: Path | str, *, max_stalled_retries: int = 6) -
                 return summarize_campaign(root)
         if manifest["mode"] == "adaptive":
             try:
-                from roborsi_libero.evolution import process_pending_proposals
+                from roborsi.libero.evolution import process_pending_proposals
 
                 release_id = process_pending_proposals(root, seed=seed)
                 if release_id:

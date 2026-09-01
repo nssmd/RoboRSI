@@ -12,15 +12,15 @@ from rich.panel import Panel
 from rich.table import Table
 
 from roborsi import __version__
-from roborsi_libero.catalog import SHORT_TASK_CATALOG
-from roborsi_libero.config import (
+from roborsi.libero.catalog import SHORT_TASK_CATALOG
+from roborsi.libero.config import (
     ReleaseConfig,
     detect_gpu_devices,
     load_config,
     write_config,
 )
-from roborsi_libero.evidence import default_manifest_path, replay_bundle
-from roborsi_libero.runs import (
+from roborsi.libero.evidence import default_manifest_path, replay_bundle
+from roborsi.libero.runs import (
     discover_campaigns,
     load_campaign_payload,
     resolve_campaign,
@@ -165,7 +165,7 @@ def eval_libero_short(
         )
         console.print(f"Results root: {release.runtime.results_root}")
         return
-    from roborsi_libero.launcher import launch_evaluation
+    from roborsi.libero.launcher import launch_evaluation
 
     output = launch_evaluation(release, mode=resolved_mode)
     console.print(
@@ -327,7 +327,7 @@ def visualize_skill_tree(
     """Render the interactive RoboRSI skill-evolution tree."""
     import webbrowser
 
-    from roborsi_libero.skill_tree import write_skill_tree_html
+    from roborsi.libero.skill_tree import write_skill_tree_html
 
     destination = write_skill_tree_html(output, storyboard_path=storyboard)
     console.print(f"[green]Skill tree written[/green] {destination}")
@@ -349,7 +349,7 @@ def doctor(
     ] = False,
 ) -> None:
     """Check configuration, simulator paths, services, and provider access."""
-    from roborsi_libero.doctor import run_doctor
+    from roborsi.libero.doctor import run_doctor
 
     report = run_doctor(
         _load_config_or_exit(config),
@@ -400,7 +400,7 @@ def _open_web(
 
     import webbrowser
 
-    from roborsi_libero.dashboard import serve_dashboard, write_dashboard_html
+    from roborsi.libero.dashboard import serve_dashboard, write_dashboard_html
 
     if output is not None:
         destination = write_dashboard_html(
@@ -467,7 +467,7 @@ def services_start(
     port: Annotated[int, typer.Option("--port")] = 5559,
 ) -> None:
     """Start the isolated PyRoKi solver and wait for readiness."""
-    from roborsi_libero.services import start_service
+    from roborsi.libero.services import start_service
 
     status = start_service(Path.cwd(), port=port)
     console.print(
@@ -481,7 +481,7 @@ def services_start(
 @services_app.command("status")
 def services_status() -> None:
     """Show local solver readiness."""
-    from roborsi_libero.services import service_status
+    from roborsi.libero.services import service_status
 
     status = service_status(Path.cwd())
     console.print(
@@ -495,7 +495,7 @@ def services_status() -> None:
 @services_app.command("stop")
 def services_stop() -> None:
     """Stop the managed solver while preserving its log and state record."""
-    from roborsi_libero.services import stop_service
+    from roborsi.libero.services import stop_service
 
     status = stop_service(Path.cwd())
     console.print(f"PyRoKi {status.detail}; retained .runtime service records")

@@ -253,7 +253,7 @@ Core-only verification:
 source .venv/bin/activate
 
 pytest -q -m "not runtime"
-ruff check src/roborsi_libero tests scripts
+ruff check src/roborsi/libero tests scripts
 python scripts/release_check.py
 ./reproduce.sh --skip-setup --output-dir /tmp/roborsi-reproduction
 python -m build

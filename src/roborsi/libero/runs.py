@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from roborsi_libero.catalog import SHORT_TASK_CATALOG, suite_for
+from roborsi.libero.catalog import SHORT_TASK_CATALOG, suite_for
 
 INFRASTRUCTURE = {
     "provider_failure",

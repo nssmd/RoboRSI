@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from roborsi_libero.dashboard import (
+from roborsi.libero.dashboard import (
     load_dashboard_payload,
     render_dashboard_html,
     write_dashboard_html,

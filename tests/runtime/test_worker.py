@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 
 from roborsi.embodied.sim.libero.run_records import load_records
-from roborsi_libero.config import ReleaseConfig
-from roborsi_libero.launcher import create_campaign
-from roborsi_libero.worker import run_assigned_tasks, skill_for_task
+from roborsi.libero.config import ReleaseConfig
+from roborsi.libero.launcher import create_campaign
+from roborsi.libero.worker import run_assigned_tasks, skill_for_task
 
 pytestmark = pytest.mark.runtime
 

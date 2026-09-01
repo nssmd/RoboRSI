@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from roborsi_libero.evidence import default_manifest_path, replay_bundle
-from roborsi_libero.runs import load_campaign_payload
+from roborsi.libero.evidence import default_manifest_path, replay_bundle
+from roborsi.libero.runs import load_campaign_payload
 
 REQUIRED_FIELDS = {
     "metric",

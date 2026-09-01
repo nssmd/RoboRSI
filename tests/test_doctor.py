@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from roborsi_libero.config import ReleaseConfig
-from roborsi_libero.doctor import run_doctor
+from roborsi.libero.config import ReleaseConfig
+from roborsi.libero.doctor import run_doctor
 
 
 def _fake_libero(root: Path) -> None:

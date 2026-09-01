@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from roborsi_libero.services import pyroki_command, service_status
+from roborsi.libero.services import pyroki_command, service_status
 
 
 def test_pyroki_command_uses_isolated_environment_and_configured_port(tmp_path: Path) -> None:

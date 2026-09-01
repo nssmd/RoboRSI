@@ -150,8 +150,8 @@ def _default_harness(
 ) -> dict[str, Any]:
     from roborsi.embodied.agent_loop.prompt_tools import _COMPOUND_CACHE, _PLUGIN_CACHE
     from roborsi.embodied.sim.libero.run_records import load_records
-    from roborsi_libero.config import load_config
-    from roborsi_libero.worker import run_assigned_tasks
+    from roborsi.libero.config import load_config
+    from roborsi.libero.worker import run_assigned_tasks
 
     task = str(proposal.get("benchmark_task") or "")
     if not task:

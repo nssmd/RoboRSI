@@ -97,9 +97,9 @@ def collect_findings(root: Path) -> list[str]:
         "evidence/adaptive-pass10-v1/manifest.json",
         "evidence/adaptive-pass10-v1/episodes.jsonl",
         "src/roborsi/__init__.py",
-        "src/roborsi_libero/cli.py",
-        "src/roborsi_libero/dashboard.py",
-        "src/roborsi_libero/runs.py",
+        "src/roborsi/libero/cli.py",
+        "src/roborsi/libero/dashboard.py",
+        "src/roborsi/libero/runs.py",
     )
     for relative in required:
         if not (root / relative).is_file():
@@ -147,7 +147,7 @@ def collect_findings(root: Path) -> list[str]:
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     if 'name = "roborsi"' not in pyproject:
         findings.append("project name is not roborsi")
-    if 'roborsi = "roborsi_libero.cli:app"' not in pyproject:
+    if 'roborsi = "roborsi.libero.cli:app"' not in pyproject:
         findings.append("console script is not roborsi")
     license_text = (root / "LICENSE").read_text(encoding="utf-8")
     if "Apache License" not in license_text or "Version 2.0" not in license_text:

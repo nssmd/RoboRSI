@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from roborsi_libero.catalog import SHORT_TASK_CATALOG
-from roborsi_libero.config import ReleaseConfig, load_config
+from roborsi.libero.catalog import SHORT_TASK_CATALOG
+from roborsi.libero.config import ReleaseConfig, load_config
 
 DIRECT_MANIPULATION_TASKS = frozenset(
     {

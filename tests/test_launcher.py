@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from roborsi_libero.catalog import SHORT_TASK_CATALOG
-from roborsi_libero.config import ReleaseConfig
-from roborsi_libero.launcher import build_worker_commands, create_campaign
+from roborsi.libero.catalog import SHORT_TASK_CATALOG
+from roborsi.libero.config import ReleaseConfig
+from roborsi.libero.launcher import build_worker_commands, create_campaign
 
 
 def test_campaign_manifest_is_secret_free_and_create_once(tmp_path: Path) -> None:

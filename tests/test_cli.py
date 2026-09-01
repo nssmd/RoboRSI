@@ -5,8 +5,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from roborsi_libero.cli import app
-from roborsi_libero.config import ReleaseConfig, write_config
+from roborsi.libero.cli import app
+from roborsi.libero.config import ReleaseConfig, write_config
 
 runner = CliRunner()
 

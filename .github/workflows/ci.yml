@@ -31,7 +31,7 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: pytest -q -m "not runtime"
       - if: matrix.python-version == '3.11'
-        run: ruff check src/roborsi_libero tests scripts
+        run: ruff check src/roborsi/libero tests scripts
       - if: matrix.python-version == '3.11'
         run: python scripts/release_check.py
       - if: matrix.python-version == '3.11'
