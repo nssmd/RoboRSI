@@ -63,10 +63,7 @@ class Skill:
 
 
 def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
-    """Parse YAML frontmatter. Falls back to line-by-line k:v on parse error.
-
-    Uses the same parser contract as the RoboRSI skill loader.
-    """
+    """Parse YAML frontmatter, with a line-by-line ``k:v`` fallback."""
     if not content.startswith("---"):
         return {}, content
     end = re.search(r"\n---\s*\n", content[3:])
