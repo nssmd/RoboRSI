@@ -164,3 +164,32 @@ def test_release_check_rejects_stale_tool_names(tmp_path: Path) -> None:
     findings = collect_findings(checkout)
 
     assert any("legacy public terminology" in finding for finding in findings)
+
+
+def test_release_check_rejects_broken_local_html_media(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    shutil.copytree(
+        ROOT,
+        checkout,
+        ignore=shutil.ignore_patterns(
+            ".git",
+            ".venv",
+            ".venv-pyroki",
+            ".deps",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".runtime",
+            "build",
+            "dist",
+            "runs",
+            "__pycache__",
+        ),
+    )
+    (checkout / "README.md").write_text(
+        '<img src="docs/assets/missing-banner.jpg" alt="missing">\n',
+        encoding="utf-8",
+    )
+
+    findings = collect_findings(checkout)
+
+    assert any("broken local media" in finding for finding in findings)

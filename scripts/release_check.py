@@ -80,6 +80,15 @@ def local_markdown_links(text: str) -> list[str]:
     return links
 
 
+def local_html_sources(text: str) -> list[str]:
+    sources = []
+    for target in re.findall(r"<(?:img|source)\b[^>]*\bsrc=[\"']([^\"']+)[\"']", text):
+        target = target.split("#", 1)[0].split("?", 1)[0]
+        if target and "://" not in target and not target.startswith("data:"):
+            sources.append(target)
+    return sources
+
+
 def collect_findings(root: Path) -> list[str]:
     root = Path(root).resolve()
     findings: list[str] = []
@@ -137,6 +146,9 @@ def collect_findings(root: Path) -> list[str]:
             for target in local_markdown_links(text):
                 if not (path.parent / target).resolve().exists():
                     findings.append(f"broken local link {target!r}: {relative}")
+            for target in local_html_sources(text):
+                if not (path.parent / target).resolve().exists():
+                    findings.append(f"broken local media {target!r}: {relative}")
 
     names = {
         path.name.lower()
