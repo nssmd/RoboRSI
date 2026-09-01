@@ -4,14 +4,33 @@ kind: base
 robot: libero
 category: control
 version: 0.1.0
-description: Place the held object at an exact externally-derived pose (position plus optional orientation) with a tight position tolerance. Use only when an allowed perception or planning step already supplied that exact pose. For an exposed surface without an exact pose, use place_on_surface; for a container or cavity, use place_object_in.
+description: Place the held object at an exact externally-derived pose (position plus optional orientation)
+  with a tight position tolerance. Use only when an allowed perception or planning step already supplied
+  that exact pose. For an exposed surface without an exact pose, use place_on_surface; for a container
+  or cavity, use place_object_in.
 args:
-  pos:      { type: list, description: "Target release position [x, y, z] in world meters. Provide this OR object." }
-  object:   { type: string, description: "Target object whose perceived position is the release point. Provide this OR pos." }
-  quat:     { type: list, description: "Optional target end-effector orientation [qx, qy, qz, qw]; if given, the servo aligns orientation too (needed for orientation-sensitive placement)." }
-  z_offset: { type: float, default: 0.0, description: "Release height above the resolved target (m)." }
-  hover:    { type: float, default: 0.12, description: "Approach/retract height above the target (m)." }
-  pos_tol:  { type: float, default: 0.006, description: "Position tolerance the servo must reach before releasing (m)." }
+  pos:
+    type: list
+    description: Target release position [x, y, z] in world meters. Provide this OR object.
+  object:
+    type: string
+    description: Target object whose perceived position is the release point. Provide this OR pos.
+  quat:
+    type: list
+    description: Optional target end-effector orientation [qx, qy, qz, qw]; if given, the servo aligns
+      orientation too (needed for orientation-sensitive placement).
+  z_offset:
+    type: float
+    default: 0.0
+    description: Release height above the resolved target (m).
+  hover:
+    type: float
+    default: 0.12
+    description: Approach/retract height above the target (m).
+  pos_tol:
+    type: float
+    default: 0.006
+    description: Position tolerance the servo must reach before releasing (m).
 returns:
   ok: bool
   reached: bool
@@ -24,7 +43,16 @@ when_to_use: |
   plates, stove burners, pads, stands, scales, and other exposed supports use
   place_on_surface. For a basket, bowl, drawer, or cavity use place_object_in.
 metadata:
-  tags: [single-arm, libero, placement, precision, servo]
+  tags:
+  - single-arm
+  - libero
+  - placement
+  - precision
+  - servo
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # place_held_at_target_servo · LIBERO

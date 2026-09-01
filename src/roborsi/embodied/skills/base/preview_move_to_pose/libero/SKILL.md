@@ -4,12 +4,26 @@ kind: base
 robot: libero
 category: geometry
 version: 0.1.0
-description: Plan a branch-continuous JOINT_POSITION trajectory to a world-frame Panda target and render the target in fresh orbit views without moving the robot.
+description: Plan a branch-continuous JOINT_POSITION trajectory to a world-frame Panda target and render
+  the target in fresh orbit views without moving the robot.
 args:
-  pos: { type: list, required: true, description: "Target world [x,y,z] meters." }
-  quat: { type: list, description: "Optional [x,y,z,w] orientation." }
-  gripper: { type: string, default: keep, enum: [open, close, keep] }
-  max_iters: { type: int, default: 80 }
+  pos:
+    type: list
+    required: true
+    description: Target world [x,y,z] meters.
+  quat:
+    type: list
+    description: Optional [x,y,z,w] orientation.
+  gripper:
+    type: string
+    default: keep
+    enum:
+    - open
+    - close
+    - keep
+  max_iters:
+    type: int
+    default: 80
 returns:
   ok: bool
   reachable: bool
@@ -21,11 +35,12 @@ when_NOT_to_use: |
   A preview proves a bounded planned path, not physical contact or task success.
   Any intervening observation or world action invalidates the token.
 metadata:
-  harness:
-    skip_harness: true
-    skip_reason: "requires live LIBERO IK and orbit rendering"
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # preview_move_to_pose
 
-Read-only trajectory and visual target preview. No simulator predicate is queried.
+Read-only trajectory and visual target preview.

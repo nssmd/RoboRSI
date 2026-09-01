@@ -4,9 +4,13 @@ kind: base
 robot: libero
 category: perception
 version: 0.1.0
-description: Check whether the gripper is currently holding an object using the shared LIBERO gripper classifier (`open/closed_empty/held/ambiguous`) from proprioceptive gripper joints.
+description: Check whether the gripper is currently holding an object using the shared LIBERO gripper
+  classifier (`open/closed_empty/held/ambiguous`) from proprioceptive gripper joints.
 args:
-  object: { type: string, description: "(optional) expected held object name. If omitted, reports whether ANY object is at the fingertips." }
+  object:
+    type: string
+    description: (optional) expected held object name. If omitted, reports whether ANY object is at the
+      fingertips.
 returns:
   ok: bool
   holding: bool
@@ -15,6 +19,11 @@ returns:
 when_to_use: |
   After a grasp to confirm success before transporting, or during recovery to
   decide whether to re-grasp.
+metadata:
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # is_holding

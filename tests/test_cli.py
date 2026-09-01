@@ -165,6 +165,47 @@ def test_skills_show_reports_long_horizon_task_key() -> None:
     assert "Benchmark: libero_10/0" in result.output
 
 
+def test_skills_list_filters_long_horizon_profiles() -> None:
+    result = runner.invoke(
+        app,
+        [
+            "skills",
+            "list",
+            "--category",
+            "atomic",
+            "--backend",
+            "libero",
+            "--tag",
+            "long",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "RoboRSI skills (10)" in result.output
+    assert "libero_10_00" in result.output
+    assert "libero_spatial_00" not in result.output
+
+
+def test_skills_show_uses_backend_qualified_base_reference() -> None:
+    result = runner.invoke(app, ["skills", "show", "robotwin/grasp_object"])
+
+    assert result.exit_code == 0, result.output
+    assert "Backend: robotwin" in result.output
+    assert "requires_robotwin_backend" in result.output
+
+    ambiguous = runner.invoke(app, ["skills", "show", "grasp_object"])
+    assert ambiguous.exit_code == 2
+    assert "libero/grasp_object" in ambiguous.output
+    assert "robotwin/grasp_object" in ambiguous.output
+
+
+def test_skills_validate_checks_entire_catalog() -> None:
+    result = runner.invoke(app, ["skills", "validate"])
+
+    assert result.exit_code == 0, result.output
+    assert "PASS skill catalog" in result.output
+
+
 def test_visualize_skill_tree_writes_standalone_html(tmp_path: Path) -> None:
     output = tmp_path / "skill-tree.html"
 

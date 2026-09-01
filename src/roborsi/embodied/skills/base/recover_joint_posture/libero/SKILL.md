@@ -4,9 +4,13 @@ kind: base
 robot: libero
 category: control
 version: 0.1.0
-description: Recover an empty-gripper arm from a folded or singular posture by returning toward the episode's captured initial joint state.
+description: Recover an empty-gripper arm from a folded or singular posture by returning toward the episode's
+  captured initial joint state.
 args:
-  max_iters: { type: int, default: 240, description: "Bounded JOINT_POSITION recovery steps." }
+  max_iters:
+    type: int
+    default: 240
+    description: Bounded JOINT_POSITION recovery steps.
 returns:
   ok: bool
   reached: bool
@@ -19,9 +23,10 @@ when_NOT_to_use: |
   Do not call while holding an object. Place the object safely first. Do not
   use as a normal transport primitive.
 metadata:
-  harness:
-    skip_harness: true
-    skip_reason: "requires a live LIBERO arm and episode-ready joint state"
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # recover_joint_posture

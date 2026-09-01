@@ -1,8 +1,11 @@
 ---
 name: pull_drawer
-description: Pure-vision drawer-handle pull from a head-camera pixel and local depth plane. Approaches from free space, closes on the handle, and pulls toward the robot.
-when_to_use: Use after find_by_pointing has localized the exact drawer handle requested by the task.
-when_NOT_to_use: Do not use for doors, knobs that rotate, loose objects, or a pixel that does not clearly lie on the requested handle.
+kind: base
+robot: libero
+category: control
+version: 0.1.0
+description: Pure-vision drawer-handle pull from a head-camera pixel and local depth plane. Approaches
+  from free space, closes on the handle, and pulls toward the robot.
 args:
   object:
     type: string
@@ -14,23 +17,25 @@ args:
     description: Exact head-camera handle pixel [u, v] from find_by_pointing.
   approach:
     type: float
-    default: 0.10
+    default: 0.1
     description: Free-space approach distance in meters.
   pull_distance:
     type: float
     default: 0.12
     description: Requested outward pull distance in meters.
-harness:
-  sim_task: libero_goal_swap/3
-  seeds: [10]
-  args:
-    - object: the top layer drawer handle of the cabinet
-      pixel: [72, 126]
-      approach: 0.10
-      pull_distance: 0.12
-  pass_criteria:
-    kind: ok_true
-    min_seeds_passing: 1
+returns:
+  ok: bool
+  reached: bool
+  pulled_distance: float
+  reason: string
+when_to_use: Use after find_by_pointing has localized the exact drawer handle requested by the task.
+when_NOT_to_use: Do not use for doors, knobs that rotate, loose objects, or a pixel that does not clearly
+  lie on the requested handle.
+metadata:
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # Pull Drawer

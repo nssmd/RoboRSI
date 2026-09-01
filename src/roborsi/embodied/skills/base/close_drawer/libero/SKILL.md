@@ -1,8 +1,11 @@
 ---
 name: close_drawer
-description: Pure-vision drawer close from a fresh drawer-front or handle pixel. Fits the cabinet face, approaches from free space, and pushes inward opposite the measured outward normal.
-when_to_use: Use only when the task explicitly requires closing a visible open drawer.
-when_NOT_to_use: Do not use for opening drawers, hinged doors, loose objects, or while holding an object.
+kind: base
+robot: libero
+category: control
+version: 0.1.0
+description: Pure-vision drawer close from a fresh drawer-front or handle pixel. Fits the cabinet face,
+  approaches from free space, and pushes inward opposite the measured outward normal.
 args:
   object:
     type: string
@@ -20,20 +23,21 @@ args:
     type: float
     default: 0.18
     description: Bounded inward push distance in meters.
-harness:
-  sim_task: libero_90/22
-  args:
-    - object: bottom drawer handle of the cabinet
-      pixel: [286, 325]
-      approach: 0.09
-      push_distance: 0.18
-  pass_criteria:
-    kind: ok_true
-    min_seeds_passing: 1
+returns:
+  ok: bool
+  reached: bool
+  pushed_distance: float
+  reason: string
+when_to_use: Use only when the task explicitly requires closing a visible open drawer.
+when_NOT_to_use: Do not use for opening drawers, hinged doors, loose objects, or while holding an object.
+metadata:
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # Close Drawer
 
 Use a fresh visual drawer pixel. The tool derives the cabinet face normal from
-RGB-D, pushes inward, and reports measured motion. Native task success remains
-post-hoc and is never exposed by this tool.
+RGB-D, pushes inward, and reports measured motion.

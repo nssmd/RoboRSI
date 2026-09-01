@@ -4,27 +4,55 @@ kind: base
 robot: libero
 category: manipulation
 version: 0.1.0
-description: Open a visually localized appliance or cabinet door by grasping its attached handle and following a camera-depth-derived arc around a vertical hinge. Use for doors, never drawers.
+description: Open a visually localized appliance or cabinet door by grasping its attached handle and following
+  a camera-depth-derived arc around a vertical hinge. Use for doors, never drawers.
 args:
-  object: { type: string, required: true, description: "exact visible door-handle phrase used with find_by_pointing" }
-  pixel: { type: list, required: true, description: "fresh [u,v] returned by find_by_pointing for that exact handle" }
-  hinge_side: { type: string, required: true, enum: [left, right], description: "visible side of the door carrying the vertical hinge" }
-  angle_deg: { type: float, description: "bounded requested opening angle; default 65 degrees" }
-  approach: { type: float, description: "bounded pre-contact standoff; default 0.09 m" }
+  object:
+    type: string
+    required: true
+    description: exact visible door-handle phrase used with find_by_pointing
+  pixel:
+    type: list
+    required: true
+    description: fresh [u,v] returned by find_by_pointing for that exact handle
+  hinge_side:
+    type: string
+    required: true
+    enum:
+    - left
+    - right
+    description: visible side of the door carrying the vertical hinge
+  angle_deg:
+    type: float
+    description: bounded requested opening angle; default 65 degrees
+  approach:
+    type: float
+    description: bounded pre-contact standoff; default 0.09 m
 returns:
   ok: bool
   opened: bool
-  achieved_angle_deg: number
-  hinge_radius: number
+  achieved_angle_deg: float
+  hinge_radius: float
 when_to_use: |
   After look() and find_by_pointing() identify an attached hinged-door handle.
   Inspect the image to choose hinge_side. This skill verifies that the exact
   semantic point is still current, approaches with an open gripper, closes on
   the handle, follows a bounded vertical-hinge arc, releases, and retracts.
   Verify the open cavity in a fresh image before declaring task completion.
-when_NOT_to_use: Do not use for drawers, knobs, loose objects, sliding doors, or a stale/manually guessed pixel.
+when_NOT_to_use: Do not use for drawers, knobs, loose objects, sliding doors, or a stale/manually guessed
+  pixel.
 metadata:
-  tags: [door, hinge, handle, rgbd, pure-vision, base_skill]
+  tags:
+  - door
+  - hinge
+  - handle
+  - rgbd
+  - pure-vision
+  - base_skill
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # Open Hinged Door

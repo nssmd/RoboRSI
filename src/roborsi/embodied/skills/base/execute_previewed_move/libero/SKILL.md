@@ -4,9 +4,13 @@ kind: base
 robot: libero
 category: control
 version: 0.1.0
-description: Execute exactly one previously previewed LIBERO move after checking that the observation generation and robot pose are unchanged.
+description: Execute exactly one previously previewed LIBERO move after checking that the observation
+  generation and robot pose are unchanged.
 args:
-  preview_id: { type: string, required: true, description: "One-time token from preview_move_to_pose." }
+  preview_id:
+    type: string
+    required: true
+    description: One-time token from preview_move_to_pose.
 returns:
   ok: bool
   reached: bool
@@ -19,9 +23,10 @@ when_NOT_to_use: |
   Never replay a token or use it after another observation/action. Preview
   reachability does not establish grasp, placement, or task completion.
 metadata:
-  harness:
-    skip_harness: true
-    skip_reason: "requires live LIBERO preview state"
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # execute_previewed_move

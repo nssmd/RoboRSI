@@ -243,13 +243,7 @@ def runs_list(
 
 
 def _skill_backends(skill) -> tuple[str, ...]:
-    frontmatter = skill.frontmatter or {}
-    metadata = frontmatter.get("metadata") or {}
-    values = metadata.get("backends") if isinstance(metadata, dict) else None
-    if isinstance(values, list):
-        return tuple(str(value) for value in values)
-    robot = frontmatter.get("robot")
-    return (str(robot),) if robot else ()
+    return skill.backends
 
 
 def _skill_runtime(skill) -> str:
@@ -277,8 +271,12 @@ def skills_list(
         str | None,
         typer.Option("--category", help="Filter by base or atomic."),
     ] = None,
+    tag: Annotated[
+        str | None,
+        typer.Option("--tag", help="Filter by a metadata tag, for example short or long."),
+    ] = None,
 ) -> None:
-    """List shipped base and atomic skills."""
+    """List the published layered skill catalog."""
     from roborsi.embodied.skills import discover
 
     rows = []
@@ -288,8 +286,19 @@ def skills_list(
             continue
         if category is not None and skill.category != category:
             continue
+        metadata = (skill.frontmatter or {}).get("metadata") or {}
+        tags = metadata.get("tags") if isinstance(metadata, dict) else ()
+        if tag is not None and tag not in (tags or ()):
+            continue
         kind = str((skill.frontmatter or {}).get("kind") or skill.category)
-        rows.append((skill.name, kind, ", ".join(backends) or "-", _skill_runtime(skill)))
+        rows.append(
+            (
+                skill.reference,
+                kind,
+                ", ".join(backends) or "-",
+                _skill_runtime(skill),
+            )
+        )
 
     table = Table(title=f"RoboRSI skills ({len(rows)})", header_style="bold")
     table.add_column("Name")
@@ -304,10 +313,15 @@ def skills_list(
 @skills_app.command("show")
 def skills_show(name: Annotated[str, typer.Argument(help="Published skill name.")]) -> None:
     """Show one skill's metadata and description."""
-    from roborsi.embodied.skills import get
+    from roborsi.embodied.skills import find, get
 
     skill = get(name)
     if skill is None:
+        matches = find(name)
+        if matches:
+            suggestions = ", ".join(skill.reference for skill in matches)
+            console.print(f"[red]Ambiguous skill[/red] {name}. Use one of: {suggestions}")
+            raise typer.Exit(2)
         console.print(f"[red]Unknown skill[/red] {name}")
         raise typer.Exit(2)
     frontmatter = skill.frontmatter or {}
@@ -329,6 +343,20 @@ def skills_show(name: Annotated[str, typer.Argument(help="Published skill name."
     if skill.body.strip():
         details += "\n\n" + skill.body.strip()[:1600]
     console.print(Panel(details, title=skill.name))
+
+
+@skills_app.command("validate")
+def skills_validate() -> None:
+    """Validate every shipped skill document and its Agent-visible boundary."""
+    from roborsi.embodied.skills import discover
+    from roborsi.embodied.skills.schema import validate_catalog
+
+    findings = validate_catalog(discover())
+    if findings:
+        for finding in findings:
+            console.print(f"[red]FAIL[/red] {finding}")
+        raise typer.Exit(1)
+    console.print("[green]PASS[/green] skill catalog")
 
 
 @app.command()

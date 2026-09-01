@@ -4,19 +4,36 @@ kind: base
 robot: libero
 category: control
 version: 0.1.0
-description: Gently set an object ONTO an exposed surface such as a plate, stove, pad, stand, or scale. Requires visual hold evidence from the current successful grasp_object call, preserves the grasp orientation, descends to a low release pose, and never opens unless every reach and hold gate passes. Do not use for a container, basket, bin, bowl, drawer, microwave cavity, or beside relation.
+description: Gently set an object ONTO an exposed surface such as a plate, stove, pad, stand, or scale.
+  Requires visual hold evidence from the current successful grasp_object call, preserves the grasp orientation,
+  descends to a low release pose, and never opens unless every reach and hold gate passes. Do not use
+  for a container, basket, bin, bowl, drawer, microwave cavity, or beside relation.
 args:
-  target: { type: string, description: "Named exposed surface target. Provide this or pixel." }
-  pixel: { type: list, description: "Exact target-surface pixel [u,v] from the current head view. Preferred for ambiguous or relational surfaces." }
-  release_clearance: { type: float, default: 0.025, description: "End-effector release clearance above the perceived surface in meters; clamped to 0.01-0.05." }
-  hover: { type: float, default: 0.12, description: "Approach and retract height above the release pose in meters." }
-  pos_tol: { type: float, default: 0.02, description: "Maximum pre-release position error in meters." }
+  target:
+    type: string
+    description: Named exposed surface target. Provide this or pixel.
+  pixel:
+    type: list
+    description: Exact target-surface pixel [u,v] from the current head view. Preferred for ambiguous
+      or relational surfaces.
+  release_clearance:
+    type: float
+    default: 0.025
+    description: End-effector release clearance above the perceived surface in meters; clamped to 0.01-0.05.
+  hover:
+    type: float
+    default: 0.12
+    description: Approach and retract height above the release pose in meters.
+  pos_tol:
+    type: float
+    default: 0.02
+    description: Maximum pre-release position error in meters.
 returns:
   ok: bool
   reached: bool
   released: bool
   gripper_opened: bool
-  object_release_verified: "bool | null"
+  object_release_verified: bool | null
   target_pixel: list
   target_world: list
   target_source: string
@@ -39,6 +56,11 @@ when_to_use: |
   For a basket, bin, bowl, drawer, or cavity use place_object_in. For beside
   relations use place_beside. For an exact externally-derived pose use
   place_held_at_target_servo.
+metadata:
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # place_on_surface

@@ -295,10 +295,28 @@ def render_dashboard_html(
         skill.category == "task_families" for skill in published_skills
     )
     compound_count = sum(skill.category == "compound" for skill in published_skills)
-    libero_atomic_count = sum(
+    libero_short_atomic_count = sum(
         skill.category == "atomic"
         and "libero"
         in ((skill.frontmatter.get("metadata") or {}).get("backends") or [])
+        and "short"
+        in ((skill.frontmatter.get("metadata") or {}).get("tags") or [])
+        for skill in published_skills
+    )
+    libero_long_atomic_count = sum(
+        skill.category == "atomic"
+        and "libero"
+        in ((skill.frontmatter.get("metadata") or {}).get("backends") or [])
+        and "long"
+        in ((skill.frontmatter.get("metadata") or {}).get("tags") or [])
+        for skill in published_skills
+    )
+    libero_base_count = sum(
+        skill.category == "base" and skill.namespace == "libero"
+        for skill in published_skills
+    )
+    robotwin_base_count = sum(
+        skill.category == "base" and skill.namespace == "robotwin"
         for skill in published_skills
     )
     robotwin_atomic_names = sorted(
@@ -648,7 +666,9 @@ def render_dashboard_html(
         <h2>Published skill catalog</h2>
         <p>{base_skill_count} Base Skills · {atomic_skill_count} Atomic Skills ·
           {task_family_count} Task Families · {compound_count} Compounds</p>
-        <p>{libero_atomic_count} LIBERO task profiles ·
+        <p>{libero_base_count} LIBERO · {robotwin_base_count} RoboTwin Base Skills</p>
+        <p>{libero_short_atomic_count} LIBERO short ·
+          {libero_long_atomic_count} LIBERO long ·
           {len(robotwin_atomic_names)} RoboTwin task profiles</p>
         <div class="skill-tags">{robotwin_skill_tags}</div>
       </section>

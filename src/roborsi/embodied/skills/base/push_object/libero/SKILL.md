@@ -1,8 +1,11 @@
 ---
 name: push_object
-description: Pure-vision bounded planar push from a fresh object pixel toward a fresh target pixel in the same current RGB-D frame. The gripper closes in free space and never grasps the object.
-when_to_use: Use when the task explicitly says push or slide a loose object across a support surface.
-when_NOT_to_use: Do not use for pick/place, attached fixtures, vertical motion, stale pixels, or while holding an object.
+kind: base
+robot: libero
+category: control
+version: 0.1.0
+description: Pure-vision bounded planar push from a fresh object pixel toward a fresh target pixel in
+  the same current RGB-D frame. The gripper closes in free space and never grasps the object.
 args:
   object:
     type: string
@@ -15,10 +18,11 @@ args:
   target_pixel:
     type: list
     required: true
-    description: Fresh current-frame final destination on the support surface [u, v], never a fixture body or an intermediate halfway point.
+    description: Fresh current-frame final destination on the support surface [u, v], never a fixture
+      body or an intermediate halfway point.
   max_distance:
     type: float
-    default: 0.20
+    default: 0.2
     description: Maximum bounded planar push distance in meters.
   standoff:
     type: float
@@ -32,16 +36,19 @@ args:
     type: float
     default: 0.015
     description: Grip-site height offset from the measured object surface.
-harness:
-  sim_task: libero_goal/5
-  args:
-    - object: plate
-      source_pixel: [250, 280]
-      target_pixel: [250, 220]
-      max_distance: 0.20
-  pass_criteria:
-    kind: ok_true
-    min_seeds_passing: 1
+returns:
+  ok: bool
+  reached: bool
+  pushed_distance: float
+  reason: string
+when_to_use: Use when the task explicitly says push or slide a loose object across a support surface.
+when_NOT_to_use: Do not use for pick/place, attached fixtures, vertical motion, stale pixels, or while
+  holding an object.
+metadata:
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # Push Object
@@ -49,4 +56,4 @@ harness:
 Localize both points in one current frame. Long contact travel is split into
 bounded short segments. The tool reports measured arm travel, which is stage
 evidence rather than proof that the object moved; inspect a fresh image for
-visible object displacement. The native task verdict remains post-hoc.
+visible object displacement.

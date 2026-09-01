@@ -6,15 +6,30 @@ category: geometry
 version: 0.1.0
 description: Rotate a 3D (or 2D) vector by an angle (degrees) around a named axis (x/y/z). Pure math.
 args:
-  vector:    { type: list, required: true }
-  angle_deg: { type: float, required: true }
-  axis:      { type: string, default: z, enum: [x, y, z] }
+  vector:
+    type: list
+    required: true
+  angle_deg:
+    type: float
+    required: true
+  axis:
+    type: string
+    default: z
+    enum:
+    - x
+    - y
+    - z
 returns:
   ok: bool
   rotated: list
 when_to_use: |
   To rotate an approach/offset direction in the world frame (e.g. rotate a pull
   direction by 90°).
+metadata:
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # rotate_vector

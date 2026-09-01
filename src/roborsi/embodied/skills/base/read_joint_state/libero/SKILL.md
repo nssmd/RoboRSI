@@ -13,6 +13,11 @@ returns:
 when_to_use: |
   Diagnostics — to inspect the raw joint configuration (rarely needed since
   control is end-effector servo; prefer get_arm_pose for task reasoning).
+metadata:
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # read_joint_state

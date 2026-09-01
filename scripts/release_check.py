@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 IGNORED_DIRS = {
@@ -101,6 +102,7 @@ def collect_findings(root: Path) -> list[str]:
         "src/roborsi/libero/cli.py",
         "src/roborsi/libero/dashboard.py",
         "src/roborsi/libero/runs.py",
+        "src/roborsi/embodied/skills/schema.py",
     )
     for relative in required:
         if not (root / relative).is_file():
@@ -153,6 +155,12 @@ def collect_findings(root: Path) -> list[str]:
     license_text = (root / "LICENSE").read_text(encoding="utf-8")
     if "Apache License" not in license_text or "Version 2.0" not in license_text:
         findings.append("LICENSE is not Apache-2.0")
+
+    sys.path.insert(0, str(root / "src"))
+    from roborsi.embodied.skills import discover
+    from roborsi.embodied.skills.schema import validate_catalog
+
+    findings.extend(f"skill catalog: {finding}" for finding in validate_catalog(discover()))
 
     manifest_path = root / "evidence/adaptive-pass10-v1/manifest.json"
     episodes_path = root / "evidence/adaptive-pass10-v1/episodes.jsonl"

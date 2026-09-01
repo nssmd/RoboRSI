@@ -4,7 +4,8 @@ kind: base
 robot: libero
 category: perception
 version: 0.1.0
-description: Localize one unambiguous object with an open-vocabulary OWLv2 detector refined by a SAM mask. Pure vision; returns an image pixel.
+description: Localize one unambiguous object with an open-vocabulary OWLv2 detector refined by a SAM mask.
+  Pure vision; returns an image pixel.
 args:
   object:
     type: string
@@ -19,7 +20,16 @@ when_to_use: |
   view. If several similar objects are present or the instruction relies on a
   spatial relation, use find_by_pointing instead.
 metadata:
-  tags: [perception, detector, owlv2, sam, pure-vision]
+  tags:
+  - perception
+  - detector
+  - owlv2
+  - sam
+  - pure-vision
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # find_by_detector

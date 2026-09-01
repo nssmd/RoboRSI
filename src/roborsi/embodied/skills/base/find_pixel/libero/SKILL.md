@@ -4,10 +4,16 @@ kind: base
 robot: libero
 category: perception
 version: 0.1.0
-description: Ask the shared object detector to point at the pixel of a named object in the latest camera frame. Camera-only localization; feed the returned (u,v) to unproject_pixel for world XYZ.
+description: Ask the shared object detector to point at the pixel of a named object in the latest camera
+  frame. Camera-only localization; feed the returned (u,v) to unproject_pixel for world XYZ.
 args:
-  object:   { type: string, required: true, description: "what to find (e.g. 'red mug', 'alphabet soup can')" }
-  location: { type: string, description: "which part, metadata for you (e.g. 'top center')" }
+  object:
+    type: string
+    required: true
+    description: what to find (e.g. 'red mug', 'alphabet soup can')
+  location:
+    type: string
+    description: which part, metadata for you (e.g. 'top center')
 returns:
   ok: bool
   u: int
@@ -18,7 +24,16 @@ when_to_use: |
   find_pixel(object) -> (u,v) -> unproject_pixel(u,v) -> world XYZ. Use a
   concrete noun phrase; look() again if the object moved.
 metadata:
-  tags: [perception, grounding, pixel, pure-vision, base_skill]
+  tags:
+  - perception
+  - grounding
+  - pixel
+  - pure-vision
+  - base_skill
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # find_pixel (LIBERO)

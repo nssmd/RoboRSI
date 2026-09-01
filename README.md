@@ -149,22 +149,30 @@ artifacts without sending them to an external service.
 
 ## Skill Catalog
 
-The package currently ships 35 Base Skills, 182 task-level Atomic Skills,
+The package currently ships 86 Base Skills, 182 task-level Atomic Skills,
 11 Task Families, two Executors, and two code-backed Compound Skills. The
-Atomic layer contains all 130 public LIBERO task profiles and 52 RoboTwin task
-profiles.
+Base layer contains 35 LIBERO implementations and 51 parameterized RoboTwin
+contracts. The Atomic layer contains 120 LIBERO short tasks, 10 LIBERO
+long-horizon tasks, and 52 RoboTwin task profiles. Repeated seeds and episodes
+remain evidence for one task rather than being counted as new skills.
 
 ```bash
 ./roborsi skills list
 ./roborsi skills list --category atomic --backend robotwin
 ./roborsi skills list --category atomic --backend libero
+./roborsi skills list --category atomic --backend libero --tag long
 ./roborsi skills show lift_pot
+./roborsi skills show libero/grasp_object
+./roborsi skills show robotwin/grasp_object
+./roborsi skills validate
 ```
 
 The ten `libero_10` profiles form the long-horizon task set. LIBERO Atomic
-profiles contain only official public language instructions; no simulator
-predicate or hidden scene state is stored in a Skill. RoboTwin profiles are
-labeled `requires_robotwin_backend` until that runtime is included.
+profiles contain only official public language instructions. Agent-visible
+Skill documents exclude hidden simulator state, task-checker calls, fixed
+demonstration coordinates, and task-specific test seeds. RoboTwin profiles and
+Base Skill contracts are labeled `requires_robotwin_backend` until that runtime
+is included.
 
 See [SKILLS.md](SKILLS.md) for the directory hierarchy and required frontmatter.
 
@@ -277,8 +285,9 @@ written to the YAML file.
 | `./roborsi eval libero-short --dry-run` | Validate the campaign shape without launching |
 | `./roborsi results replay` | Recompute task-level coverage from retained evidence |
 | `./roborsi runs list` | List local campaigns newest first |
-| `./roborsi skills list` | List Base and Atomic Skills by backend |
-| `./roborsi skills show NAME` | Inspect one skill profile |
+| `./roborsi skills list` | List the layered Skill catalog by backend and tag |
+| `./roborsi skills show NAME` | Inspect one Skill; qualify duplicate Base names as `backend/name` |
+| `./roborsi skills validate` | Validate the complete Skill schema and Agent-visible boundary |
 | `./roborsi status [RUN]` | Inspect the latest or selected campaign |
 | `./roborsi web` | Open the latest campaign in the local Web console |
 | `./roborsi web --public` | Open the packaged public evidence |

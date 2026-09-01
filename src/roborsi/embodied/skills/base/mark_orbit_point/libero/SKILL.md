@@ -4,13 +4,31 @@ kind: base
 robot: libero
 category: geometry
 version: 0.1.0
-description: Convert a visible pixel in a fresh observe_orbit RGB-D view into a world-frame XYZ surface point.
+description: Convert a visible pixel in a fresh observe_orbit RGB-D view into a world-frame XYZ surface
+  point.
 args:
-  view: { type: string, required: true, description: "Exact view name returned by observe_orbit." }
-  u: { type: int, required: true, description: "Pixel column in the full-size named view." }
-  v: { type: int, required: true, description: "Pixel row in the full-size named view." }
-  mode: { type: string, default: surface, enum: [surface, ray], description: "surface uses RGB-D; ray uses two distinct views for a free-space point." }
-  point_id: { type: string, description: "For ray mode, reuse the point_id from the first view click." }
+  view:
+    type: string
+    required: true
+    description: Exact view name returned by observe_orbit.
+  u:
+    type: int
+    required: true
+    description: Pixel column in the full-size named view.
+  v:
+    type: int
+    required: true
+    description: Pixel row in the full-size named view.
+  mode:
+    type: string
+    default: surface
+    enum:
+    - surface
+    - ray
+    description: surface uses RGB-D; ray uses two distinct views for a free-space point.
+  point_id:
+    type: string
+    description: For ray mode, reuse the point_id from the first view click.
 returns:
   ok: bool
   view: string
@@ -25,12 +43,12 @@ when_NOT_to_use: |
   Do not mark the contact sheet itself or reuse a point after scene motion.
   This returns first-visible-surface geometry, not an inferred object center.
 metadata:
-  harness:
-    skip_harness: true
-    skip_reason: "requires a live observe_orbit frame"
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # mark_orbit_point
 
-Depth-backed orbit pixel to world XYZ. No object identity or success state is
-read from the simulator.
+Depth-backed orbit pixel to world XYZ.

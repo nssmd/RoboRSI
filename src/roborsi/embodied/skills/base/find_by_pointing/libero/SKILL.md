@@ -4,7 +4,8 @@ kind: base
 robot: libero
 category: perception
 version: 0.1.0
-description: Localize an object with a vision-language pointing model refined by a SAM mask. Handles spatial relations and look-alikes using only camera images.
+description: Localize an object with a vision-language pointing model refined by a SAM mask. Handles spatial
+  relations and look-alikes using only camera images.
 args:
   object:
     type: string
@@ -18,7 +19,16 @@ when_to_use: |
   After look(), use this when several similar objects are visible or when the
   target is named by a relation such as "left", "between", or "nearest".
 metadata:
-  tags: [perception, pointing, vlm, sam, pure-vision]
+  tags:
+  - perception
+  - pointing
+  - vlm
+  - sam
+  - pure-vision
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # find_by_pointing

@@ -34,6 +34,28 @@ class Skill:
     body: str = ""
     is_user: bool = False  # True if from ~/.roborsi (user), False if shipped
 
+    @property
+    def backends(self) -> tuple[str, ...]:
+        metadata = self.frontmatter.get("metadata") or {}
+        values = metadata.get("backends") if isinstance(metadata, dict) else None
+        if isinstance(values, list):
+            return tuple(str(value) for value in values)
+        robot = self.frontmatter.get("robot")
+        return (str(robot),) if robot else ()
+
+    @property
+    def namespace(self) -> str:
+        robot = self.frontmatter.get("robot")
+        if robot:
+            return str(robot)
+        return self.backends[0] if self.backends else ""
+
+    @property
+    def reference(self) -> str:
+        if self.category == "base" and self.namespace:
+            return f"{self.namespace}/{self.name}"
+        return self.name
+
 
 def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     """Parse YAML frontmatter from a skill document."""
@@ -96,48 +118,77 @@ def _first_nonheader_line(body: str) -> str:
 def discover() -> list[Skill]:
     """Return the shipped skills plus an explicit campaign overlay, if set."""
     out: list[Skill] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str, str]] = set()
     for root, is_user in _roots():
         for sk in _discover_root(root, is_user):
-            if sk.name in seen:
+            identity = (sk.category, sk.namespace, sk.name)
+            if identity in seen:
                 continue
-            seen.add(sk.name)
+            seen.add(identity)
             out.append(sk)
     return out
 
 
-def get(name: str) -> Skill | None:
-    for sk in discover():
-        if sk.name == name:
-            return sk
-    return None
+def find(
+    name: str,
+    *,
+    backend: str | None = None,
+    category: str | None = None,
+) -> list[Skill]:
+    """Return every skill matching a local or ``backend/name`` reference."""
+    local_name = name
+    selected_backend = backend
+    if "/" in name:
+        prefix, candidate = name.split("/", 1)
+        if prefix and candidate:
+            selected_backend = selected_backend or prefix
+            local_name = candidate
+    elif ":" in name:
+        prefix, candidate = name.split(":", 1)
+        if prefix and candidate:
+            selected_backend = selected_backend or prefix
+            local_name = candidate
+
+    matches = []
+    for skill in discover():
+        if skill.name != local_name:
+            continue
+        if category is not None and skill.category != category:
+            continue
+        if selected_backend is not None and (
+            selected_backend != skill.namespace
+            and selected_backend not in skill.backends
+        ):
+            continue
+        matches.append(skill)
+    return matches
+
+
+def get(
+    name: str,
+    *,
+    backend: str | None = None,
+    category: str | None = None,
+) -> Skill | None:
+    """Resolve one unambiguous skill reference."""
+    matches = find(name, backend=backend, category=category)
+    return matches[0] if len(matches) == 1 else None
 
 
 def discover_ns(ns: str) -> list[Skill]:
-    """Discover the explicit public ``base/libero`` namespace."""
-    if ns != "libero":
-        return []
-    out: list[Skill] = []
-    seen: set[str] = set()
-    for root, is_user in _roots():
-        for sk in _discover_root(root, is_user):
-            parts = sk.path.parent.parts
-            if "base" not in parts or ns not in parts:
-                continue
-            if sk.name in seen:
-                continue
-            seen.add(sk.name)
-            out.append(sk)
-    return out
+    """Discover Base Skills for one explicit backend namespace."""
+    return [
+        skill
+        for skill in discover()
+        if skill.category == "base"
+        and (skill.namespace == ns or ns in skill.backends)
+    ]
 
 
 def get_ns(name: str, ns: str) -> Skill | None:
     """Resolve a base skill by (name, namespace) — the namespace-scoped
     counterpart of ``get`` used by the dispatch/prompt layer."""
-    for sk in discover_ns(ns):
-        if sk.name == name:
-            return sk
-    return None
+    return get(name, backend=ns, category="base")
 
 
 def discover_compounds(task: str) -> list[Skill]:

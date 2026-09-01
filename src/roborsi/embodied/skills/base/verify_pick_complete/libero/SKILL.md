@@ -4,26 +4,40 @@ kind: base
 robot: libero
 category: perception
 version: 0.1.0
-description: One-call gate for "did I really pick this object?" on LIBERO. Confirms grasp from the shared gripper-state classifier (`held`) and optionally requires end-effector lift height (`min_eef_z`). Deterministic proprioceptive check; no vision/VLM call.
+description: One-call gate for "did I really pick this object?" on LIBERO. Confirms grasp from the shared
+  gripper-state classifier (`held`) and optionally requires end-effector lift height (`min_eef_z`). Deterministic
+  proprioceptive check; no vision/VLM call.
 args:
-  object:    { type: string, description: "Expected held object name (for bookkeeping). If omitted, still validates grip state." }
-  min_eef_z: { type: float, description: "Optional: require end-effector z to be at least this (m) to count as lifted." }
+  object:
+    type: string
+    description: Expected held object name (for bookkeeping). If omitted, still validates grip state.
+  min_eef_z:
+    type: float
+    description: 'Optional: require end-effector z to be at least this (m) to count as lifted.'
 returns:
   ok: bool
   holding: bool
   lifted: bool
-  object: str
+  object: string
   gripper_gap: float
   gripper_state: string
   eef_z: float
-  reason: str
+  reason: string
 when_to_use: |
   Immediately before done(success=True) on a pick, or after grasp_object to
   confirm grasped=true independently. Pass min_eef_z to also require the gripper
   has been raised. ok=True is the ONLY
   precondition for declaring a pick done; on ok=False, re-grasp.
 metadata:
-  tags: [single-arm, libero, verification, proprioception]
+  tags:
+  - single-arm
+  - libero
+  - verification
+  - proprioception
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # verify_pick_complete · LIBERO

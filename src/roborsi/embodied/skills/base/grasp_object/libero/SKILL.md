@@ -4,12 +4,24 @@ kind: base
 robot: libero
 category: control
 version: 0.1.0
-description: Pick a named object by perception — open, hover, descend top-down, close, and lift. Reports grasped=true only when the shared gripper classifier confirms a held state after lift.
+description: Pick a named object by perception — open, hover, descend top-down, close, and lift. Reports
+  grasped=true only when the shared gripper classifier confirms a held state after lift.
 args:
-  object:         { type: string, required: true, description: "Object name from the task instruction or current camera view, e.g. alphabet soup can." }
-  pixel:          { type: list, description: "Exact object pixel [u,v] from the current head image. Preferred for ambiguous instances or relational descriptions." }
-  hover:          { type: float, description: "Hover / lift height above the object (m, default 0.10)." }
-  grasp_z_offset: { type: float, description: "Grip-site height above the object center at close time (m, default 0.0). Raise if the gripper pushes the object instead of straddling it." }
+  object:
+    type: string
+    required: true
+    description: Object name from the task instruction or current camera view, e.g. alphabet soup can.
+  pixel:
+    type: list
+    description: Exact object pixel [u,v] from the current head image. Preferred for ambiguous instances
+      or relational descriptions.
+  hover:
+    type: float
+    description: Hover / lift height above the object (m, default 0.10).
+  grasp_z_offset:
+    type: float
+    description: Grip-site height above the object center at close time (m, default 0.0). Raise if the
+      gripper pushes the object instead of straddling it.
 returns:
   ok: bool
   grasped: bool
@@ -32,6 +44,11 @@ when_to_use: |
   then inspect holding and do_not_regrasp. Retry with a refined pixel or
   grasp_z_offset only when holding=false. If do_not_regrasp=true, never call
   grasp_object again and never open the gripper.
+metadata:
+  backends:
+  - libero
+  - libero-pro
+  runtime_status: code-backed
 ---
 
 # grasp_object
