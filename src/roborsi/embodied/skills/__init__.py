@@ -141,22 +141,18 @@ def get_ns(name: str, ns: str) -> Skill | None:
 
 
 def discover_compounds(task: str) -> list[Skill]:
-    """Solidified compound policies scoped to ONE atomic task:
-    ``atomic/<task>/<name>/`` where ``<name> != 'zeroshot'`` and a ``policy.py``
-    sits beside SKILL.md. These are Engineer-callable macros that codify a task's
-    proven recipe in code (composing base skills); opt-in via
-    ROBORSI_ATOMIC_COMPOUND. Scoped per-task (not deduped globally) so each
-    task's Engineer only sees its own compounds."""
+    """Return code-backed compounds published for one task family."""
     out: list[Skill] = []
     seen: set[str] = set()
     for root, is_user in _roots():
         for sk in _discover_root(root, is_user):
-            d = sk.path.parent  # atomic/<task>/<name>/
-            if d.name in ("zeroshot", task) or d.parent.name != task:
+            frontmatter = sk.frontmatter or {}
+            metadata = frontmatter.get("metadata") or {}
+            if frontmatter.get("parent") != task:
                 continue
-            if d.parent.parent.name != "atomic":
+            if not isinstance(metadata, dict) or metadata.get("compound") is not True:
                 continue
-            if not (d / "policy.py").exists() or sk.name in seen:
+            if not (sk.path.parent / "policy.py").exists() or sk.name in seen:
                 continue
             seen.add(sk.name)
             out.append(sk)

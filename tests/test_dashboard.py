@@ -44,6 +44,11 @@ def test_render_dashboard_html_contains_result_and_scope() -> None:
     assert "75.0%" in text
     assert "Adaptive cross-release coverage" in text
     assert "LIBERO-90" in text
+    assert "35 Base Skills" in text
+    assert "182 Atomic Skills" in text
+    assert "130 LIBERO task profiles" in text
+    assert "52 RoboTwin task profiles" in text
+    assert "lift_pot" in text
 
 
 def test_write_dashboard_html_from_json(tmp_path: Path) -> None:

@@ -122,6 +122,49 @@ def test_results_replay_defaults_to_packaged_public_bundle() -> None:
     assert "95/120" in result.output.replace(" ", "")
 
 
+def test_skills_list_exposes_migrated_robotwin_profiles() -> None:
+    result = runner.invoke(
+        app,
+        ["skills", "list", "--category", "atomic", "--backend", "robotwin"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "RoboRSI skills (52)" in result.output
+    assert "handover_block" in result.output
+    assert "stack_blocks_two" in result.output
+    assert "requires_robotwin_backend" in result.output
+
+
+def test_skills_show_reports_runtime_status() -> None:
+    result = runner.invoke(app, ["skills", "show", "lift_pot"])
+
+    assert result.exit_code == 0, result.output
+    assert "Backend: robotwin" in result.output
+    assert "Runtime: requires_robotwin_backend" in result.output
+    assert "Parent: robotwin_bimanual" in result.output
+    assert "synchronized dual-arm lifting" in result.output
+
+
+def test_skills_list_includes_all_libero_short_and_long_tasks() -> None:
+    result = runner.invoke(
+        app,
+        ["skills", "list", "--category", "atomic", "--backend", "libero"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "RoboRSI skills (130)" in result.output
+    assert "libero_spatial_00" in result.output
+    assert "libero_10_09" in result.output
+
+
+def test_skills_show_reports_long_horizon_task_key() -> None:
+    result = runner.invoke(app, ["skills", "show", "libero_10_00"])
+
+    assert result.exit_code == 0, result.output
+    assert "Parent: libero_long" in result.output
+    assert "Benchmark: libero_10/0" in result.output
+
+
 def test_visualize_skill_tree_writes_standalone_html(tmp_path: Path) -> None:
     output = tmp_path / "skill-tree.html"
 

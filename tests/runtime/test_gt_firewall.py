@@ -10,16 +10,19 @@ pytestmark = pytest.mark.runtime
 
 def test_gt_leak_checker_discovers_packaged_helper_and_atomic_files() -> None:
     from scripts.check_libero_gt_leak import (
-        libero_atomic_skill_docs,
         libero_helper_policy_files,
+        libero_skill_docs,
     )
 
     helpers = libero_helper_policy_files()
-    atomics = libero_atomic_skill_docs()
+    skill_docs = libero_skill_docs()
 
     assert any(path.name == "_perception.py" for path in helpers)
-    assert any(path.name == "SKILL.md" for path in atomics)
-    assert all("src/roborsi/embodied/skills" in path.as_posix() for path in helpers + atomics)
+    assert any(path.name == "SKILL.md" for path in skill_docs)
+    assert all(
+        "src/roborsi/embodied/skills" in path.as_posix()
+        for path in helpers + skill_docs
+    )
 
 
 def test_visible_libero_policies_do_not_read_hidden_success_or_object_state() -> None:
@@ -27,7 +30,7 @@ def test_visible_libero_policies_do_not_read_hidden_success_or_object_state() ->
     policy_files = [
         *root.glob("base/*/libero/policy.py"),
         *root.glob("base/_lib/libero/*.py"),
-        *root.glob("atomic/libero_*/*/policy.py"),
+        *root.glob("compound/libero/*/policy.py"),
     ]
     assert policy_files
     forbidden_attrs = {"check_success", "region_box", "parsed_problem", "goal_state"}

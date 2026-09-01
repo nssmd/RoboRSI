@@ -85,6 +85,7 @@ def collect_findings(root: Path) -> list[str]:
     required = (
         "README.md",
         "REPRODUCING.md",
+        "SKILLS.md",
         "CONTRIBUTING.md",
         "SECURITY.md",
         "LICENSE",

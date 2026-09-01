@@ -209,20 +209,26 @@ def scan_libero_helper_policies() -> list[str]:
     return sorted(set(findings))
 
 
-def libero_atomic_skill_docs() -> list[Path]:
-    root = ROOT / "src/roborsi/embodied/skills/atomic"
+def libero_skill_docs() -> list[Path]:
+    skills = ROOT / "src/roborsi/embodied/skills"
+    roots = (
+        skills / "atomic/libero",
+        skills / "task_families/libero",
+        skills / "compound/libero",
+        skills / "executors/libero",
+    )
     return sorted(
         path
-        for parent in root.glob("libero*")
-        if parent.is_dir()
-        for path in parent.rglob("SKILL.md")
+        for root in roots
+        if root.is_dir()
+        for path in root.rglob("SKILL.md")
         if path.is_file()
     )
 
 
-def scan_libero_atomic_skill_docs() -> list[str]:
+def scan_libero_skill_docs() -> list[str]:
     findings: list[str] = []
-    for path in libero_atomic_skill_docs():
+    for path in libero_skill_docs():
         findings.extend(scan_skill_doc_path(path.parent.name, path))
     return sorted(set(findings))
 
@@ -558,9 +564,9 @@ def scan_visible_tool_manifest() -> list[str]:
         Path(__file__).resolve().parents[1]
         / "src/roborsi/embodied/skills/base"
     ).resolve()
-    shipped_atomic = (
+    shipped_compound = (
         Path(__file__).resolve().parents[1]
-        / "src/roborsi/embodied/skills/atomic"
+        / "src/roborsi/embodied/skills/compound"
     ).resolve()
     for row in specs:
         fn = row["function"]
@@ -575,7 +581,7 @@ def scan_visible_tool_manifest() -> list[str]:
             continue
         source = sk.path.resolve()
         shipped = False
-        for root in (shipped_base, shipped_atomic):
+        for root in (shipped_base, shipped_compound):
             try:
                 source.relative_to(root)
                 shipped = True
@@ -614,7 +620,7 @@ def collect_findings() -> list[str]:
             scan_visible_tool_manifest()
             + scan_visible_libero_policies()
             + scan_visible_libero_skill_docs()
-            + scan_libero_atomic_skill_docs()
+            + scan_libero_skill_docs()
         )
     )
 

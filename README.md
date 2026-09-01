@@ -8,12 +8,14 @@ reusable capability. It coordinates agent roles, hierarchical skills, retained
 evidence, code-backed skill evolution, trajectory capture, and
 evaluation-gated promotion.
 
-This repository is the public **LIBERO short reference runtime**. It includes:
+This repository contains the public **LIBERO short reference runtime** and a
+portable cross-backend skill catalog. It includes:
 
 - a replayable evidence bundle for the reported `95/120` adaptive coverage;
 - the fixed and adaptive 120-task evaluation protocols;
 - the Planner, Engineer, Reviewer, supervisor, and worker runtime;
 - the public LIBERO skill library and hidden-state firewall;
+- representative RoboTwin Atomic Task profiles;
 - a complete CLI for setup, execution, status, and replay;
 - a local Web console for public evidence and live campaign results.
 
@@ -27,6 +29,7 @@ Choose the path that matches what you want to verify.
 | --- | --- | --- | --- | --- |
 | Replay the reported result | No | No | No | `./reproduce.sh` |
 | Inspect public evidence in a browser | No | No | No | `./roborsi web --public` |
+| Inspect the published skill catalog | No | No | No | `./roborsi skills list` |
 | Inspect the latest local campaign | No | No | No | `./roborsi status` |
 | Validate a full configuration | Yes | Yes | Recommended | `./roborsi doctor` |
 | Run a new 120-task campaign | Yes | Yes | Recommended | `./roborsi eval libero-short` |
@@ -144,6 +147,27 @@ The Web console shows cumulative coverage, suite results, episode verdicts,
 protocol fields, resource totals, and release history. It reads local campaign
 artifacts without sending them to an external service.
 
+## Skill Catalog
+
+The package currently ships 35 Base Skills, 182 task-level Atomic Skills,
+11 Task Families, two Executors, and two code-backed Compound Skills. The
+Atomic layer contains all 130 public LIBERO task profiles and 52 RoboTwin task
+profiles.
+
+```bash
+./roborsi skills list
+./roborsi skills list --category atomic --backend robotwin
+./roborsi skills list --category atomic --backend libero
+./roborsi skills show lift_pot
+```
+
+The ten `libero_10` profiles form the long-horizon task set. LIBERO Atomic
+profiles contain only official public language instructions; no simulator
+predicate or hidden scene state is stored in a Skill. RoboTwin profiles are
+labeled `requires_robotwin_backend` until that runtime is included.
+
+See [SKILLS.md](SKILLS.md) for the directory hierarchy and required frontmatter.
+
 ## How RoboRSI Is Organized
 
 ```text
@@ -253,6 +277,8 @@ written to the YAML file.
 | `./roborsi eval libero-short --dry-run` | Validate the campaign shape without launching |
 | `./roborsi results replay` | Recompute task-level coverage from retained evidence |
 | `./roborsi runs list` | List local campaigns newest first |
+| `./roborsi skills list` | List Base and Atomic Skills by backend |
+| `./roborsi skills show NAME` | Inspect one skill profile |
 | `./roborsi status [RUN]` | Inspect the latest or selected campaign |
 | `./roborsi web` | Open the latest campaign in the local Web console |
 | `./roborsi web --public` | Open the packaged public evidence |

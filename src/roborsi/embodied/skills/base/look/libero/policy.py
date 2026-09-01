@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 import cv2
+
 from roborsi.embodied.skills.base._lib.libero._perception import write_image_atomic
 
 # head → head_camera (agentview), wrist → wrist (eye-in-hand), in Observation.images.

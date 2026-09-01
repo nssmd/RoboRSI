@@ -98,7 +98,7 @@ def run_assigned_tasks(
         _runtime_env(config, root, release_id, workspace_root=workspace_root)
     )
     if run_episode is None:
-        from roborsi.embodied.skills.atomic._lib._libero_run import run_libero_episode
+        from roborsi.embodied.skills.executors.libero.runtime import run_libero_episode
 
         run_episode = run_libero_episode
 

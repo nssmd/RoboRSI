@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "roborsi"
 version = "0.1.0"
-description = "Evidence-driven robot-agent self-evolution for LIBERO short tasks"
+description = "Robot-agent self-evolution harness with a LIBERO runtime and skill catalog"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 license = "Apache-2.0"
@@ -85,6 +85,7 @@ include = [
   "/CONTRIBUTING.md",
   "/README.md",
   "/REPRODUCING.md",
+  "/SKILLS.md",
   "/SECURITY.md",
   "/LICENSE",
   "/roborsi",

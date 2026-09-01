@@ -286,6 +286,32 @@ def render_dashboard_html(
     eyebrow = run_id.upper() if run_id else source_name.upper()
     is_campaign = source_kind == "campaign"
 
+    from roborsi.embodied.skills import discover
+
+    published_skills = discover()
+    base_skill_count = sum(skill.category == "base" for skill in published_skills)
+    atomic_skill_count = sum(skill.category == "atomic" for skill in published_skills)
+    task_family_count = sum(
+        skill.category == "task_families" for skill in published_skills
+    )
+    compound_count = sum(skill.category == "compound" for skill in published_skills)
+    libero_atomic_count = sum(
+        skill.category == "atomic"
+        and "libero"
+        in ((skill.frontmatter.get("metadata") or {}).get("backends") or [])
+        for skill in published_skills
+    )
+    robotwin_atomic_names = sorted(
+        skill.name
+        for skill in published_skills
+        if skill.category == "atomic"
+        and "robotwin"
+        in ((skill.frontmatter.get("metadata") or {}).get("backends") or [])
+    )
+    robotwin_skill_tags = "".join(
+        f"<code>{html.escape(name)}</code>" for name in robotwin_atomic_names
+    )
+
     suites = []
     for key, row in payload["by_suite"].items():
         suite_solved = int(row["solved_tasks"])
@@ -534,6 +560,9 @@ def render_dashboard_html(
     .releases span {{ color: var(--muted); font: 700 10px/1.4 ui-monospace, monospace; }}
     .releases code {{ color: var(--ink); font: 11px/1.4 ui-monospace, monospace;
       overflow-wrap: anywhere; }}
+    .skill-tags {{ display: flex; flex-wrap: wrap; gap: 7px; margin-top: 18px; }}
+    .skill-tags code {{ padding: 6px 8px; border: 1px solid var(--line);
+      background: var(--wash); color: var(--ink); font: 10px/1.2 ui-monospace, monospace; }}
     .boundary {{ margin-top: 22px; padding: 18px 20px; border-left: 3px solid var(--orange);
       background: #fff; color: var(--soft); font-size: 13px; line-height: 1.6; }}
     details {{ margin-top: 22px; border-top: 1px solid var(--line); }}
@@ -614,6 +643,14 @@ def render_dashboard_html(
           <div><span>{resource_labels[2]}</span><strong>{total_elapsed_label}</strong></div>
           <div><span>Infra excluded</span><strong>{excluded}</strong></div>
         </div>
+      </section>
+      <section class="panel">
+        <h2>Published skill catalog</h2>
+        <p>{base_skill_count} Base Skills · {atomic_skill_count} Atomic Skills ·
+          {task_family_count} Task Families · {compound_count} Compounds</p>
+        <p>{libero_atomic_count} LIBERO task profiles ·
+          {len(robotwin_atomic_names)} RoboTwin task profiles</p>
+        <div class="skill-tags">{robotwin_skill_tags}</div>
       </section>
     </div>
     <div class="boundary">{html.escape(boundary)}</div>

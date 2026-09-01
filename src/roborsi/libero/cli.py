@@ -28,18 +28,20 @@ from roborsi.libero.runs import (
 
 app = typer.Typer(
     name="roborsi",
-    help="Configure, evaluate, and inspect RoboRSI on LIBERO short.",
+    help="Configure, evaluate, and inspect RoboRSI.",
     no_args_is_help=True,
     rich_markup_mode="markdown",
 )
 results_app = typer.Typer(help="Replay and summarize retained evidence.")
 eval_app = typer.Typer(help="Run fixed or adaptive LIBERO short evaluation.")
 runs_app = typer.Typer(help="List and inspect local evaluation campaigns.")
+skills_app = typer.Typer(help="Inspect the published RoboRSI skill catalog.")
 services_app = typer.Typer(help="Manage local motion-planning services.")
 visualize_app = typer.Typer(help="Render standalone evidence visualizations.")
 app.add_typer(results_app, name="results")
 app.add_typer(eval_app, name="eval")
 app.add_typer(runs_app, name="runs")
+app.add_typer(skills_app, name="skills")
 app.add_typer(services_app, name="services")
 app.add_typer(visualize_app, name="visualize")
 console = Console()
@@ -238,6 +240,95 @@ def runs_list(
             f"{campaign.solved_tasks}/{campaign.total_tasks}",
         )
     console.print(table)
+
+
+def _skill_backends(skill) -> tuple[str, ...]:
+    frontmatter = skill.frontmatter or {}
+    metadata = frontmatter.get("metadata") or {}
+    values = metadata.get("backends") if isinstance(metadata, dict) else None
+    if isinstance(values, list):
+        return tuple(str(value) for value in values)
+    robot = frontmatter.get("robot")
+    return (str(robot),) if robot else ()
+
+
+def _skill_runtime(skill) -> str:
+    metadata = (skill.frontmatter or {}).get("metadata") or {}
+    if isinstance(metadata, dict) and metadata.get("runtime_status"):
+        return str(metadata["runtime_status"])
+    if (skill.path.parent / "policy.py").is_file():
+        return "code-backed"
+    return "shared-runner"
+
+
+def _skill_source(skill) -> str:
+    parts = skill.path.parts
+    marker = parts.index("skills")
+    return "/".join(parts[marker + 1 :])
+
+
+@skills_app.command("list")
+def skills_list(
+    backend: Annotated[
+        str | None,
+        typer.Option("--backend", help="Filter by backend, for example libero or robotwin."),
+    ] = None,
+    category: Annotated[
+        str | None,
+        typer.Option("--category", help="Filter by base or atomic."),
+    ] = None,
+) -> None:
+    """List shipped base and atomic skills."""
+    from roborsi.embodied.skills import discover
+
+    rows = []
+    for skill in discover():
+        backends = _skill_backends(skill)
+        if backend is not None and backend not in backends:
+            continue
+        if category is not None and skill.category != category:
+            continue
+        kind = str((skill.frontmatter or {}).get("kind") or skill.category)
+        rows.append((skill.name, kind, ", ".join(backends) or "-", _skill_runtime(skill)))
+
+    table = Table(title=f"RoboRSI skills ({len(rows)})", header_style="bold")
+    table.add_column("Name")
+    table.add_column("Kind")
+    table.add_column("Backend")
+    table.add_column("Runtime")
+    for row in sorted(rows):
+        table.add_row(*row)
+    console.print(table)
+
+
+@skills_app.command("show")
+def skills_show(name: Annotated[str, typer.Argument(help="Published skill name.")]) -> None:
+    """Show one skill's metadata and description."""
+    from roborsi.embodied.skills import get
+
+    skill = get(name)
+    if skill is None:
+        console.print(f"[red]Unknown skill[/red] {name}")
+        raise typer.Exit(2)
+    frontmatter = skill.frontmatter or {}
+    metadata = frontmatter.get("metadata") or {}
+    benchmark = metadata.get("benchmark") if isinstance(metadata, dict) else None
+    kind = str(frontmatter.get("kind") or skill.category)
+    backends = ", ".join(_skill_backends(skill)) or "-"
+    rows = [
+        f"Kind: {kind}",
+        f"Backend: {backends}",
+        f"Runtime: {_skill_runtime(skill)}",
+    ]
+    if frontmatter.get("parent"):
+        rows.append(f"Parent: {frontmatter['parent']}")
+    if isinstance(benchmark, dict) and benchmark.get("task_key"):
+        rows.append(f"Benchmark: {benchmark['task_key']}")
+    rows.extend([f"Source: {_skill_source(skill)}", "", skill.description])
+    details = "\n".join(rows)
+    if skill.body.strip():
+        details += "\n\n" + skill.body.strip()[:1600]
+    console.print(Panel(details, title=skill.name))
 
 
 @app.command()
