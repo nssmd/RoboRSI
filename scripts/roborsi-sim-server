@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Launcher for the RoboTwin sim HTTP server (uvicorn).
+#
+# Runs roborsi/embodied/sim/robotwin/server.py inside the RoboTwin conda
+# env so SAPIEN / cuRobo / pytorch3d / lerobot resolve. Agents on the other
+# side (robo-rsi main .venv or remote machines) talk to this server via
+# HTTP using the `robotwin-http` backend.
+#
+# Default port 8181. Override with ROBORSI_SIM_PORT.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+ROBORSI_ROOT="${ROBORSI_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+ROBOTWIN_ROOT="${ROBORSI_ROBOTWIN_ROOT:-$HOME/RoboTwin}"
+CONDA_BASE="${CONDA_BASE:-$HOME/miniconda3}"
+CONDA_ENV="${ROBORSI_CONDA_ENV:-RoboTwin}"
+CUDA_PREFIX="${CUDA_PREFIX:-/usr/local/cuda-11.8}"
+PORT="${ROBORSI_SIM_PORT:-8181}"
+HOST="${ROBORSI_SIM_HOST:-0.0.0.0}"
+
+ENV_PREFIX="$CONDA_BASE/envs/$CONDA_ENV"
+PYTHON="$ENV_PREFIX/bin/python"
+if [ ! -x "$PYTHON" ]; then
+  echo "[roborsi-sim-server] $PYTHON not found — RoboTwin env missing" >&2
+  exit 1
+fi
+
+export CUDA_HOME="$CUDA_PREFIX"
+export PATH="$CUDA_PREFIX/bin:$ENV_PREFIX/bin:$PATH"
+export LD_LIBRARY_PATH="$ENV_PREFIX/lib:$CUDA_PREFIX/extras/CUPTI/lib64:$CUDA_PREFIX/lib64:${LD_LIBRARY_PATH:-}"
+export PYTHONPATH="$ROBORSI_ROOT:${PYTHONPATH:-}"
+export ROBORSI_ROBOTWIN_ROOT="$ROBOTWIN_ROOT"
+unset PYTHONHOME
+
+cd "$ROBOTWIN_ROOT"
+
+echo "[roborsi-sim-server] starting on $HOST:$PORT"
+exec "$PYTHON" -m uvicorn roborsi.embodied.sim.robotwin.server:app \
+    --host "$HOST" --port "$PORT" --log-level info

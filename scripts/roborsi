@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# Top-level robo-rsi CLI dispatcher.
+#
+# Subcommands / flags:
+#   roborsi --feishu       Start the Feishu bot (ws) that talks directly to
+#                             the Manager — same path as `roborsi start`.
+#   roborsi sim ...        Forwarded to scripts/roborsi-sim
+#
+# The first form prompts for credentials at the terminal — nothing is
+# hardcoded or persisted to disk except the Claude session UUID under
+# ~/.cache/roborsi/.
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+CONDA_BASE="${CONDA_BASE:-$HOME/miniconda3}"
+CONDA_ENV="${ROBORSI_CONDA_ENV:-RoboTwin}"
+PYTHON="$CONDA_BASE/envs/$CONDA_ENV/bin/python"
+
+case "${1:-}" in
+  start)
+    shift || true
+    CHANNEL="${ROBORSI_CHANNEL:-feishu}"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --channel=*) CHANNEL="${1#--channel=}"; shift ;;
+        --channel)   CHANNEL="${2:-feishu}"; shift 2 ;;
+        *) break ;;
+      esac
+    done
+    if [ "$CHANNEL" = "cli" ]; then
+      if [ ! -x "$PYTHON" ]; then
+        echo "[roborsi] $PYTHON not found — RoboTwin conda env missing" >&2
+        exit 1
+      fi
+      export PYTHONPATH="$REPO:${PYTHONPATH:-}"
+      export ROBORSI_REPO="$REPO"
+      echo "✓ starting cli channel (Ctrl+D to quit, Ctrl+C to interrupt)"
+      exec "$PYTHON" -c "from roborsi.channels.agent.cli import CliChannel; CliChannel().run()"
+    fi
+    # ── feishu channel — ONE-COMMAND DEPLOYMENT (no tmux, no log files)
+    SIM="$REPO/scripts/roborsi-sim"
+    CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/roborsi"
+    CFG_FILE="$CFG_DIR/feishu.env"
+    mkdir -p "$CFG_DIR"
+    if [ -f "$CFG_FILE" ]; then
+      # shellcheck disable=SC1090
+      . "$CFG_FILE"
+    fi
+    if [ -z "${FEISHU_APP_ID:-}" ] || [ -z "${FEISHU_APP_SECRET:-}" ]; then
+      echo "[roborsi start] Feishu credentials not configured. Enter them now:"
+      read -r -p "  FEISHU_APP_ID: " FEISHU_APP_ID
+      read -r -p "  FEISHU_APP_SECRET: " FEISHU_APP_SECRET
+      read -r -p "  FEISHU_ALLOWED_USERS (open_ids comma-separated, blank=anyone): " FEISHU_ALLOWED_USERS
+      RTWIN="${ROBORSI_ROBOTWIN_ROOT:-}"
+      if [ -z "$RTWIN" ]; then
+        for c in "$HOME/RoboTwin"; do
+          [ -d "$c" ] && { RTWIN="$c"; break; }
+        done
+      fi
+      umask 077
+      cat > "$CFG_FILE" <<EOC
+export FEISHU_APP_ID="$FEISHU_APP_ID"
+export FEISHU_APP_SECRET="$FEISHU_APP_SECRET"
+export FEISHU_ALLOWED_USERS="$FEISHU_ALLOWED_USERS"
+export ROBORSI_MONITOR_URL="http://localhost:8770"
+export ROBORSI_ROBOTWIN_ROOT="$RTWIN"
+export ROBORSI_ROOT="$REPO"
+EOC
+      chmod 600 "$CFG_FILE"
+      echo "[roborsi start] saved → $CFG_FILE  (RoboTwin: $RTWIN)"
+      # shellcheck disable=SC1090
+      . "$CFG_FILE"
+    fi
+    # Launch bot in foreground. bot embeds the monitor HTTP server in the
+    # SAME process (thread) so live_trace events are visible. Ctrl+C stops.
+    # First sweep any stale monitor from previous standalone-mode runs.
+    pkill -f "skill monitor --port 8770" 2>/dev/null || true
+    sleep 0.3
+    trap "echo; echo '[roborsi] stopping…'; exit 0" INT TERM EXIT
+    echo "✓ starting bot+monitor in foreground (Ctrl+C to stop)…"
+    echo "  monitor: http://localhost:8770/"
+    echo "──────────────────────────────────────────────────────────────"
+    exec "$SIM" skill feishu-bot-ws
+    ;;
+  stop)
+    shift || true
+    for s in roborsi-bot roborsi-monitor; do
+      if tmux has-session -t "$s" 2>/dev/null; then
+        tmux kill-session -t "$s" && echo "[roborsi stop] killed $s"
+      fi
+    done
+    ;;
+  status)
+    shift || true
+    for s in roborsi-bot roborsi-monitor; do
+      if tmux has-session -t "$s" 2>/dev/null; then
+        echo "  $s: running (tmux attach -t $s)"
+      else
+        echo "  $s: stopped"
+      fi
+    done
+    echo "  monitor: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:8770/ 2>/dev/null) http://localhost:8770/"
+    echo "  bot:     $(curl -s -o /dev/null -w '%{http_code}' http://localhost:9876/ 2>/dev/null) http://localhost:9876/feishu/event"
+    ;;
+  --feishu|feishu)
+    shift || true
+    # Same path as `start`: launch the Feishu bot (ws) that talks directly
+    # to the Manager. Delegated to the sim CLI inside the RoboTwin env.
+    SIM="$REPO/scripts/roborsi-sim"
+    exec "$SIM" skill feishu-bot-ws
+    ;;
+  sim)
+    shift
+    exec "$REPO/scripts/roborsi-sim" "$@"
+    ;;
+  ""|tui)
+    # bare `roborsi` or `roborsi tui` → the Ink Manager cockpit (auto-starts
+    # the dashboard bridge, then hands the terminal to the Ink UI).
+    [ "${1:-}" = "tui" ] && shift
+    if [ ! -x "$PYTHON" ]; then
+      echo "[roborsi] $PYTHON not found — RoboTwin conda env missing" >&2
+      exit 1
+    fi
+    export PYTHONPATH="$REPO:${PYTHONPATH:-}"
+    export ROBORSI_REPO="$REPO"
+    exec "$PYTHON" -m roborsi.cli.tui_launch "$@"
+    ;;
+  -h|--help)
+    cat <<EOF
+Usage: roborsi <command> [...args]
+
+One-command deployment:
+  roborsi start         Start bot (:9876) + HTML monitor (:8770) as
+                           tmux sessions. Prompts once for FEISHU_APP_ID,
+                           APP_SECRET, VERIFICATION_TOKEN; saves to
+                           ~/.config/roborsi/feishu.env (chmod 600).
+  roborsi stop          Kill both sessions.
+  roborsi status        Show running state.
+
+Other:
+  tui                      Ink Manager 驾驶舱 · 直连常驻 Manager(同飞书一个脑).
+  --feishu                 启动飞书 bot(同 start 那条),直连 Manager.
+  sim ...                  Run sim CLI inside the RoboTwin conda env.
+  main ...                 Run the orchestrator (Tier-2 supervisor).
+
+Examples:
+  roborsi start         # one-shot deploy
+  roborsi sim atomic run click_bell zeroshot --params '{"episodes":1}' --json
+EOF
+    ;;
+  *)
+    echo "[roborsi] unknown command: $1" >&2
+    echo "  try: roborsi --help" >&2
+    exit 2
+    ;;
+esac

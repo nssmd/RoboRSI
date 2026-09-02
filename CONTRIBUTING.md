@@ -1,58 +1,42 @@
 # Contributing
 
-## Development Setup
+## Development setup
 
 ```bash
-./setup.sh --core-only --dev
+python -m venv .venv
 source .venv/bin/activate
-pytest -q -m "not runtime"
+pip install -e ".[dev,web]"
+pytest -q
 ```
 
-The core environment covers configuration, evidence replay, the Web console,
-release hygiene, and package construction. Runtime tests are marked
-`runtime`; install the complete environment with `./setup.sh --dev` before
-running `pytest -q`.
+The simulator-specific tests require their upstream checkouts and runtime
+dependencies. Configure those paths with `ROBORSI_ROBOTWIN_ROOT` and
+`ROBORSI_BICOORD_ROOT`.
 
-## Required Invariants
+## Required invariants
 
-- Keep simulator success post-episode and host-only.
-- Do not expose reward, predicate source, object poses, private simulator
-  state, or a completion latch to any role, prompt, memory, or skill.
-- Count only final simulator verdicts; retain and exclude infrastructure rows.
-- Preserve every journal, trace, trajectory, video, proposal, and failed run.
-- Never rerun an already successful task/seed pair.
-- Keep adaptive and fixed result schemas separate.
-- Store credentials only in environment variables.
+- Keep hidden simulator state and success criteria out of Planner, Engineer,
+  Reviewer, plans, skills, prompts, and tool outputs.
+- Count success only from the final post-episode simulator verdict.
+- Keep credentials, internal endpoints, and machine-specific paths outside the
+  repository.
+- Preserve failed runs and exact resume state in runtime storage.
+- Submit complete skill implementations through the existing proposal and
+  harness-gate path.
 
-## Skill Changes
-
-A visible skill change needs:
-
-1. a failing focused test;
-2. a complete `policy.py`, not a patch fragment;
-3. static hidden-input checks;
-4. a retained simulator harness run;
-5. native simulator success before promotion.
-
-Do not hard-code demonstration coordinates or tune against hidden task state.
-
-## Pull Requests
-
-Keep changes scoped. Include the command and fresh output that verify the
-change, note any simulator/API test that could not run, and avoid committing
-generated runs or credentials. Before review, run:
+## Before opening a pull request
 
 ```bash
-pytest -q -m "not runtime"
-ruff check src/roborsi/libero tests scripts
-python scripts/release_check.py
-./reproduce.sh --skip-setup --output-dir /tmp/roborsi-reproduction
-python -m build
+python scripts/check_gt_leak.py
+python -m compileall -q roborsi scripts tests
+pytest -q
 ```
 
-Changes to simulator execution, skills, workers, or promotion logic also require
-the complete runtime environment, a full `pytest -q`, and:
+Also build both user interfaces when changing them:
 
 ```bash
-python scripts/check_libero_gt_leak.py
+npm --prefix frontend/web install
+npm --prefix frontend/web run build
+npm --prefix roborsi/frontend/tui install
+npm --prefix roborsi/frontend/tui run typecheck
 ```

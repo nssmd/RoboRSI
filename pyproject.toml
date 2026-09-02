@@ -1,114 +1,137 @@
-[build-system]
-requires = ["hatchling>=1.25"]
-build-backend = "hatchling.build"
-
 [project]
 name = "roborsi"
 version = "0.1.0"
-description = "Robot-agent self-evolution harness with a LIBERO runtime and skill catalog"
-readme = "README.md"
-requires-python = ">=3.10,<3.13"
-license = "Apache-2.0"
-authors = [{name = "RoboRSI Contributors"}]
-keywords = ["robotics", "embodied-ai", "libero", "agents", "evaluation"]
-classifiers = [
-  "Development Status :: 3 - Alpha",
-  "License :: OSI Approved :: Apache Software License",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+description = "A multi-agent harness for self-evolving robot skills"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "roborsi contributors"}
 ]
+keywords = ["robotics", "embodied-ai", "multi-agent", "skill-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
 dependencies = [
-  "openai>=2.8,<3",
-  "platformdirs>=4.3,<5",
-  "pydantic>=2.10,<3",
-  "pyyaml>=6.0,<7",
-  "rich>=13.9,<15",
-  "typer>=0.15,<1",
+    "typer>=0.20.0,<1.0.0",
+    "litellm>=1.82.1,<2.0.0",
+    "pydantic>=2.12.0,<3.0.0",
+    "pydantic-settings>=2.12.0,<3.0.0",
+    "websockets>=16.0,<17.0",
+    "websocket-client>=1.9.0,<2.0.0",
+    "httpx>=0.28.0,<1.0.0",
+    "ddgs>=9.5.5,<10.0.0",
+    "oauth-cli-kit>=0.1.3,<1.0.0",
+    "loguru>=0.7.3,<1.0.0",
+    "readability-lxml>=0.8.4,<1.0.0",
+    "rich>=14.0.0,<15.0.0",
+    "croniter>=6.0.0,<7.0.0",
+    "dingtalk-stream>=0.24.0,<1.0.0",
+    "python-telegram-bot[socks]>=22.6,<23.0",
+    "lark-oapi>=1.5.0,<2.0.0",
+    "socksio>=1.0.0,<2.0.0",
+    "python-socketio>=5.16.0,<6.0.0",
+    "msgpack>=1.1.0,<2.0.0",
+    "slack-sdk>=3.39.0,<4.0.0",
+    "slackify-markdown>=0.2.0,<1.0.0",
+    "qq-botpy>=1.2.0,<2.0.0",
+    "python-socks[asyncio]>=2.8.0,<3.0.0",
+    "prompt-toolkit>=3.0.50,<4.0.0",
+    "mcp>=1.26.0,<2.0.0",
+    "json-repair>=0.57.0,<1.0.0",
+    "chardet>=3.0.2,<6.0.0",
+    "openai>=2.8.0",
+    "tiktoken>=0.12.0,<1.0.0",
+    "lerobot[feetech,dynamixel,pi]",
+    "pyserial>=3.5,<4.0",
+    "flexivrdk>=1.8.1",
+    "record3d>=1.4.0",
 ]
 
 [project.optional-dependencies]
-runtime = [
-  "bddl==1.0.1",
-  "cloudpickle>=2.1,<4",
-  "easydict>=1.9,<2",
-  "future>=0.18.2,<2",
-  "gym==0.25.2",
-  "h5py>=3.8,<4",
-  "imageio>=2.36,<3",
-  "imageio-ffmpeg>=0.5,<1",
-  "matplotlib>=3.8,<4",
-  "msgpack>=1.1,<2",
-  "msgpack-numpy>=0.4.8,<1",
-  "mujoco>=2.3,<3",
-  "numpy>=1.24,<2",
-  "opencv-python>=4.10,<5",
-  "pandas>=2.1,<3",
-  "pillow>=10,<12",
-  "pyarrow>=15,<22",
-  "pyzmq>=26,<28",
-  "robosuite==1.4.0",
-  "scikit-learn>=1.5,<2",
-  "scipy>=1.11,<2",
-  "torch>=2.1,<3",
-  "termcolor>=2.4,<4",
-  "transformers>=4.48,<5",
+wecom = [
+    "wecom-aibot-sdk-python>=0.1.5",
+]
+matrix = [
+    "matrix-nio[e2e]>=0.25.2",
+    "mistune>=3.0.0,<4.0.0",
+    "nh3>=0.2.17,<1.0.0",
+]
+brainco = [
+    "bc-stark-sdk>=1.2.4",
+]
+langsmith = [
+    "langsmith>=0.1.0",
+]
+web = [
+    "fastapi>=0.115.0,<1.0.0",
+    "uvicorn[standard]>=0.34.0,<1.0.0",
 ]
 dev = [
-  "build>=1.2,<2",
-  "pytest>=8.3,<10",
-  "pytest-cov>=6,<7",
-  "ruff>=0.9,<1",
+    "pytest>=9.0.0,<10.0.0",
+    "pytest-asyncio>=1.3.0,<2.0.0",
+    "pexpect>=4.9.0,<5.0.0",
+    "ruff>=0.1.0",
 ]
 
 [project.scripts]
-roborsi = "roborsi.libero.cli:app"
+roborsi = "roborsi.cli.commands:app"
 
-[project.urls]
-Homepage = "https://robo-rsi.com/"
-Repository = "https://github.com/nssmd/RoboRSI"
-Issues = "https://github.com/nssmd/RoboRSI/issues"
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+lerobot = { path = "roborsi/embodied/engine", editable = true }
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build]
+include = [
+    "roborsi/**/*.py",
+    "roborsi/templates/**/*.md",
+    "roborsi/skills/**/*.md",
+    "roborsi/skills/**/*.sh",
+]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/roborsi"]
+packages = ["roborsi"]
+
+[tool.hatch.build.targets.wheel.sources]
+"roborsi" = "roborsi"
 
 [tool.hatch.build.targets.wheel.force-include]
-"evidence/adaptive-coverage-v1" = "roborsi/libero/evidence/adaptive-coverage-v1"
-"src/roborsi/libero/assets/skill_tree_storyboard.json" = "roborsi/libero/assets/skill_tree_storyboard.json"
+"bridge" = "roborsi/bridge"
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "/src",
-  "/docs/assets",
-  "/evidence",
-  "/scripts",
-  "/requirements",
-  "/tests",
-  "/.github",
-  "/CITATION.cff",
-  "/CONTRIBUTING.md",
-  "/README.md",
-  "/REPRODUCING.md",
-  "/SKILLS.md",
-  "/SECURITY.md",
-  "/LICENSE",
-  "/roborsi",
-  "/reproduce.sh",
-  "/setup.sh",
-]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-ra"
-pythonpath = ["src", "."]
-markers = [
-  "runtime: requires the optional LIBERO/runtime dependencies",
+    "roborsi/",
+    "bridge/",
+    "README.md",
+    "LICENSE",
 ]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "hardware: tests that require physical hardware (skip with: pytest -m 'not hardware')",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

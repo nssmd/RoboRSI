@@ -1,55 +1,33 @@
-name: CI
+name: Test Suite
 
 on:
   push:
-    branches: [main]
+    branches: [ main, nightly ]
   pull_request:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    branches: [ main, nightly ]
 
 jobs:
-  core:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+  test:
+    runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev]"
-      - run: pytest -q -m "not runtime"
-      - if: matrix.python-version == '3.11'
-        run: ruff check src/roborsi/libero tests scripts
-      - if: matrix.python-version == '3.11'
-        run: python scripts/release_check.py
-      - if: matrix.python-version == '3.11'
-        run: ./reproduce.sh --skip-setup --output-dir /tmp/roborsi-reproduction
-      - if: matrix.python-version == '3.11'
-        run: python -m build
+        python-version: ["3.12", "3.13"]
 
-  runtime:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      - run: ./setup.sh --dev
-      - run: .venv/bin/pytest -q
-      - run: .venv/bin/python scripts/check_libero_gt_leak.py
-      - if: always()
-        run: ./roborsi services stop || true
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install system dependencies
+      run: sudo apt-get update && sudo apt-get install -y build-essential
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install .[dev]
+
+    - name: Run tests
+      run: python -m pytest tests/ -m "not hardware" -v

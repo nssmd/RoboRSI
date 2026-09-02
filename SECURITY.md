@@ -2,20 +2,17 @@
 
 ## Secrets
 
-RoboRSI configuration stores the name of an API-key environment variable,
-never the key. Do not commit `.env`, provider tokens, private endpoints, or
-resolved configs copied from private infrastructure.
+Store provider keys and channel credentials in environment variables or a
+secret manager. Do not commit `.env`, access tokens, private endpoints, SSH
+material, or resolved configuration copied from private infrastructure.
 
-## Agent-Generated Code
+## Agent-generated code
 
-Adaptive proposals are untrusted input. They are parsed, restricted to a fixed
-skill destination, scanned for direct simulator-state access, and staged in an
-isolated campaign overlay. Only a native simulator-success harness can promote
-them. Run experiments in an isolated account/container; this is research code,
-not a general-purpose secure sandbox.
+Treat generated skills and patches as untrusted input. Keep them inside the
+proposal, validation, and approval flow before they enter the active skill
+library. Run robot and simulator workloads in an isolated environment.
 
 ## Reporting
 
-Report vulnerabilities through a private GitHub security advisory for
-`nssmd/RoboRSI`. Include a minimal reproduction and avoid attaching
-live credentials or private experiment artifacts.
+Use a private GitHub security advisory for `nssmd/RoboRSI` when a report could
+expose credentials, private infrastructure, or an exploitable code path.

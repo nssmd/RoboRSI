@@ -1,0 +1,29 @@
+{
+  "name": "roborsi-tui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ink terminal cockpit for the RoboRSI self-evolution Manager — chat the Manager and watch the live triangle (roles / campaign / evolution). Poll-only client of scripts/evo_dashboard.py.",
+  "type": "module",
+  "bin": {
+    "roborsi-tui": "bin/roborsi-tui.mjs"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.tsx",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ink": "^5.0.1",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^18",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
