@@ -38,3 +38,11 @@ roborsi/embodied/skills/_data/
 
 # auto-recorded episode demos (keep-on-success videos; large binaries)
 artifacts/demos/
+
+# Local runtime state and generated outputs
+artifacts/
+runs/
+workspace/
+.runtime/
+.deps/
+roborsi.yaml
