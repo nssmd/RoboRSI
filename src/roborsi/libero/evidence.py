@@ -1,4 +1,4 @@
-"""Replay task-level adaptive metrics from append-only public evidence."""
+"""Replay adaptive cross-release coverage from append-only public evidence."""
 
 from __future__ import annotations
 
@@ -29,12 +29,12 @@ class EvidenceConflict(ValueError):  # noqa: N818 - public schema terminology
 def default_manifest_path() -> Path:
     source = (
         Path(__file__).resolve().parents[3]
-        / "evidence/adaptive-pass10-v1/manifest.json"
+        / "evidence/adaptive-coverage-v1/manifest.json"
     )
     if source.is_file():
         return source
     resource = importlib.resources.files("roborsi.libero").joinpath(
-        "evidence/adaptive-pass10-v1/manifest.json"
+        "evidence/adaptive-coverage-v1/manifest.json"
     )
     return Path(str(resource))
 
@@ -156,7 +156,9 @@ def replay_bundle(manifest_path: Path | str) -> ReplayResult:
     tokens = [int(row.get("total_tokens") or 0) for row in metered_rows]
     result = ReplayResult(
         schema="roborsi.libero_short_replay.v1",
-        metric=str(manifest.get("metric") or "task_level_adaptive_pass_at_k"),
+        metric=str(
+            manifest.get("metric") or "adaptive_cross_release_task_coverage"
+        ),
         claim_scope=str(manifest.get("claim_scope") or "unspecified"),
         k=k,
         solved_tasks=len(solved),

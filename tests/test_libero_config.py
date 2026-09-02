@@ -11,7 +11,6 @@ def test_libero_config_is_generated_noninteractively_from_checkout(tmp_path: Pat
     benchmark = checkout / "libero/libero"
     for name in ("bddl_files", "init_files", "assets"):
         (benchmark / name).mkdir(parents=True)
-    (checkout / "libero/datasets").mkdir(parents=True)
     config_root = tmp_path / "libero-config"
 
     path = write_libero_config(checkout, config_root)
@@ -22,3 +21,4 @@ def test_libero_config_is_generated_noninteractively_from_checkout(tmp_path: Pat
     assert payload["bddl_files"] == str((benchmark / "bddl_files").resolve())
     assert payload["init_states"] == str((benchmark / "init_files").resolve())
     assert payload["assets"] == str((benchmark / "assets").resolve())
+    assert (checkout / "libero/datasets").is_dir()

@@ -13,7 +13,24 @@ def _fake_libero(root: Path) -> None:
     (root / "libero/libero/init_files").mkdir(parents=True)
 
 
-def test_offline_doctor_passes_config_and_fake_simulator_layout(tmp_path: Path) -> None:
+def test_offline_doctor_passes_config_and_fake_simulator_layout(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from roborsi.embodied import agent_loop
+
+    class FakeBackend:
+        @staticmethod
+        def available():
+            return True, ""
+
+        @staticmethod
+        def list_tasks():
+            from roborsi.libero.catalog import SHORT_TASK_CATALOG
+
+            return list(SHORT_TASK_CATALOG)
+
+    monkeypatch.setattr(agent_loop, "get_backend", lambda name: FakeBackend())
     config = ReleaseConfig.default(repo_root=tmp_path)
     _fake_libero(config.simulator.root)
     config.simulator.config_root.mkdir(parents=True)
@@ -26,6 +43,7 @@ def test_offline_doctor_passes_config_and_fake_simulator_layout(tmp_path: Path) 
         "configuration",
         "task catalog",
         "LIBERO checkout",
+        "LIBERO runtime import",
         "result directory",
     }
 

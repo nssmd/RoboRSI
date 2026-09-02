@@ -15,7 +15,7 @@ from roborsi.libero.dashboard import (
 def _payload() -> dict:
     return {
         "schema": "roborsi.libero_short_replay.v1",
-        "metric": "task_level_adaptive_pass_at_k",
+        "metric": "adaptive_cross_release_task_coverage",
         "claim_scope": "adaptive_cross_release_campaign",
         "k": 3,
         "solved_tasks": 3,

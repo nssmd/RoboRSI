@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import json
+import re
+from html import escape
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
 SCHEMA = "roborsi.skill-tree-storyboard.v1"
+CAMPAIGN_SCHEMA = "roborsi.campaign-skill-tree.v1"
 
 ATOMIC_NODES = (
     ("sweep", "ACTIVE VIEW"),
@@ -157,7 +160,12 @@ def _node_payload() -> dict[str, Any]:
 
 
 def _safe_json(payload: Any) -> str:
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    return (
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
 
 
 def build_skill_tree_html(storyboard: dict[str, Any]) -> str:
@@ -293,4 +301,232 @@ def write_skill_tree_html(
     destination = Path(output).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(build_skill_tree_html(storyboard), encoding="utf-8")
+    return destination
+
+
+def _path_number(path: Path, prefix: str) -> int:
+    for part in path.parts:
+        match = re.fullmatch(rf"{re.escape(prefix)}-(\d+)", part)
+        if match:
+            return int(match.group(1))
+    return -1
+
+
+def load_campaign_skill_tree(
+    campaign_root: Path | str,
+    *,
+    task_key: str | None = None,
+) -> dict[str, Any]:
+    from roborsi.embodied.sim.libero.run_records import load_records
+
+    root = Path(campaign_root).expanduser().resolve()
+    plans = []
+    for path in sorted((root / "episodes").rglob("roles/plan.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("schema") != "roborsi.top_down_plan.v1":
+            continue
+        plans.append(
+            {
+                "path": path,
+                "seed": _path_number(path, "seed"),
+                "attempt": _path_number(path, "attempt"),
+                "plan": payload,
+            }
+        )
+    if not plans:
+        raise ValueError(f"campaign has no retained top-down plans: {root}")
+    selected_task = task_key or str(plans[-1]["plan"].get("task_key") or "")
+    selected = [row for row in plans if str(row["plan"].get("task_key") or "") == selected_task]
+    if not selected:
+        raise ValueError(f"campaign has no top-down plan for task: {selected_task}")
+
+    records = [
+        record
+        for journal in sorted((root / "journals").glob("*.episodes.jsonl"))
+        for record in load_records(journal)
+        if record.identity.task_key == selected_task
+    ]
+    record_index = {
+        (int(record.identity.seed), int(record.identity.attempt)): record for record in records
+    }
+    selected.sort(key=lambda row: (row["seed"], row["attempt"], str(row["path"])))
+    rounds = []
+    for index, row in enumerate(selected, 1):
+        plan = row["plan"]
+        record = record_index.get((row["seed"], row["attempt"]))
+        rounds.append(
+            {
+                "round": index,
+                "seed": row["seed"],
+                "attempt": row["attempt"],
+                "release_id": str(record.release_id or "") if record else "",
+                "verdict": str(record.category or "running") if record else "running",
+                "steps": [
+                    {
+                        "id": str(step.get("id") or f"step-{step_index}"),
+                        "goal": str(step.get("goal") or ""),
+                        "skills": [str(value) for value in step.get("skills") or []],
+                    }
+                    for step_index, step in enumerate(plan.get("steps") or [], 1)
+                    if isinstance(step, dict)
+                ],
+            }
+        )
+
+    promotions = []
+    for path in sorted((root / "proposals").glob("*.json")):
+        try:
+            proposal = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if str(proposal.get("benchmark_task") or "") != selected_task:
+            continue
+        promotions.append(
+            {
+                "name": str((proposal.get("payload") or {}).get("name") or ""),
+                "status": str(proposal.get("status") or ""),
+                "release_id": str(proposal.get("release_id") or ""),
+                "validation_seeds": [
+                    int(value) for value in proposal.get("validation_seeds") or []
+                ],
+            }
+        )
+
+    plan = selected[-1]["plan"]
+    return {
+        "schema_version": CAMPAIGN_SCHEMA,
+        "run_id": root.name,
+        "task_key": selected_task,
+        "task_family": str(plan.get("task_family") or ""),
+        "atomic_task": str(plan.get("atomic_task") or ""),
+        "rounds": rounds,
+        "promotions": promotions,
+    }
+
+
+def build_campaign_skill_tree_html(payload: dict[str, Any]) -> str:
+    if payload.get("schema_version") != CAMPAIGN_SCHEMA:
+        raise ValueError("unsupported campaign skill-tree schema")
+    rounds = payload.get("rounds")
+    if not isinstance(rounds, list) or not rounds:
+        raise ValueError("campaign skill tree requires retained rounds")
+    data = _safe_json(payload)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RoboRSI Campaign Skill Tree</title>
+<style>
+:root{{--paper:#fbfcfd;--ink:#142735;--muted:#6e7d84;--line:#cbd8de;--blue:#007dce;
+--sky:#00bfe8;--green:#79a900;--yellow:#e6a120;--red:#d84b35}}
+*{{box-sizing:border-box}}html,body{{margin:0;min-height:100%;background:var(--paper);color:var(--ink);
+font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
+body{{background-image:linear-gradient(rgba(0,125,206,.035) 1px,transparent 1px),
+linear-gradient(90deg,rgba(0,125,206,.035) 1px,transparent 1px);background-size:42px 42px}}
+.shell{{width:min(1480px,calc(100% - 48px));margin:0 auto;padding:34px 0 28px}}
+.top{{display:flex;justify-content:space-between;gap:32px;align-items:end;border-bottom:1px solid var(--line);
+padding-bottom:18px}}.eyebrow,.mono{{font:700 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;
+color:var(--blue)}}h1{{margin:8px 0 0;font:650 42px/1.05 Georgia,serif;letter-spacing:0}}
+.identity{{text-align:right;color:var(--muted);font-size:14px;line-height:1.5}}
+.layout{{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:34px;margin-top:30px}}
+.tree{{min-height:610px}}.layer{{position:relative;padding:0 0 42px}}.layer:not(:last-child)::after{{
+content:"";position:absolute;left:50%;bottom:10px;width:1px;height:24px;background:var(--line)}}
+.layer-label{{margin-bottom:12px;font:700 11px/1.2 ui-monospace,monospace;color:var(--muted);
+text-align:center}}.nodes{{display:flex;flex-wrap:wrap;justify-content:center;gap:10px}}
+.node{{min-width:150px;max-width:280px;padding:12px 14px;border:1px solid var(--line);background:white;
+border-radius:6px;text-align:center;box-shadow:0 8px 24px rgba(20,39,53,.04)}}
+.node strong{{display:block;font-size:14px;line-height:1.3}}.node small{{display:block;margin-top:5px;
+color:var(--muted);font-size:11px;line-height:1.35}}.node.new{{border-color:var(--blue);background:#eef8ff}}
+.node.repair{{border-color:var(--yellow);background:#fff8e8}}.node.stable{{border-color:#9bbf49;background:#f5fae9}}
+.panel{{border-left:1px solid var(--line);padding-left:28px}}.round{{font:700 28px/1 ui-monospace,monospace;
+color:var(--blue)}}.verdict{{display:inline-block;margin:18px 0 8px;padding:5px 8px;border:1px solid currentColor;
+border-radius:4px;font:700 11px/1 ui-monospace,monospace}}.verdict.success{{color:var(--green)}}
+.verdict.failure{{color:var(--red)}}.panel h2{{font-size:22px;line-height:1.25;margin:12px 0}}
+.panel p{{color:var(--muted);line-height:1.55}}.promotion{{margin-top:26px;padding-top:20px;border-top:1px solid var(--line)}}
+.promotion li{{margin:8px 0;color:var(--muted)}}.controls{{display:grid;grid-template-columns:42px 1fr 80px;
+gap:12px;align-items:center;margin-top:22px}}button{{width:42px;height:38px;border:1px solid var(--line);
+background:white;color:var(--blue);border-radius:5px;cursor:pointer}}input{{width:100%;accent-color:var(--blue)}}
+.counter{{text-align:right;font:700 12px ui-monospace,monospace;color:var(--muted)}}
+@media(max-width:900px){{.layout{{grid-template-columns:1fr}}.panel{{border-left:0;border-top:1px solid var(--line);
+padding:24px 0 0}}.top{{align-items:start;flex-direction:column}}.identity{{text-align:left}}}}
+</style>
+</head>
+<body>
+<main class="shell">
+  <header class="top">
+    <div><div class="eyebrow">ROBORSI / RETAINED CAMPAIGN PLAN</div><h1>Top-down Skill Tree</h1></div>
+    <div class="identity"><div>{escape(str(payload["run_id"]))}</div>
+    <div>{escape(str(payload["task_key"]))}</div></div>
+  </header>
+  <section class="layout">
+    <div class="tree" id="tree"></div>
+    <aside class="panel">
+      <div class="round" id="round"></div><div class="verdict" id="verdict"></div>
+      <h2 id="headline"></h2><p id="detail"></p>
+      <div class="promotion"><div class="mono">PROMOTION RECORDS</div><ul id="promotions"></ul></div>
+    </aside>
+  </section>
+  <div class="controls"><button id="play" aria-label="Play rounds">▶</button>
+  <input id="timeline" type="range" min="1" max="{len(rounds)}" value="1">
+  <div class="counter" id="counter"></div></div>
+</main>
+<script id="payload" type="application/json">{data}</script>
+<script>
+const data=JSON.parse(document.getElementById("payload").textContent);
+const tree=document.getElementById("tree"),slider=document.getElementById("timeline");
+const play=document.getElementById("play");let timer=null;
+function node(label,detail,state){{const el=document.createElement("div");el.className=`node ${{state||""}}`;
+const strong=document.createElement("strong");strong.textContent=label;el.appendChild(strong);
+if(detail){{const small=document.createElement("small");small.textContent=detail;el.appendChild(small)}}return el}}
+function layer(label,nodes){{const wrap=document.createElement("section");wrap.className="layer";
+const title=document.createElement("div");title.className="layer-label";title.textContent=label;
+wrap.appendChild(title);const row=document.createElement("div");
+row.className="nodes";nodes.forEach(n=>row.appendChild(n));wrap.appendChild(row);return wrap}}
+function render(index){{const current=data.rounds[index],prior=data.rounds.slice(0,index);
+const stable=new Set(prior.filter(r=>r.verdict==="task_success").flatMap(r=>r.steps.flatMap(s=>s.skills)));
+const currentSkills=new Set(current.steps.flatMap(s=>s.skills));tree.replaceChildren();
+tree.appendChild(layer("TASK FAMILY",[node(data.task_family,"Reusable decomposition","stable")]));
+tree.appendChild(layer("ATOMIC TASK",[node(data.atomic_task,data.task_key,"stable")]));
+tree.appendChild(layer("PLANNER STEPS",current.steps.map(s=>node(s.id,s.goal,
+current.verdict==="task_failure"?"repair":"new"))));
+const skills=[...currentSkills].map(name=>node(name,"Published visible capability",
+current.verdict==="task_failure"?"repair":stable.has(name)?"stable":"new"));
+tree.appendChild(layer("BASE / COMPOUND SKILLS",skills.length?skills:[node("No selected skill","Planner fallback","repair")]));
+document.getElementById("round").textContent=`ROUND ${{index+1}} / ${{data.rounds.length}}`;
+const verdict=document.getElementById("verdict");verdict.textContent=current.verdict.replaceAll("_"," ");
+verdict.className=`verdict ${{current.verdict==="task_success"?"success":current.verdict.includes("failure")?"failure":""}}`;
+document.getElementById("headline").textContent=`Seed ${{current.seed}} · Attempt ${{current.attempt}}`;
+document.getElementById("detail").textContent=current.release_id?`Release: ${{current.release_id}}`:"Release pending";
+document.getElementById("counter").textContent=`${{index+1}} / ${{data.rounds.length}}`;slider.value=index+1}}
+const promotions=document.getElementById("promotions");
+const promotionRows=data.promotions.length?data.promotions:[{{name:"None retained for this task.",status:"",validation_seeds:[]}}];
+for(const p of promotionRows){{const item=document.createElement("li"),strong=document.createElement("strong");
+strong.textContent=p.name;item.appendChild(strong);
+if(p.status){{item.appendChild(document.createTextNode(` · ${{p.status}}${{p.validation_seeds.length?` · seeds ${{p.validation_seeds.join(", ")}}`:""}}`))}}
+promotions.appendChild(item)}}
+function stop(){{if(timer)clearInterval(timer);timer=null;play.textContent="▶"}}
+function start(){{stop();play.textContent="Ⅱ";timer=setInterval(()=>{{let next=Number(slider.value);
+if(next>=data.rounds.length)next=0;render(next)}},900)}}
+play.addEventListener("click",()=>timer?stop():start());slider.addEventListener("input",()=>{{stop();render(Number(slider.value)-1)}});
+render(0);
+</script>
+</body>
+</html>
+"""
+
+
+def write_campaign_skill_tree_html(
+    campaign_root: Path | str,
+    output: Path | str,
+    *,
+    task_key: str | None = None,
+) -> Path:
+    payload = load_campaign_skill_tree(campaign_root, task_key=task_key)
+    destination = Path(output).expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(build_campaign_skill_tree_html(payload), encoding="utf-8")
     return destination

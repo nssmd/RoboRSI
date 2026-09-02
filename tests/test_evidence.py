@@ -12,7 +12,7 @@ def _write_bundle(root: Path, records: list[dict]) -> Path:
     root.mkdir()
     manifest = {
         "schema": "roborsi.libero_short_evidence.v1",
-        "metric": "task_level_adaptive_pass_at_k",
+        "metric": "adaptive_cross_release_task_coverage",
         "claim_scope": "adaptive_cross_release_development_coverage",
         "k": 2,
         "task_catalog": ["libero_spatial/0", "libero_goal/0"],
@@ -97,7 +97,7 @@ def test_replay_rejects_manifest_expected_result_mismatch(tmp_path: Path) -> Non
 def test_public_bundle_replays_locked_adaptive_95_of_120() -> None:
     manifest = (
         Path(__file__).resolve().parents[1]
-        / "evidence/adaptive-pass10-v1/manifest.json"
+        / "evidence/adaptive-coverage-v1/manifest.json"
     )
 
     result = replay_bundle(manifest)
@@ -110,3 +110,4 @@ def test_public_bundle_replays_locked_adaptive_95_of_120() -> None:
     assert result.by_suite["libero_goal"]["solved_tasks"] == 9
     assert result.by_suite["libero_90"]["solved_tasks"] == 67
     assert result.claim_scope == "adaptive_cross_release_development_coverage"
+    assert result.metric == "adaptive_cross_release_task_coverage"

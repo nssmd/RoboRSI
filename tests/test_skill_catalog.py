@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from collections import Counter
 
-from roborsi.embodied.skills import discover, discover_compounds, get, get_ns
+from roborsi.embodied.skills import (
+    discover,
+    discover_compounds,
+    get,
+    get_atomic_by_task_key,
+    get_ns,
+)
 from roborsi.embodied.skills.schema import validate_catalog
 from roborsi.libero.catalog import SHORT_TASK_CATALOG
 
@@ -20,36 +26,24 @@ def test_skill_hierarchy_covers_published_benchmarks() -> None:
     }
 
     atomics = [skill for skill in skills if skill.category == "atomic"]
-    libero = [
-        skill
-        for skill in atomics
-        if "libero" in skill.frontmatter["metadata"]["backends"]
-    ]
+    libero = [skill for skill in atomics if "libero" in skill.frontmatter["metadata"]["backends"]]
     robotwin = [
-        skill
-        for skill in atomics
-        if "robotwin" in skill.frontmatter["metadata"]["backends"]
+        skill for skill in atomics if "robotwin" in skill.frontmatter["metadata"]["backends"]
     ]
     assert len(libero) == 130
     assert len(robotwin) == 52
-    assert sum(
-        skill.category == "atomic"
-        and "long" in (skill.frontmatter["metadata"].get("tags") or [])
-        for skill in skills
-    ) == 10
-    assert sum(
-        skill.category == "base" and skill.namespace == "libero"
-        for skill in skills
-    ) == 35
-    assert sum(
-        skill.category == "base" and skill.namespace == "robotwin"
-        for skill in skills
-    ) == 51
+    assert (
+        sum(
+            skill.category == "atomic"
+            and "long" in (skill.frontmatter["metadata"].get("tags") or [])
+            for skill in skills
+        )
+        == 10
+    )
+    assert sum(skill.category == "base" and skill.namespace == "libero" for skill in skills) == 35
+    assert sum(skill.category == "base" and skill.namespace == "robotwin" for skill in skills) == 51
 
-    libero_keys = {
-        skill.frontmatter["metadata"]["benchmark"]["task_key"]
-        for skill in libero
-    }
+    libero_keys = {skill.frontmatter["metadata"]["benchmark"]["task_key"] for skill in libero}
     assert libero_keys == set(SHORT_TASK_CATALOG) | {
         f"libero_10/{task_id}" for task_id in range(10)
     }
@@ -74,6 +68,16 @@ def test_atomic_skill_schema_and_parent_links() -> None:
         assert metadata["vlm_prompts"]["expected_on_success"]
 
 
+def test_atomic_task_key_resolves_to_task_family() -> None:
+    direct = get_atomic_by_task_key("libero_goal/5", backend="libero")
+    pick_place = get_atomic_by_task_key("libero_object/4", backend="libero")
+
+    assert direct is not None
+    assert direct.frontmatter["parent"] == "libero_direct_manipulation"
+    assert pick_place is not None
+    assert pick_place.frontmatter["parent"] == "libero_pick_place"
+
+
 def test_skill_catalog_schema_and_visible_boundary() -> None:
     assert validate_catalog(discover()) == []
 
@@ -95,6 +99,4 @@ def test_compounds_are_scoped_to_task_families() -> None:
     assert [skill.name for skill in discover_compounds("libero_pick_place")] == [
         "visual_pick_place"
     ]
-    assert [skill.name for skill in discover_compounds("libero_long")] == [
-        "place_two_in_container"
-    ]
+    assert [skill.name for skill in discover_compounds("libero_long")] == ["place_two_in_container"]

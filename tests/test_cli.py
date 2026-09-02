@@ -85,7 +85,7 @@ def test_results_replay_emits_machine_readable_json(tmp_path: Path) -> None:
     bundle.mkdir()
     (bundle / "manifest.json").write_text(
         '{"schema":"roborsi.libero_short_evidence.v1",'
-        '"metric":"task_level_adaptive_pass_at_k",'
+        '"metric":"adaptive_cross_release_task_coverage",'
         '"claim_scope":"test", "k":1,'
         '"task_catalog":["libero_goal/0"],"episodes":"episodes.jsonl"}',
         encoding="utf-8",
@@ -223,6 +223,16 @@ def test_visualize_skill_tree_writes_standalone_html(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert output.is_file()
     assert "ROBORSI SELF-EVOLUTION" in output.read_text(encoding="utf-8")
+
+
+def test_visualize_skill_tree_task_requires_campaign() -> None:
+    result = runner.invoke(
+        app,
+        ["visualize", "skill-tree", "--task", "libero_object/0", "--no-browser"],
+    )
+
+    assert result.exit_code == 2
+    assert "--task requires --run" in result.output
 
 
 def _write_cli_campaign(tmp_path: Path) -> tuple[Path, Path]:

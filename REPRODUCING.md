@@ -28,7 +28,7 @@ To run the same steps manually:
 ```bash
 ./setup.sh --core-only
 ./roborsi results replay \
-  --manifest evidence/adaptive-pass10-v1/manifest.json \
+  --manifest evidence/adaptive-coverage-v1/manifest.json \
   --json artifacts/replay.json
 ```
 
@@ -139,13 +139,84 @@ For every ordered seed, the supervisor schedules only tasks that have not
 already succeeded. Visible failures may produce complete candidate skills. A
 candidate is:
 
-1. written into an isolated campaign overlay;
-2. scanned for hidden simulator input;
-3. loaded without modifying the active release;
-4. rerun on the relevant task and seed;
-5. promoted only after final simulator success.
+1. expressed as complete Compound Skill metadata plus a non-empty declarative
+   `PROGRAM = [{"tool": ..., "args": ...}, ...]`;
+2. restricted to published visible Base or Compound Skills and declared
+   `$argument` placeholders;
+3. written into an isolated campaign overlay;
+4. loaded without modifying the active release;
+5. run on two fixed validation seeds, using a distinct holdout when available;
+6. promoted only when both runs return a final simulator-success verdict.
 
-Rejected code and failed runs remain on disk.
+Arbitrary Python, simulator imports, hidden-state tools, empty programs, and
+undeclared placeholders fail the static gate. Task failures reject the
+candidate. Provider, transport, image, or resource interruptions leave the
+candidate pending with the same release identity and validation seeds, so only
+unfinished validation work is retried. Rejected code and failed runs remain on
+disk.
+
+### Inspect the top-down execution artifacts
+
+For each attempted task, the Atomic Task profile selects its Task Family parent.
+The Planner receives the visible LIBERO instruction and public skill
+descriptions, then persists:
+
+```text
+runs/<run-id>/episodes/<run>/<task>/seed-<n>/shard-<n>/attempt-<n>/roles/
+  plan.json
+  plan.md
+  summary.md
+  review.md              written when the Reviewer completes
+```
+
+The machine-readable plan schema is `roborsi.top_down_plan.v1`:
+
+```json
+{
+  "task_family": "libero_pick_place",
+  "atomic_task": "libero_object_00",
+  "steps": [
+    {
+      "id": "locate-and-grasp",
+      "goal": "localize and pick the visible source object",
+      "skills": ["find_pixel", "grasp_object"],
+      "depends_on": []
+    }
+  ]
+}
+```
+
+`skills` is ordered. Visible recovery tools may be used between listed calls,
+but the runtime advances the planner step only after the complete listed
+sequence succeeds. The Reviewer receives the visible plan, summary, and tool
+trace; simulator predicates, rewards, hidden object state, and the final
+post-hoc verdict are removed from its packet.
+
+Generate a standalone interactive tree from the retained plan and journal:
+
+```bash
+./roborsi visualize skill-tree \
+  --run <run-id> \
+  --task libero_object/0 \
+  --output artifacts/libero-object-0-skill-tree.html \
+  --no-browser
+```
+
+The timeline shows Task Family, Atomic Task, ordered planner steps, selected
+Base/Compound Skills, final journal verdicts, release identities, and retained
+promotion records. Omit `--no-browser` to open it directly.
+
+### Resume and promotion invariants
+
+- A simulator-confirmed successful task/seed pair is never rerun.
+- Normal Pass@10 scheduling stops a task after its first successful seed.
+- Candidate validation may run an unsolved holdout seed after another
+  validation seed succeeds, without weakening successful-pair protection.
+- Infrastructure records remain retryable and excluded from task denominators.
+- Validation seed selection and candidate release identity are retained in the
+  proposal JSON so an interrupted gate resumes exactly.
+- The active `workspace/` changes only after both validation seeds pass;
+  immutable promoted content is also copied under `releases/<release-id>/`.
 
 This is a new stochastic experiment. It does not promise the historical
 `95/120`, which accumulated across a previous adaptive release lineage.

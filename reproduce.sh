@@ -53,7 +53,7 @@ RESULT="${OUTPUT_DIR}/replay.json"
 DASHBOARD="${OUTPUT_DIR}/dashboard.html"
 
 "${ROOT}/roborsi" results replay \
-  --manifest "${ROOT}/evidence/adaptive-pass10-v1/manifest.json" \
+  --manifest "${ROOT}/evidence/adaptive-coverage-v1/manifest.json" \
   --json "${RESULT}"
 "${ROOT}/roborsi" web \
   --result "${RESULT}" \

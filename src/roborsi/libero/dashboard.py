@@ -115,14 +115,17 @@ def load_dashboard_payload(
         payload.update(
             {
                 "source_kind": "public_evidence",
-                "source_name": "Adaptive Pass@10 evidence",
+                "source_name": "Adaptive cross-release coverage evidence",
                 "mode": "adaptive",
                 "status": "retained",
                 "completed_passes": int(payload["k"]),
                 "success_source": "final simulator predicate only",
             }
         )
-        payload = _normalize_payload(payload, source_name="Adaptive Pass@10 evidence")
+        payload = _normalize_payload(
+            payload,
+            source_name="Adaptive cross-release coverage evidence",
+        )
 
     missing = sorted(REQUIRED_FIELDS - payload.keys())
     if missing:

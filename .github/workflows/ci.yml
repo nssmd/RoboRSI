@@ -41,14 +41,15 @@ jobs:
 
   runtime:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[runtime,dev]"
-      - run: pytest -q
-      - run: python scripts/check_libero_gt_leak.py
+      - run: ./setup.sh --dev
+      - run: .venv/bin/pytest -q
+      - run: .venv/bin/python scripts/check_libero_gt_leak.py
+      - if: always()
+        run: ./roborsi services stop || true

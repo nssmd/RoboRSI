@@ -74,9 +74,7 @@ def _provider_check(config: ReleaseConfig) -> DoctorCheck:
         requested = PUBLIC_MODEL.split("/", 1)[1]
         ok = bool(text) and served.split("/", 1)[-1] == requested
         detail = (
-            f"served={served or '(missing)'}"
-            if ok
-            else "empty response or served-model mismatch"
+            f"served={served or '(missing)'}" if ok else "empty response or served-model mismatch"
         )
         return DoctorCheck("Responses provider", ok, detail)
     except Exception as exc:  # noqa: BLE001
@@ -134,6 +132,28 @@ def run_doctor(
                 f"ready at {config.simulator.root}"
                 if not missing
                 else "run ./setup.sh; missing " + ", ".join(missing),
+            )
+        )
+        try:
+            from roborsi.embodied.agent_loop import get_backend
+
+            backend = get_backend("libero")
+            available, detail = backend.available()
+            task_count = len(backend.list_tasks()) if available else 0
+            runtime_ok = available and task_count == len(SHORT_TASK_CATALOG)
+            runtime_detail = (
+                f"importable with {task_count} tasks"
+                if runtime_ok
+                else detail or f"expected 120 tasks, found {task_count}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            runtime_ok = False
+            runtime_detail = f"{type(exc).__name__}: {exc}"
+        checks.append(
+            DoctorCheck(
+                "LIBERO runtime import",
+                runtime_ok,
+                runtime_detail,
             )
         )
         config_file = config.simulator.config_root / "config.yaml"

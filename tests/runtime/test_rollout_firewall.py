@@ -67,3 +67,82 @@ def test_simulator_predicate_runs_once_after_visible_tool_loop(monkeypatch, tmp_
     assert result.success is True
     assert env.predicate_calls == 1
     assert result.rollout.meta["predicate_check"] is True
+
+
+def test_top_down_step_requires_ordered_skill_sequence(monkeypatch, tmp_path) -> None:
+    from roborsi.embodied.agent_loop import rollout
+
+    env = FakeEnv()
+    turns = iter(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    SimpleNamespace(
+                        id="look-1",
+                        function=SimpleNamespace(name="look", arguments="{}"),
+                    ),
+                    SimpleNamespace(
+                        id="grasp-1",
+                        function=SimpleNamespace(
+                            name="grasp_object",
+                            arguments='{"object": "visible object"}',
+                        ),
+                    ),
+                ],
+            ),
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    SimpleNamespace(
+                        id="done-1",
+                        function=SimpleNamespace(name="done", arguments='{"success": true}'),
+                    )
+                ],
+            ),
+        ]
+    )
+    def fake_vlm(*args, **kwargs):
+        response = next(turns)
+        if any(call.function.name == "done" for call in response.tool_calls):
+            env.vlm_finished = True
+        return response
+
+    monkeypatch.setattr(rollout, "_call_vlm_tools", fake_vlm)
+    monkeypatch.setattr(
+        env,
+        "tool_handlers",
+        lambda: {
+            "look": lambda state, args: ({"ok": True}, state.env.take_snapshot()),
+            "grasp_object": lambda state, args: (
+                {"ok": True, "grasped": True},
+                state.env.take_snapshot(),
+            ),
+        },
+    )
+    monkeypatch.setenv("ROBORSI_COLLECT", "0")
+    monkeypatch.setenv("ROBORSI_SELFEVO_FREEZE", "1")
+
+    result = rollout.run_rollout(
+        env,
+        seed=0,
+        task_name="libero_pick_place",
+        instruction="pick the visible object",
+        expected_on_success="the object is visibly held",
+        model="responses/gpt-5.6-sol",
+        tool_budget=2,
+        workdir=tmp_path,
+        top_down_plan={
+            "steps": [
+                {
+                    "id": "locate-and-grasp",
+                    "goal": "locate then grasp",
+                    "skills": ["look", "grasp_object"],
+                }
+            ]
+        },
+    )
+
+    assert result.trace[0].get("plan_step_status") is None
+    assert result.trace[1]["plan_step_status"] == "completed_visible"
+    assert result.rollout.meta["completed_plan_steps"] == ["locate-and-grasp"]

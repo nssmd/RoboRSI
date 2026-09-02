@@ -10,7 +10,6 @@ from roborsi.agents.workspace import Workspace
 from roborsi.embodied.agent_loop.config import DEFAULT_MODEL
 from roborsi.embodied.agent_loop.vlm_io import _call_vlm_no_tools
 
-
 _SYSTEM = """You are the independent Reviewer for a LIBERO manipulation attempt.
 Use only the visible plan, Engineer summary, and visible tool trace. You do not
 receive simulator reward, object state, predicate source, or final predicate
@@ -19,8 +18,11 @@ next action.
 
 Return one JSON object with verdict, root_cause, next_action,
 proposal_decision, proposal_payload, and review_md. proposal_decision is one of
-NO_PROPOSAL, SKILL_UPDATE, or NEW_SKILL. A code proposal must be a complete
-camera/proprioception-only implementation; otherwise choose NO_PROPOSAL.
+NO_PROPOSAL, SKILL_UPDATE, or NEW_SKILL. A proposal must be a parameterized
+Compound Skill expressed only as PROGRAM = [{"tool": ..., "args": ...}, ...].
+It may compose published visible tools and use $argument placeholders, but it
+cannot import modules, access the environment, or define arbitrary functions.
+Otherwise choose NO_PROPOSAL.
 """
 
 

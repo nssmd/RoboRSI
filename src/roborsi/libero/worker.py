@@ -13,24 +13,19 @@ from typing import Any, Callable
 from roborsi.libero.catalog import SHORT_TASK_CATALOG
 from roborsi.libero.config import ReleaseConfig, load_config
 
-DIRECT_MANIPULATION_TASKS = frozenset(
-    {
-        "libero_goal/5",
-        "libero_90/6",
-        "libero_90/22",
-        "libero_90/23",
-        "libero_90/28",
-        "libero_90/35",
-    }
-)
-
 
 def skill_for_task(task_key: str) -> str:
     if task_key not in SHORT_TASK_CATALOG:
         raise ValueError(f"task is outside the LIBERO short catalog: {task_key}")
-    if task_key in DIRECT_MANIPULATION_TASKS:
-        return "libero_direct_manipulation"
-    return "libero_pick_place"
+    from roborsi.embodied.skills import get_atomic_by_task_key
+
+    atomic = get_atomic_by_task_key(task_key, backend="libero")
+    if atomic is None:
+        raise ValueError(f"task has no unique Atomic Skill profile: {task_key}")
+    task_family = str(atomic.frontmatter.get("parent") or "").strip()
+    if not task_family:
+        raise ValueError(f"Atomic Skill has no Task Family parent: {atomic.name}")
+    return task_family
 
 
 def _all_records(campaign_root: Path):
@@ -94,9 +89,7 @@ def run_assigned_tasks(
         raise ValueError("worker task list contains duplicates")
     for task in task_keys:
         skill_for_task(task)
-    os.environ.update(
-        _runtime_env(config, root, release_id, workspace_root=workspace_root)
-    )
+    os.environ.update(_runtime_env(config, root, release_id, workspace_root=workspace_root))
     if run_episode is None:
         from roborsi.embodied.skills.executors.libero.runtime import run_libero_episode
 
@@ -107,6 +100,11 @@ def run_assigned_tasks(
     journal = root / "journals" / f"seed-{seed}-worker-{worker}{suffix}.episodes.jsonl"
     existing = _all_records(root)
     solved = {row.identity.task_key for row in existing if row.category == "task_success"}
+    successful_pairs = {
+        (row.identity.task_key, int(row.identity.seed))
+        for row in existing
+        if row.category == "task_success"
+    }
     terminal_pairs = {
         (row.identity.task_key, int(row.identity.seed))
         for row in existing
@@ -119,7 +117,12 @@ def run_assigned_tasks(
         "resource_failure",
     }
     for task in task_keys:
-        if task in solved or ((task, seed) in terminal_pairs and not allow_changed_path):
+        task_seed = (task, seed)
+        if task_seed in successful_pairs:
+            continue
+        if task in solved and not allow_changed_path:
+            continue
+        if task_seed in terminal_pairs and not allow_changed_path:
             continue
         os.environ["ROBORSI_TASK_KEY"] = task
         base_identity = EpisodeIdentity(
@@ -219,6 +222,7 @@ def run_assigned_tasks(
         terminal_pairs.add((task, seed))
         if record.category == "task_success":
             solved.add(task)
+            successful_pairs.add((task, seed))
     return journal
 
 

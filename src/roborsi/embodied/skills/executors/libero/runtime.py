@@ -62,10 +62,7 @@ def _normalized_usage(value: dict[str, Any] | None) -> dict[str, int]:
 
 
 def _sum_usage(*values: dict[str, Any]) -> dict[str, int]:
-    return {
-        key: sum(int(value.get(key, 0) or 0) for value in values)
-        for key in _USAGE_KEYS
-    }
+    return {key: sum(int(value.get(key, 0) or 0) for value in values) for key in _USAGE_KEYS}
 
 
 def _code_backed_trace_metrics(
@@ -103,13 +100,10 @@ def prompts_for(skill: str) -> tuple[str, str]:
     meta = fm.get("metadata") or {}
     prompts = meta.get("vlm_prompts") or {}
     instruction = (
-        prompts.get("instruction")
-        or fm.get("description")
-        or f"Complete the task '{skill}'."
+        prompts.get("instruction") or fm.get("description") or f"Complete the task '{skill}'."
     )
     expected = (
-        prompts.get("expected_on_success")
-        or "The task is complete per the simulator predicate."
+        prompts.get("expected_on_success") or "The task is complete per the simulator predicate."
     )
     return str(instruction).strip(), str(expected).strip()
 
@@ -118,12 +112,13 @@ def _role_orchestrated_instruction(
     *,
     skill: str,
     task: str,
+    atomic_skill: str,
     runtime_instruction: str,
     guidance: str,
     expected: str,
     model: str | None,
     workdir: Path,
-) -> tuple[Any, str]:
+) -> tuple[Any, str, dict[str, Any]]:
     """Run the real roborsi Planner before the in-process Engineer loop."""
     from roborsi.agents import Planner
     from roborsi.agents.workspace import Workspace
@@ -138,6 +133,8 @@ def _role_orchestrated_instruction(
     user_msg = f"LIBERO benchmark task: {runtime_instruction}"
     mission_spec = Planner(model=model).plan(
         task=skill,
+        task_key=task,
+        atomic_skill=atomic_skill,
         user_msg=user_msg,
         recent_reflections="",
         workspace=workspace,
@@ -151,7 +148,7 @@ def _role_orchestrated_instruction(
         f"PLAN (from roborsi Planner):\n{plan_md}\n\n"
         f"SUCCESS CRITERIA: {criteria}"
     )
-    return workspace, instruction
+    return workspace, instruction, mission_spec
 
 
 def _review_role_episode(
@@ -209,6 +206,7 @@ def _review_role_episode(
         posthoc_behavior_review=False,
     )
 
+
 def run_libero_episode(
     skill: str,
     *,
@@ -220,6 +218,12 @@ def run_libero_episode(
     episode_meta: dict[str, Any],
     backend: str = "libero",
 ) -> dict[str, Any]:
+    from roborsi.embodied.skills import get_atomic_by_task_key
+
+    atomic = get_atomic_by_task_key(task, backend="libero")
+    if atomic is None:
+        raise ValueError(f"no unique Atomic Skill profile for {task}")
+    atomic_skill = atomic.name
     guidance, expected = prompts_for(skill)
     be = get_backend(backend)
     ok, reason = be.available()
@@ -232,18 +236,19 @@ def run_libero_episode(
         shard=int(episode_meta.get("shard", 0)),
         attempt=int(episode_meta.get("attempt", 1)),
     )
-    media_root = Path(episode_meta.get("media_root")) if episode_meta.get("media_root") else (
-        workdir / "videos"
+    media_root = (
+        Path(episode_meta.get("media_root"))
+        if episode_meta.get("media_root")
+        else (workdir / "videos")
     )
     roles_enabled = os.environ.get("ROBORSI_LIBERO_ROLES", "0") == "1"
     role_workspace = None
     planner_usage = _empty_usage()
     planner_time_s = 0.0
+    mission_spec: dict[str, Any] | None = None
     with be.make_env(task) as env:
         env.reset(seed)
-        runtime_task_authoritative = bool(
-            episode_meta.get("runtime_task_authoritative", False)
-        )
+        runtime_task_authoritative = bool(episode_meta.get("runtime_task_authoritative", False))
         if runtime_task_authoritative:
             expected = "The visible LIBERO task instruction is completed in the scene."
         instruction = f"LIBERO task: {env.instruction}\n\n{guidance}"
@@ -252,9 +257,10 @@ def run_libero_episode(
             reset_usage_metrics()
             planner_started = time.monotonic()
             try:
-                role_workspace, instruction = _role_orchestrated_instruction(
+                role_workspace, instruction, mission_spec = _role_orchestrated_instruction(
                     skill=skill,
                     task=task,
+                    atomic_skill=atomic_skill,
                     runtime_instruction=env.instruction,
                     guidance=guidance,
                     expected=expected,
@@ -278,6 +284,7 @@ def run_libero_episode(
                 use_sim_predicate=True,
                 episode_meta=episode_meta,
                 include_skill_task_truth=not runtime_task_authoritative,
+                top_down_plan=mission_spec,
             )
         except Exception as exc:  # noqa: BLE001
             category = _classify_infrastructure_exception(exc)
@@ -304,6 +311,8 @@ def run_libero_episode(
                 usage=usage_metrics_snapshot(),
             ) from exc
     meta = dict(res.rollout.meta or {})
+    meta["task_family"] = skill
+    meta["atomic_skill"] = atomic_skill
     trace = list(res.trace or [])
     meta.update(_code_backed_trace_metrics(skill, trace))
     if roles_enabled and role_workspace is not None:
@@ -321,9 +330,7 @@ def run_libero_episode(
                 model=model,
             )
             meta["review_verdict"] = str(review.get("verdict") or "")
-            meta["review_proposal_decision"] = str(
-                review.get("proposal_decision") or "NO_PROPOSAL"
-            )
+            meta["review_proposal_decision"] = str(review.get("proposal_decision") or "NO_PROPOSAL")
         except Exception as exc:  # Reviewer failure cannot rewrite simulator truth.
             meta["review_error"] = f"{type(exc).__name__}: {exc}"
         finally:

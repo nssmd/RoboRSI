@@ -156,8 +156,7 @@ def find(
         if category is not None and skill.category != category:
             continue
         if selected_backend is not None and (
-            selected_backend != skill.namespace
-            and selected_backend not in skill.backends
+            selected_backend != skill.namespace and selected_backend not in skill.backends
         ):
             continue
         matches.append(skill)
@@ -180,8 +179,7 @@ def discover_ns(ns: str) -> list[Skill]:
     return [
         skill
         for skill in discover()
-        if skill.category == "base"
-        and (skill.namespace == ns or ns in skill.backends)
+        if skill.category == "base" and (skill.namespace == ns or ns in skill.backends)
     ]
 
 
@@ -189,6 +187,38 @@ def get_ns(name: str, ns: str) -> Skill | None:
     """Resolve a base skill by (name, namespace) — the namespace-scoped
     counterpart of ``get`` used by the dispatch/prompt layer."""
     return get(name, backend=ns, category="base")
+
+
+def discover_atomic(backend: str | None = None) -> list[Skill]:
+    """Return Atomic Skills, optionally restricted to one backend."""
+    return [
+        skill
+        for skill in discover()
+        if skill.category == "atomic"
+        and (backend is None or skill.namespace == backend or backend in skill.backends)
+    ]
+
+
+def get_atomic_by_task_key(task_key: str, *, backend: str) -> Skill | None:
+    """Resolve one Atomic Skill from its public benchmark task key."""
+    matches = []
+    for skill in discover_atomic(backend):
+        metadata = skill.frontmatter.get("metadata") or {}
+        benchmark = metadata.get("benchmark") if isinstance(metadata, dict) else None
+        if isinstance(benchmark, dict) and str(benchmark.get("task_key") or "") == task_key:
+            matches.append(skill)
+    return matches[0] if len(matches) == 1 else None
+
+
+def discover_executors(task_family: str, *, backend: str) -> list[Skill]:
+    """Return executor profiles attached to a Task Family."""
+    return [
+        skill
+        for skill in discover()
+        if skill.category == "executors"
+        and skill.frontmatter.get("parent") == task_family
+        and (skill.namespace == backend or backend in skill.backends)
+    ]
 
 
 def discover_compounds(task: str) -> list[Skill]:

@@ -32,10 +32,21 @@ def bootstrap_commands(
     else:
         extras = "runtime,dev" if with_dev else "runtime"
     install_target = f".[{extras}]" if extras else "."
+    constraints = root / "requirements/runtime-constraints.txt"
+    pyroki_requirements = root / "requirements/pyroki-runtime.txt"
     commands = [
         [python, "-m", "venv", str(venv)],
         [str(venv_python), "-m", "pip", "install", "--upgrade", "pip", "wheel"],
-        [str(venv_python), "-m", "pip", "install", "-e", install_target],
+        [
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "-c",
+            str(constraints),
+            "-e",
+            install_target,
+        ],
     ]
     if not core_only:
         libero = root / ".deps" / "LIBERO"
@@ -44,7 +55,12 @@ def bootstrap_commands(
             [
                 ["git", "clone", LIBERO_REPOSITORY, str(libero)],
                 ["git", "-C", str(libero), "checkout", "--detach", LIBERO_COMMIT],
-                [str(venv_python), "-m", "pip", "install", "-e", str(libero)],
+                [
+                    str(venv_python),
+                    str(root / "scripts/install_libero_checkout.py"),
+                    "--libero-root",
+                    str(libero),
+                ],
                 [
                     str(venv_python),
                     str(root / "scripts/configure_libero.py"),
@@ -57,7 +73,23 @@ def bootstrap_commands(
                 ["git", "clone", PYROKI_REPOSITORY, str(pyroki)],
                 ["git", "-C", str(pyroki), "checkout", "--detach", PYROKI_COMMIT],
                 [str(pyroki_python), "-m", "pip", "install", "--upgrade", "pip", "wheel"],
-                [str(pyroki_python), "-m", "pip", "install", "-e", str(pyroki), "pyzmq"],
+                [
+                    str(pyroki_python),
+                    "-m",
+                    "pip",
+                    "install",
+                    "-r",
+                    str(pyroki_requirements),
+                ],
+                [
+                    str(pyroki_python),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-deps",
+                    "-e",
+                    str(pyroki),
+                ],
             ]
         )
     commands.extend(

@@ -1,4 +1,4 @@
-# Adaptive Pass@10 evidence bundle
+# Adaptive cross-release coverage evidence bundle
 
 This compact bundle retains one canonical native simulator-success row for each
 of the 95 solved tasks. It is sufficient to replay task-level coverage against

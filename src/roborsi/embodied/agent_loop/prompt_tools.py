@@ -151,11 +151,16 @@ def _compound_specs(task: str) -> list[dict[str, Any]]:
     return [
         _tool_spec(skill)
         for skill in discover_compounds(task)
-        if _try_load_compound_dispatcher(skill.name, task) is not None
+        if (skill.path.parent / "policy.py").is_file()
     ]
 
 
-def _build_tool_specs(ns: str = "libero", task: str = "") -> list[dict[str, Any]]:
+def _build_tool_specs(
+    ns: str = "libero",
+    task: str = "",
+    *,
+    preferred_tools: list[str] | tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
     if ns != "libero":
         raise ValueError(f"unsupported public skill namespace: {ns}")
     from roborsi.embodied.skills import discover_ns
@@ -163,10 +168,15 @@ def _build_tool_specs(ns: str = "libero", task: str = "") -> list[dict[str, Any]
     specs = [
         _tool_spec(skill)
         for skill in discover_ns("libero")
-        if skill.name not in _HIDDEN
-        and _try_load_plugin_dispatcher(skill.name, "libero") is not None
+        if skill.name not in _HIDDEN and (skill.path.parent / "policy.py").is_file()
     ]
-    specs.sort(key=lambda value: value["function"]["name"])
+    preferred = {str(name): index for index, name in enumerate(preferred_tools)}
+    specs.sort(
+        key=lambda value: (
+            preferred.get(value["function"]["name"], len(preferred)),
+            value["function"]["name"],
+        )
+    )
     specs.extend(_compound_specs(task))
     specs.append(
         {
@@ -212,17 +222,27 @@ def _build_tool_specs(ns: str = "libero", task: str = "") -> list[dict[str, Any]
                     "type": "function",
                     "function": {
                         "name": "propose_new_skill",
-                        "description": "Queue a complete new LIBERO skill for harness review.",
+                        "description": (
+                            "Queue a parameterized Compound Skill for harness review. "
+                            "program_code must contain only "
+                            "PROGRAM = [{tool, args}, ...], using $argument placeholders."
+                        ),
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "name": {"type": "string"},
                                 "description": {"type": "string"},
-                                "code": {"type": "string"},
+                                "program_code": {"type": "string"},
                                 "skill_md": {"type": "string"},
                                 "rationale": {"type": "string"},
                             },
-                            "required": ["name", "description", "code", "skill_md", "rationale"],
+                            "required": [
+                                "name",
+                                "description",
+                                "program_code",
+                                "skill_md",
+                                "rationale",
+                            ],
                         },
                     },
                 },
@@ -230,16 +250,19 @@ def _build_tool_specs(ns: str = "libero", task: str = "") -> list[dict[str, Any]
                     "type": "function",
                     "function": {
                         "name": "propose_skill_update",
-                        "description": "Queue a complete replacement for an existing LIBERO skill.",
+                        "description": (
+                            "Queue a declarative PROGRAM replacement for an existing "
+                            "Compound Skill. Base Skills require ordinary source review."
+                        ),
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "name": {"type": "string"},
-                                "new_code": {"type": "string"},
+                                "program_code": {"type": "string"},
                                 "skill_md": {"type": "string"},
                                 "rationale": {"type": "string"},
                             },
-                            "required": ["name", "new_code", "rationale"],
+                            "required": ["name", "program_code", "rationale"],
                         },
                     },
                 },
@@ -253,7 +276,8 @@ def _system_prompt(ns: str = "libero") -> str:
     if os.environ.get("ROBORSI_SELFEVO_FREEZE", "0") == "0":
         prompt += (
             "\nADAPTATION: after two materially different strategies fail, inspect the "
-            "closest skill and queue a complete camera/proprioception-only proposal. "
+            "closest skills and queue a parameterized Compound Skill PROGRAM. The program "
+            "may only compose published visible tools and cannot execute arbitrary Python. "
             "A proposal cannot change the current episode and requires a later harness gate."
         )
     return prompt
@@ -308,31 +332,64 @@ def _dispatch_meta_tool(
         return {"ok": False, "reason": "unsupported namespace"}
     if os.environ.get("ROBORSI_SELFEVO_FREEZE", "0") != "0":
         return {"ok": False, "reason": "adaptive tools are disabled in fixed evaluation"}
-    from roborsi.embodied.skills import discover_ns, get_ns
+    from roborsi.embodied.skills import discover_compounds, discover_ns, get_ns
 
     if name == "list_base_skills":
         rows = [
-            {"name": skill.name, "description": skill.description[:160]}
+            {
+                "name": skill.name,
+                "kind": "base",
+                "description": skill.description[:160],
+            }
             for skill in discover_ns("libero")
             if skill.name not in _HIDDEN
         ]
+        rows.extend(
+            {
+                "name": skill.name,
+                "kind": "compound",
+                "description": skill.description[:160],
+            }
+            for skill in discover_compounds(task)
+        )
         return {"ok": True, "count": len(rows), "skills": rows}
     if name == "read_skill_code":
         requested = str(args.get("name") or "")
         skill = None if requested in _HIDDEN else get_ns(requested, "libero")
         if skill is None:
+            skill = next(
+                (
+                    candidate
+                    for candidate in discover_compounds(task)
+                    if candidate.name == requested
+                ),
+                None,
+            )
+        if skill is None:
             return {"ok": False, "reason": f"unknown visible LIBERO skill: {requested}"}
+        program = skill.path.parent / "program.py"
         policy = skill.path.parent / "policy.py"
         return {
             "ok": True,
             "name": requested,
-            "policy_py": policy.read_text(encoding="utf-8")[:12000] if policy.is_file() else "",
+            "policy_py": (
+                program.read_text(encoding="utf-8")[:12000]
+                if program.is_file()
+                else policy.read_text(encoding="utf-8")[:12000]
+                if policy.is_file()
+                else ""
+            ),
         }
     if name == "propose_new_skill":
         proposal_id = _queue_proposal("new", dict(args), task)
         return {"ok": True, "proposal_id": proposal_id, "applied": False}
     requested = str(args.get("name") or "")
-    if requested in _HIDDEN or get_ns(requested, "libero") is None:
-        return {"ok": False, "reason": f"unknown visible LIBERO skill: {requested}"}
+    if requested in _HIDDEN or not any(
+        skill.name == requested for skill in discover_compounds(task)
+    ):
+        return {
+            "ok": False,
+            "reason": f"unknown visible Compound Skill: {requested}",
+        }
     proposal_id = _queue_proposal("update", dict(args), task)
     return {"ok": True, "proposal_id": proposal_id, "applied": False}

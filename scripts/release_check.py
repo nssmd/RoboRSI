@@ -105,8 +105,11 @@ def collect_findings(root: Path) -> list[str]:
         "roborsi",
         "reproduce.sh",
         "scripts/check_libero_gt_leak.py",
-        "evidence/adaptive-pass10-v1/manifest.json",
-        "evidence/adaptive-pass10-v1/episodes.jsonl",
+        "scripts/install_libero_checkout.py",
+        "requirements/runtime-constraints.txt",
+        "requirements/pyroki-runtime.txt",
+        "evidence/adaptive-coverage-v1/manifest.json",
+        "evidence/adaptive-coverage-v1/episodes.jsonl",
         "src/roborsi/__init__.py",
         "src/roborsi/libero/cli.py",
         "src/roborsi/libero/dashboard.py",
@@ -122,6 +125,7 @@ def collect_findings(root: Path) -> list[str]:
         "reproduce.sh",
         "scripts/bootstrap.py",
         "scripts/check_libero_gt_leak.py",
+        "scripts/install_libero_checkout.py",
     ):
         path = root / relative
         if path.is_file() and not os.access(path, os.X_OK):
@@ -174,8 +178,8 @@ def collect_findings(root: Path) -> list[str]:
 
     findings.extend(f"skill catalog: {finding}" for finding in validate_catalog(discover()))
 
-    manifest_path = root / "evidence/adaptive-pass10-v1/manifest.json"
-    episodes_path = root / "evidence/adaptive-pass10-v1/episodes.jsonl"
+    manifest_path = root / "evidence/adaptive-coverage-v1/manifest.json"
+    episodes_path = root / "evidence/adaptive-coverage-v1/episodes.jsonl"
     if manifest_path.is_file() and episodes_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         rows = [
@@ -183,7 +187,7 @@ def collect_findings(root: Path) -> list[str]:
             for line in episodes_path.read_text(encoding="utf-8").splitlines()
             if line
         ]
-        if manifest.get("metric") != "task_level_adaptive_pass_at_k":
+        if manifest.get("metric") != "adaptive_cross_release_task_coverage":
             findings.append("evidence metric mismatch")
         expected = manifest.get("expected_result") or {}
         if (expected.get("solved_tasks"), expected.get("total_tasks")) != (95, 120):

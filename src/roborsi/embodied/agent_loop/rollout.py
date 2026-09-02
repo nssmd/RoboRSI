@@ -304,6 +304,7 @@ def run_rollout(
     prior_messages: list[dict[str, Any]] | None = None,
     episode_meta: dict[str, Any] | None = None,
     include_skill_task_truth: bool = True,
+    top_down_plan: dict[str, Any] | None = None,
 ) -> RolloutResult:
     """Success adjudication is the SIM predicate by DEFAULT (use_sim_predicate=True):
     the final verdict is env.check_success(), computed AFTER the VLM loop ends —
@@ -399,7 +400,16 @@ def run_rollout(
         ns=ns,
         include_skill_task_truth=include_skill_task_truth,
     )
-    tools = _build_tool_specs(ns=ns, task=task_name)
+    plan = dict(top_down_plan or {})
+    plan_steps = [dict(step) for step in plan.get("steps") or [] if isinstance(step, dict)]
+    preferred_tools = [
+        str(name) for step in plan_steps for name in step.get("skills") or [] if str(name)
+    ]
+    tools = _build_tool_specs(
+        ns=ns,
+        task=task_name,
+        preferred_tools=preferred_tools,
+    )
     state._allowed_tools = {str(row["function"]["name"]) for row in tools}
     compound_tool_names: set[str] = set()
     if (
@@ -426,6 +436,9 @@ def run_rollout(
     action_failures_since_review = 0
     recovery_reviewer_calls = 0
     recovery_reviewer_errors = 0
+    active_plan_step = 0
+    active_plan_skill = 0
+    completed_plan_steps: list[str] = []
     for step_idx in range(tool_budget):
         _t0 = _t.time()
         # Summarize old trace if conversation got too long.
@@ -543,7 +556,16 @@ def run_rollout(
             print(f"[zeroshot] step={step_idx} -> {name}({_fmt_args(args)})", flush=True)
             _t_dispatch = _t.time()
             trace.append(
-                {"step": step_idx, "tool_call": {"tool": name, "args": args}, "tool_call_id": tc.id}
+                {
+                    "step": step_idx,
+                    "tool_call": {"tool": name, "args": args},
+                    "tool_call_id": tc.id,
+                    "plan_step": (
+                        plan_steps[active_plan_step].get("id")
+                        if active_plan_step < len(plan_steps)
+                        else None
+                    ),
+                }
             )
             if name == "done":
                 success = bool(args.get("success", False))
@@ -596,6 +618,36 @@ def run_rollout(
                     "content": json.dumps(result, ensure_ascii=False),
                 }
             )
+            if active_plan_step < len(plan_steps):
+                planned = [
+                    str(value) for value in plan_steps[active_plan_step].get("skills") or []
+                ]
+                expected_skill = (
+                    planned[active_plan_skill] if active_plan_skill < len(planned) else None
+                )
+                if name == expected_skill and not _action_result_is_failure(name, result):
+                    trace[-1]["plan_skill_status"] = "completed_visible"
+                    active_plan_skill += 1
+                if planned and active_plan_skill >= len(planned):
+                    completed_id = str(
+                        plan_steps[active_plan_step].get("id") or f"step-{active_plan_step + 1}"
+                    )
+                    completed_plan_steps.append(completed_id)
+                    trace[-1]["plan_step_status"] = "completed_visible"
+                    active_plan_step += 1
+                    active_plan_skill = 0
+                    if active_plan_step < len(plan_steps):
+                        next_step = plan_steps[active_plan_step]
+                        convo.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"TOP-DOWN PLAN UPDATE: {completed_id} has visible "
+                                    "completion evidence. Continue with "
+                                    f"{next_step.get('id')}: {next_step.get('goal')}."
+                                ),
+                            }
+                        )
         if any_done:
             break
 
@@ -740,6 +792,10 @@ def run_rollout(
         "preview_video": str(preview_video) if preview_video else None,
         "category": category,
         "episode_identity": identity.to_dict(),
+        "top_down_plan": plan,
+        "completed_plan_steps": completed_plan_steps,
+        "active_plan_step_index": active_plan_step,
+        "active_plan_skill_index": active_plan_skill,
     }
     if media_errors:
         rollout.meta["media_error"] = " | ".join(media_errors)

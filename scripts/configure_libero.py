@@ -11,11 +11,13 @@ from pathlib import Path
 def write_libero_config(checkout: Path, config_root: Path) -> Path:
     root = Path(checkout).expanduser().resolve()
     benchmark = root / "libero/libero"
+    datasets = root / "libero/datasets"
+    datasets.mkdir(parents=True, exist_ok=True)
     required = {
         "benchmark_root": benchmark,
         "bddl_files": benchmark / "bddl_files",
         "init_states": benchmark / "init_files",
-        "datasets": root / "libero/datasets",
+        "datasets": datasets,
         "assets": benchmark / "assets",
     }
     missing = [str(path) for path in required.values() if not path.is_dir()]
@@ -25,8 +27,7 @@ def write_libero_config(checkout: Path, config_root: Path) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
     path = destination / "config.yaml"
     path.write_text(
-        json.dumps({key: str(value.resolve()) for key, value in required.items()}, indent=2)
-        + "\n",
+        json.dumps({key: str(value.resolve()) for key, value in required.items()}, indent=2) + "\n",
         encoding="utf-8",
     )
     return path

@@ -181,6 +181,54 @@ Inspect the catalog:
 ./roborsi skills validate
 ```
 
+### Planner-driven LIBERO flow
+
+Each LIBERO short episode resolves its public benchmark task key to one Atomic
+Task profile and follows that profile's Task Family parent. The Planner receives
+only the visible instruction and public capability descriptions, then writes:
+
+```text
+runs/<run-id>/episodes/<run>/<task>/seed-<n>/shard-<n>/attempt-<n>/roles/
+  plan.json
+  plan.md
+```
+
+`plan.json` records the Task Family, Atomic Task, and ordered planner steps.
+Each step names an ordered sequence of published Base or Compound Skills. The
+Engineer may use other visible tools for recovery, but a planner step is marked
+complete only after its listed skill sequence succeeds in order. The final
+task verdict still comes exclusively from the post-episode simulator predicate;
+the Planner, Engineer, and Reviewer never receive that predicate or hidden
+object state.
+
+Adaptive code reuse is declarative. A proposed Compound Skill contains complete
+`SKILL.md` metadata plus a bounded program such as:
+
+```python
+PROGRAM = [
+    {"tool": "find_pixel", "args": {"object": "$object"}},
+    {"tool": "grasp_object", "args": {"object": "$object"}},
+]
+```
+
+The static gate permits only a non-empty literal sequence of published visible
+tools, rejects arbitrary Python and undeclared `$argument` placeholders, and
+stages accepted candidates under `candidate_overlays/`. Promotion requires
+final simulator success on two fixed validation seeds, including a distinct
+holdout when available. Infrastructure interruptions keep the same candidate,
+release identity, and validation seeds pending for retry. An already successful
+task/seed is never rerun.
+
+Render the retained plan, verdict rounds, and promotion records for one task:
+
+```bash
+./roborsi visualize skill-tree \
+  --run <run-id> \
+  --task libero_object/0 \
+  --output artifacts/libero-object-0-skill-tree.html \
+  --no-browser
+```
+
 The current package contains:
 
 | Layer | Public contents |
@@ -215,7 +263,7 @@ public runtime in this repository is LIBERO.
 
 The repository keeps the claim surface narrow:
 
-- `evidence/adaptive-pass10-v1/` replays **95/120 cumulative task coverage**
+- `evidence/adaptive-coverage-v1/` replays **95/120 cumulative task coverage**
   from the published LIBERO short adaptive release lineage.
 - Every counted task has a final simulator-success record.
 - Infrastructure interruptions remain separate from task failures.
@@ -244,6 +292,7 @@ the [project website](https://robo-rsi.com/).
 | Replay packaged evidence | `./roborsi results replay` |
 | Browse skills | `./roborsi skills list` |
 | Render the Skill Tree | `./roborsi visualize skill-tree` |
+| Render a campaign task | `./roborsi visualize skill-tree --run RUN --task TASK` |
 
 The Web console reads retained campaign state directly. It shows cumulative
 coverage, suite results, final verdict counts, release history, Token usage,
@@ -324,13 +373,16 @@ runs/<run-id>/
   media/
   traces/
   trajectories/
+  episodes/
   proposals/
   candidate_overlays/
+  releases/
+  workspace/
 ```
 
 Failed runs and rejected candidates are retained. Adaptive proposals load
-through isolated overlays and cannot replace the active release before
-validation.
+through isolated overlays and cannot replace the active release before the
+two-seed simulator gate passes.
 
 </details>
 

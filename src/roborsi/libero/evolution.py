@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import os
 import re
@@ -12,20 +11,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 _NAME = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
-_FORBIDDEN_ATTRS = {
-    "__dict__",
-    "_env",
-    "_raw",
-    "check_task",
-    "check_success",
-    "get_object_pose",
-    "goal_state",
-    "object_pose",
-    "parsed_problem",
-    "raw_obs",
-    "region_box",
+_INFRASTRUCTURE = {
+    "provider_failure",
+    "transport_failure",
+    "image_failure",
+    "resource_failure",
+    "interrupted",
 }
-_FORBIDDEN_IMPORT_ROOTS = {"libero", "mujoco", "robosuite"}
 
 
 @dataclass(frozen=True)
@@ -36,9 +28,69 @@ class ProposalValidation:
 
 def _proposal_code(proposal: dict[str, Any]) -> str:
     payload = proposal.get("payload") or {}
+    return str(payload.get("program_code") or payload.get("code") or payload.get("new_code") or "")
+
+
+def _allowed_program_tools(task_family: str, program_name: str) -> set[str]:
+    from roborsi.embodied.skills import discover_compounds, discover_ns
+
+    return {skill.name for skill in discover_ns("libero") if skill.name != program_name} | {
+        skill.name for skill in discover_compounds(task_family) if skill.name != program_name
+    }
+
+
+def _validate_compound_skill_md(
+    text: str,
+    *,
+    expected_name: str,
+    expected_parent: str,
+) -> list[str]:
+    from roborsi.embodied.skills import parse_frontmatter
+
+    frontmatter, _ = parse_frontmatter(text)
+    findings = []
+    if not frontmatter:
+        return ["new skill requires complete SKILL.md frontmatter"]
+    if frontmatter.get("name") != expected_name:
+        findings.append("SKILL.md name must match the proposal name")
+    if frontmatter.get("kind") != "compound":
+        findings.append("adaptive skills must use kind: compound")
+    if frontmatter.get("parent") != expected_parent:
+        findings.append("SKILL.md parent must match the active Task Family")
+    if not isinstance(frontmatter.get("args"), dict):
+        findings.append("SKILL.md args must be a mapping")
+    if not isinstance(frontmatter.get("returns"), dict):
+        findings.append("SKILL.md returns must be a mapping")
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        findings.append("SKILL.md metadata must be a mapping")
+    else:
+        if metadata.get("compound") is not True:
+            findings.append("SKILL.md metadata.compound must be true")
+        if "libero" not in (metadata.get("backends") or []):
+            findings.append("SKILL.md metadata.backends must include libero")
+    return findings
+
+
+def _proposal_parameters(proposal: dict[str, Any]) -> set[str]:
+    from roborsi.embodied.skills import discover_compounds, parse_frontmatter
+
+    payload = proposal.get("payload") or {}
     if proposal.get("kind") == "new":
-        return str(payload.get("code") or "")
-    return str(payload.get("new_code") or "")
+        frontmatter, _ = parse_frontmatter(str(payload.get("skill_md") or ""))
+    else:
+        name = str(payload.get("name") or "")
+        skill = next(
+            (
+                candidate
+                for candidate in discover_compounds(str(proposal.get("task") or ""))
+                if candidate.name == name
+            ),
+            None,
+        )
+        frontmatter = skill.frontmatter if skill is not None else {}
+    arguments = frontmatter.get("args") if isinstance(frontmatter, dict) else {}
+    return {str(name) for name in arguments} if isinstance(arguments, dict) else set()
 
 
 def validate_proposal(proposal: dict[str, Any]) -> ProposalValidation:
@@ -50,51 +102,34 @@ def validate_proposal(proposal: dict[str, Any]) -> ProposalValidation:
     name = str(payload.get("name") or "")
     if not _NAME.fullmatch(name):
         findings.append("skill name must be a lowercase identifier")
-    code = _proposal_code(proposal)
-    if not code.strip():
-        findings.append("proposal code is empty")
+    source = _proposal_code(proposal)
+    if not source.strip():
+        findings.append("proposal program is empty")
         return ProposalValidation(False, tuple(findings))
-    try:
-        tree = ast.parse(code, filename=f"proposal:{name}")
-    except SyntaxError as exc:
-        findings.append(f"syntax error: {exc.msg} at line {exc.lineno}")
-        return ProposalValidation(False, tuple(findings))
-    if not any(
-        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == "dispatch_runtime"
-        for node in tree.body
-    ):
-        findings.append("proposal must define dispatch_runtime")
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_ATTRS:
-            findings.append(f"forbidden hidden-state attribute: {node.attr}")
-        if isinstance(node, ast.Name) and node.id in _FORBIDDEN_ATTRS:
-            findings.append(f"forbidden hidden-state name: {node.id}")
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "getattr"
-            and len(node.args) >= 2
-            and isinstance(node.args[1], ast.Constant)
-            and node.args[1].value in _FORBIDDEN_ATTRS
-        ):
-            findings.append(
-                f"forbidden hidden-state attribute: {node.args[1].value}"
-            )
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name.split(".", 1)[0] in _FORBIDDEN_IMPORT_ROOTS:
-                    findings.append(f"forbidden direct simulator import: {alias.name}")
-        if isinstance(node, ast.ImportFrom):
-            module = str(node.module or "")
-            if module.split(".", 1)[0] in _FORBIDDEN_IMPORT_ROOTS:
-                findings.append(f"forbidden direct simulator import: {module}")
-            if module.startswith("roborsi.embodied.sim"):
-                findings.append(f"forbidden direct simulator import: {module}")
+    from roborsi.libero.programs import validate_program_source
+
+    task_family = str(proposal.get("task") or "")
+    program_validation = validate_program_source(
+        source,
+        allowed_tools=_allowed_program_tools(task_family, name),
+        allowed_parameters=_proposal_parameters(proposal),
+        program_name=name,
+    )
+    findings.extend(program_validation.findings)
     if kind == "new":
         skill_md = str(payload.get("skill_md") or "")
-        if not skill_md.startswith("---"):
-            findings.append("new skill requires complete SKILL.md frontmatter")
+        findings.extend(
+            _validate_compound_skill_md(
+                skill_md,
+                expected_name=name,
+                expected_parent=task_family,
+            )
+        )
+    else:
+        from roborsi.embodied.skills import discover_compounds
+
+        if not any(skill.name == name for skill in discover_compounds(task_family)):
+            findings.append("updates are restricted to existing Compound Skills")
     return ProposalValidation(not findings, tuple(sorted(set(findings))))
 
 
@@ -105,34 +140,62 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _stage_proposal(campaign_root: Path, proposal: dict[str, Any]) -> tuple[Path, Path]:
-    from roborsi.embodied.skills import get_ns
+    from roborsi.embodied.skills import discover_compounds
+    from roborsi.libero.programs import program_source, validate_program_source
 
     proposal_id = str(proposal["id"])
     payload = proposal["payload"]
     name = str(payload["name"])
     overlay = campaign_root / "candidate_overlays" / proposal_id
-    skill_dir = overlay / "embodied/skills/base" / name / "libero"
+    current_workspace = campaign_root / "workspace"
+    if current_workspace.is_dir() and not overlay.exists():
+        shutil.copytree(current_workspace, overlay)
+    skill_dir = overlay / "embodied/skills/compound/libero" / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     if proposal["kind"] == "update":
-        source = get_ns(name, "libero")
+        source = next(
+            (
+                skill
+                for skill in discover_compounds(str(proposal.get("task") or ""))
+                if skill.name == name
+            ),
+            None,
+        )
         if source is None:
-            raise ValueError(f"cannot update unknown LIBERO skill: {name}")
+            raise ValueError(f"cannot update unknown Compound Skill: {name}")
         source_md = source.path
         target_md = skill_dir / "SKILL.md"
         if not target_md.exists():
             shutil.copy2(source_md, target_md)
-        code = str(payload.get("new_code") or "")
     else:
         target_md = skill_dir / "SKILL.md"
         skill_md = str(payload.get("skill_md") or "")
         if not target_md.exists():
             target_md.write_text(skill_md, encoding="utf-8")
-        code = str(payload.get("code") or "")
+
+    validation = validate_program_source(
+        _proposal_code(proposal),
+        allowed_tools=_allowed_program_tools(str(proposal.get("task") or ""), name),
+        allowed_parameters=_proposal_parameters(proposal),
+        program_name=name,
+    )
+    if not validation.ok:
+        raise ValueError("; ".join(validation.findings))
+    source = program_source(validation.program)
+    program = skill_dir / "program.py"
     policy = skill_dir / "policy.py"
-    if policy.exists() and policy.read_text(encoding="utf-8") != code:
-        raise ValueError(f"candidate overlay already exists with different code: {policy}")
-    if not policy.exists():
-        policy.write_text(code, encoding="utf-8")
+    policy_source = (
+        "from __future__ import annotations\n\n"
+        "from .program import PROGRAM\n"
+        "from roborsi.libero.programs import execute_program\n\n"
+        "def dispatch_runtime(state, args):\n"
+        f"    return execute_program(PROGRAM, state, args, program_name={name!r})\n"
+    )
+    for path, text in ((program, source), (policy, policy_source)):
+        if path.exists() and path.read_text(encoding="utf-8") != text:
+            raise ValueError(f"candidate overlay already exists with different code: {path}")
+        if not path.exists():
+            path.write_text(text, encoding="utf-8")
     return overlay, skill_dir
 
 
@@ -217,13 +280,73 @@ def _promote(
     candidate_skill_dir: Path,
     skill_name: str,
 ) -> None:
-    relative = Path("embodied/skills/base") / skill_name / "libero"
+    relative = Path("embodied/skills/compound/libero") / skill_name
     immutable = campaign_root / "releases" / release_id / relative
     promoted = campaign_root / "workspace" / relative
     immutable.parent.mkdir(parents=True, exist_ok=True)
     promoted.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(candidate_skill_dir, immutable, dirs_exist_ok=False)
     shutil.copytree(candidate_skill_dir, promoted, dirs_exist_ok=True)
+
+
+def _promotion_seeds(
+    campaign_root: Path,
+    proposal: dict[str, Any],
+    *,
+    current_seed: int,
+    count: int = 2,
+) -> list[int]:
+    from roborsi.embodied.sim.libero.run_records import load_records
+
+    retained = proposal.get("validation_seeds")
+    if isinstance(retained, list):
+        selected = [int(value) for value in retained]
+        if len(selected) >= count and len(selected) == len(set(selected)):
+            return selected[:count]
+    task = str(proposal.get("benchmark_task") or "")
+    rows = [
+        row
+        for journal in sorted((campaign_root / "journals").glob("*.episodes.jsonl"))
+        for row in load_records(journal)
+        if row.identity.task_key == task
+    ]
+    successful = {int(row.identity.seed) for row in rows if row.category == "task_success"}
+    terminal = {
+        int(row.identity.seed)
+        for row in rows
+        if row.category in {"task_success", "task_failure", "implementation_failure"}
+    }
+    selected = []
+    if current_seed not in successful:
+        selected.append(int(current_seed))
+    for seed in range(10):
+        if seed in selected or seed in terminal:
+            continue
+        selected.append(seed)
+        if len(selected) >= count:
+            break
+    return selected
+
+
+def _passed_harness(result: dict[str, Any]) -> bool:
+    return bool(
+        result.get("success") is True
+        and result.get("category") == "task_success"
+        and result.get("simulator_verdict") == "task_success"
+    )
+
+
+def _harness_exception(exc: BaseException, *, seed: int) -> dict[str, Any]:
+    from roborsi.embodied.sim.libero.run_records import classify_infrastructure_exception
+
+    category = classify_infrastructure_exception(exc)
+    return {
+        "success": False if category == "implementation_failure" else None,
+        "category": category,
+        "simulator_verdict": None,
+        "seed": int(seed),
+        "detail": f"{type(exc).__name__}: {exc}",
+    }
 
 
 def process_pending_proposals(
@@ -238,63 +361,96 @@ def process_pending_proposals(
     latest_release: str | None = None
     processed = 0
     previous_workspace = os.environ.get("ROBORSI_WORKSPACE")
-    for path in sorted((root / "proposals").glob("*.json")):
-        proposal = json.loads(path.read_text(encoding="utf-8"))
-        if proposal.get("status") != "pending":
-            continue
-        if processed >= max_proposals:
-            break
-        processed += 1
-        validation = validate_proposal(proposal)
-        proposal["static_validation"] = {
-            "ok": validation.ok,
-            "findings": list(validation.findings),
-        }
-        if not validation.ok:
-            proposal["status"] = "rejected_static"
-            _write_json(path, proposal)
-            continue
-        os.environ["ROBORSI_WORKSPACE"] = str(root / "workspace")
-        try:
-            candidate_root, skill_dir = _stage_proposal(root, proposal)
-        except Exception as exc:  # noqa: BLE001
-            proposal["status"] = "rejected_static"
-            proposal["static_validation"]["ok"] = False
-            proposal["static_validation"]["findings"].append(
-                f"staging failed: {type(exc).__name__}: {exc}"
+    try:
+        for path in sorted((root / "proposals").glob("*.json")):
+            proposal = json.loads(path.read_text(encoding="utf-8"))
+            if proposal.get("status") != "pending":
+                continue
+            if processed >= max_proposals:
+                break
+            processed += 1
+            validation = validate_proposal(proposal)
+            proposal["static_validation"] = {
+                "ok": validation.ok,
+                "findings": list(validation.findings),
+            }
+            if not validation.ok:
+                proposal["status"] = "rejected_static"
+                _write_json(path, proposal)
+                continue
+            os.environ["ROBORSI_WORKSPACE"] = str(root / "workspace")
+            try:
+                candidate_root, skill_dir = _stage_proposal(root, proposal)
+            except Exception as exc:  # noqa: BLE001
+                proposal["status"] = "rejected_static"
+                proposal["static_validation"]["ok"] = False
+                proposal["static_validation"]["findings"].append(
+                    f"staging failed: {type(exc).__name__}: {exc}"
+                )
+                _write_json(path, proposal)
+                continue
+            release_id = str(
+                proposal.get("candidate_release_id")
+                or f"adaptive-seed{seed}-{proposal['id']}"
             )
+            proposal["candidate_release_id"] = release_id
+            validation_seeds = _promotion_seeds(
+                root,
+                proposal,
+                current_seed=seed,
+            )
+            proposal["validation_seeds"] = validation_seeds
+            prior_results = {
+                int(result.get("seed")): result
+                for result in proposal.get("harness_results") or []
+                if isinstance(result, dict) and result.get("seed") is not None
+            }
+            results = []
+            for validation_seed in validation_seeds:
+                prior = prior_results.get(validation_seed)
+                if prior is not None and _passed_harness(prior):
+                    results.append(prior)
+                    continue
+                try:
+                    result = harness(
+                        campaign_root=root,
+                        proposal=proposal,
+                        candidate_root=candidate_root,
+                        seed=validation_seed,
+                        release_id=release_id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    result = _harness_exception(exc, seed=validation_seed)
+                result = dict(result)
+                result.setdefault("seed", validation_seed)
+                results.append(result)
+            proposal["harness_result"] = results[0] if results else {}
+            proposal["harness_results"] = results
+            if any(str(result.get("category") or "") in _INFRASTRUCTURE for result in results):
+                proposal["status"] = "pending"
+                proposal["validation_status"] = "infrastructure_interrupted"
+                _write_json(path, proposal)
+                continue
+            passed = len(results) >= 2 and all(_passed_harness(result) for result in results)
+            if not passed:
+                proposal["status"] = "rejected_harness"
+                proposal["validation_status"] = "failed"
+                _write_json(path, proposal)
+                continue
+            _promote(
+                root,
+                release_id=release_id,
+                candidate_skill_dir=skill_dir,
+                skill_name=str(proposal["payload"]["name"]),
+            )
+            proposal["status"] = "applied"
+            proposal["validation_status"] = "passed"
+            proposal["release_id"] = release_id
             _write_json(path, proposal)
-            continue
-        release_id = f"adaptive-seed{seed}-{proposal['id']}"
-        result = harness(
-            campaign_root=root,
-            proposal=proposal,
-            candidate_root=candidate_root,
-            seed=seed,
-            release_id=release_id,
-        )
-        proposal["harness_result"] = result
-        passed = bool(
-            result.get("success") is True
-            and result.get("category") == "task_success"
-            and result.get("simulator_verdict") == "task_success"
-        )
-        if not passed:
-            proposal["status"] = "rejected_harness"
-            _write_json(path, proposal)
-            continue
-        _promote(
-            root,
-            release_id=release_id,
-            candidate_skill_dir=skill_dir,
-            skill_name=str(proposal["payload"]["name"]),
-        )
-        proposal["status"] = "applied"
-        proposal["release_id"] = release_id
-        _write_json(path, proposal)
-        latest_release = release_id
-    if previous_workspace is None:
-        os.environ.pop("ROBORSI_WORKSPACE", None)
-    else:
-        os.environ["ROBORSI_WORKSPACE"] = previous_workspace
+            latest_release = release_id
+    finally:
+        if previous_workspace is None:
+            os.environ.pop("ROBORSI_WORKSPACE", None)
+        else:
+            os.environ["ROBORSI_WORKSPACE"] = previous_workspace
     return latest_release

@@ -16,8 +16,8 @@
     "total_tasks": 120
   },
   "k": 10,
-  "label": "Adaptive task-level Pass@10",
-  "metric": "task_level_adaptive_pass_at_k",
+  "label": "Adaptive cross-release task coverage",
+  "metric": "adaptive_cross_release_task_coverage",
   "round_seeds": [
     0,
     1,

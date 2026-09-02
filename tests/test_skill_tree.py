@@ -5,8 +5,18 @@ from pathlib import Path
 
 import pytest
 
+from roborsi.embodied.sim.libero.run_records import (
+    EpisodeIdentity,
+    EpisodeRecord,
+    append_record,
+)
+from roborsi.libero.config import ReleaseConfig
+from roborsi.libero.launcher import create_campaign
 from roborsi.libero.skill_tree import (
+    CAMPAIGN_SCHEMA,
     SCHEMA,
+    build_campaign_skill_tree_html,
+    load_campaign_skill_tree,
     load_storyboard,
     sanitize_storyboard,
     validate_storyboard,
@@ -83,7 +93,7 @@ def test_write_skill_tree_html_is_standalone_and_interactive(tmp_path: Path) -> 
     text = output.read_text(encoding="utf-8")
 
     assert "ROBORSI SELF-EVOLUTION" in text
-    assert "type=\"range\"" in text
+    assert 'type="range"' in text
     assert "Perception appears" in text
     assert "https://" not in text
 
@@ -97,3 +107,81 @@ def test_default_storyboard_is_packaged_and_private_metadata_free() -> None:
         "source_runtime_id" not in event and "repair_ids" not in event
         for event in payload["events"]
     )
+
+
+def test_campaign_skill_tree_uses_retained_plan_and_verdict(tmp_path: Path) -> None:
+    config = ReleaseConfig.default(repo_root=tmp_path)
+    campaign = create_campaign(config, mode="adaptive", run_id="run")
+    roles = campaign / "episodes/run/libero_object__0/seed-0/shard-0/attempt-1/roles"
+    roles.mkdir(parents=True)
+    (roles / "plan.json").write_text(
+        json.dumps(
+            {
+                "schema": "roborsi.top_down_plan.v1",
+                "task_key": "libero_object/0",
+                "task_family": "libero_pick_place",
+                "atomic_task": "libero_object_00",
+                "steps": [
+                    {
+                        "id": "pick",
+                        "goal": "pick the visible object",
+                        "skills": ["grasp_object"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    append_record(
+        campaign / "journals/seed-0-worker-0.episodes.jsonl",
+        EpisodeRecord(
+            identity=EpisodeIdentity(
+                run_id="run",
+                task_key="libero_object/0",
+                seed=0,
+                shard=0,
+                attempt=1,
+            ),
+            category="task_success",
+            success=True,
+            outcome="visible",
+            release_id="release-1",
+        ),
+    )
+
+    payload = load_campaign_skill_tree(campaign, task_key="libero_object/0")
+    html = build_campaign_skill_tree_html(payload)
+
+    assert payload["schema_version"] == CAMPAIGN_SCHEMA
+    assert payload["rounds"][0]["verdict"] == "task_success"
+    assert "libero_object_00" in html
+    assert "grasp_object" in html
+    assert 'type="range"' in html
+    assert "innerHTML" not in html
+
+
+def test_campaign_skill_tree_escapes_static_identity_fields() -> None:
+    html = build_campaign_skill_tree_html(
+        {
+            "schema_version": CAMPAIGN_SCHEMA,
+            "run_id": "<img src=x onerror=alert(1)>",
+            "task_key": "<script>alert(1)</script>",
+            "task_family": "libero_pick_place",
+            "atomic_task": "libero_object_00",
+            "rounds": [
+                {
+                    "round": 1,
+                    "seed": 0,
+                    "attempt": 1,
+                    "release_id": "",
+                    "verdict": "running",
+                    "steps": [],
+                }
+            ],
+            "promotions": [],
+        }
+    )
+
+    assert "<img src=x" not in html
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;img src=x" in html

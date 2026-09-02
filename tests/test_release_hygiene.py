@@ -6,14 +6,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 IGNORED = {
     ".git",
+    ".deps",
     ".pytest_cache",
     ".ruff_cache",
+    ".runtime",
     ".venv",
     ".venv-pyroki",
     ".remotion",
     "__pycache__",
     "node_modules",
+    "artifacts",
+    "dist",
     "out",
+    "runs",
     "site-preview",
 }
 

@@ -437,6 +437,15 @@ def visualize_skill_tree(
         Path | None,
         typer.Option("--storyboard", help="Optional RoboRSI storyboard JSON."),
     ] = None,
+    run: Annotated[
+        str | None,
+        typer.Option("--run", help="Campaign id or directory for retained plans."),
+    ] = None,
+    task: Annotated[
+        str | None,
+        typer.Option("--task", help="Task key inside a campaign."),
+    ] = None,
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("roborsi.yaml"),
     output: Annotated[
         Path,
         typer.Option("--output", "-o", help="Standalone HTML output."),
@@ -446,9 +455,29 @@ def visualize_skill_tree(
     """Render the interactive RoboRSI skill-evolution tree."""
     import webbrowser
 
-    from roborsi.libero.skill_tree import write_skill_tree_html
+    from roborsi.libero.skill_tree import (
+        write_campaign_skill_tree_html,
+        write_skill_tree_html,
+    )
 
-    destination = write_skill_tree_html(output, storyboard_path=storyboard)
+    if storyboard is not None and run is not None:
+        raise typer.BadParameter("choose only one of --storyboard or --run")
+    if task is not None and run is None:
+        raise typer.BadParameter("--task requires --run")
+    if run is not None:
+        release = _load_config_or_exit(config)
+        try:
+            campaign = resolve_campaign(release.runtime.results_root, run)
+            destination = write_campaign_skill_tree_html(
+                campaign,
+                output,
+                task_key=task,
+            )
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]Campaign skill-tree error[/red] {exc}")
+            raise typer.Exit(2) from exc
+    else:
+        destination = write_skill_tree_html(output, storyboard_path=storyboard)
     console.print(f"[green]Skill tree written[/green] {destination}")
     if not no_browser:
         webbrowser.open(destination.as_uri())

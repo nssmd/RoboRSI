@@ -12,7 +12,7 @@ from roborsi.libero.worker import run_assigned_tasks, skill_for_task
 pytestmark = pytest.mark.runtime
 
 
-def test_worker_routes_only_known_direct_manipulation_tasks() -> None:
+def test_worker_routes_from_atomic_skill_parent() -> None:
     assert skill_for_task("libero_goal/5") == "libero_direct_manipulation"
     assert skill_for_task("libero_90/35") == "libero_direct_manipulation"
     assert skill_for_task("libero_90/31") == "libero_pick_place"
@@ -71,6 +71,51 @@ def test_worker_records_native_success_and_skips_it_on_resume(tmp_path: Path) ->
     assert rows[0].success is True
     assert rows[0].total_tokens == 12
     assert rows[0].release_id == "release-public"
+
+
+def test_candidate_validation_can_use_holdout_without_rerunning_success(
+    tmp_path: Path,
+) -> None:
+    config = ReleaseConfig.default(repo_root=tmp_path)
+    campaign = create_campaign(config, mode="adaptive", run_id="run")
+    calls: list[int] = []
+
+    def run_episode(**kwargs):
+        calls.append(kwargs["seed"])
+        return {"success": True, "outcome": "predicate_passed_without_done", "meta": {}}
+
+    run_assigned_tasks(
+        config,
+        campaign_root=campaign,
+        seed=0,
+        release_id="candidate",
+        worker=0,
+        task_keys=["libero_spatial/0"],
+        run_episode=run_episode,
+        allow_changed_path=True,
+    )
+    run_assigned_tasks(
+        config,
+        campaign_root=campaign,
+        seed=0,
+        release_id="candidate",
+        worker=0,
+        task_keys=["libero_spatial/0"],
+        run_episode=run_episode,
+        allow_changed_path=True,
+    )
+    run_assigned_tasks(
+        config,
+        campaign_root=campaign,
+        seed=1,
+        release_id="candidate",
+        worker=0,
+        task_keys=["libero_spatial/0"],
+        run_episode=run_episode,
+        allow_changed_path=True,
+    )
+
+    assert calls == [0, 1]
 
 
 def test_worker_retains_provider_failure_without_consuming_task_seed(tmp_path: Path) -> None:
