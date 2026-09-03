@@ -185,21 +185,15 @@ def _openai_call_with_tools(model: str, messages: list[dict[str, Any]],
       2. OPENAI_API_KEY env var (Azure deployments often use api-key header)
       3. az CLI bearer token (Azure managed identity)
     """
-    import os
-    from openai import OpenAI
     model_id = model.split("/", 1)[1] if "/" in model and not model.startswith("gpt-") else model
-    base_url = (os.environ.get("ROBORSI_OPENAI_BASE_URL")
-                or os.environ.get("OPENAI_BASE_URL")
-                or "https://api.openai.com/v1")
-    static_key = (os.environ.get("ROBORSI_OPENAI_API_KEY")
-                  or os.environ.get("OPENAI_API_KEY"))
-    headers: dict[str, str] = {}
-    if static_key:
-        api_key = static_key
-        headers["api-key"] = static_key  # Azure-style auth
-    else:
-        api_key = _azure_bearer_token()
-    client = OpenAI(api_key=api_key, base_url=base_url, default_headers=headers or None)
+    client = _openai_client()
+    if _openai_transport() == "responses":
+        return _openai_responses_call(
+            client,
+            model_id=model_id,
+            messages=messages,
+            tools=tools,
+        )
     sanitized_tools = [_sanitize_openai_tool(t) for t in (tools or [])] or None
     with _track_vlm_call():
         resp = client.chat.completions.create(
@@ -209,6 +203,225 @@ def _openai_call_with_tools(model: str, messages: list[dict[str, Any]],
         )
         _log_tokens(resp)
     return resp.choices[0].message
+
+
+def _openai_transport() -> str:
+    import os
+
+    transport = os.environ.get(
+        "ROBORSI_OPENAI_TRANSPORT",
+        "chat_completions",
+    ).strip().lower().replace("-", "_")
+    if transport not in {"chat_completions", "responses"}:
+        raise ValueError(
+            "ROBORSI_OPENAI_TRANSPORT must be 'chat_completions' or 'responses'"
+        )
+    return transport
+
+
+def _openai_client() -> Any:
+    import json as json_module
+    import os
+
+    from openai import OpenAI
+
+    base_url = (
+        os.environ.get("ROBORSI_OPENAI_BASE_URL")
+        or os.environ.get("OPENAI_BASE_URL")
+    )
+    static_key = (
+        os.environ.get("ROBORSI_OPENAI_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+    )
+    if not static_key:
+        try:
+            auth_path = Path.home() / ".codex" / "auth.json"
+            static_key = json_module.loads(
+                auth_path.read_text(encoding="utf-8")
+            ).get("OPENAI_API_KEY")
+        except (FileNotFoundError, json_module.JSONDecodeError):
+            pass
+    if not base_url:
+        config_path = Path.home() / ".codex" / "config.toml"
+        if config_path.is_file():
+            for line in config_path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("base_url"):
+                    base_url = stripped.split("=", 1)[1].strip().strip('"')
+                    break
+    base_url = base_url or "https://api.openai.com/v1"
+    headers: dict[str, str] = {}
+    if static_key:
+        api_key = static_key
+        headers["api-key"] = static_key
+    else:
+        api_key = _azure_bearer_token()
+    return OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        default_headers=headers or None,
+        timeout=180.0,
+    )
+
+
+def _openai_responses_call(
+    client: Any,
+    *,
+    model_id: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> Any:
+    import os
+
+    instructions, input_items = _messages_to_responses_input(messages)
+    kwargs: dict[str, Any] = {
+        "model": model_id,
+        "input": input_items,
+        "max_output_tokens": int(
+            os.environ.get("ROBORSI_OPENAI_MAX_OUTPUT_TOKENS", "8192")
+        ),
+    }
+    if instructions:
+        kwargs["instructions"] = instructions
+    response_tools = [_tool_to_responses(tool) for tool in tools]
+    if response_tools:
+        kwargs["tools"] = response_tools
+        kwargs["tool_choice"] = "auto"
+    with _track_vlm_call():
+        response = client.responses.create(**kwargs)
+    _log_tokens(response)
+    return _wrap_openai_responses(response)
+
+
+def _messages_to_responses_input(
+    messages: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    instructions: list[str] = []
+    items: list[dict[str, Any]] = []
+    for message in messages:
+        role = str(message.get("role") or "user")
+        content = message.get("content")
+        if role in {"system", "developer"}:
+            text = _message_text(content)
+            if text:
+                instructions.append(text)
+            continue
+        if role == "tool":
+            items.append({
+                "type": "function_call_output",
+                "call_id": str(message.get("tool_call_id") or ""),
+                "output": _message_text(content) or "(no output)",
+            })
+            continue
+
+        tool_calls = message.get("tool_calls") or []
+        text = _message_text(content)
+        if text:
+            if isinstance(content, list):
+                items.append({
+                    "role": role,
+                    "content": _content_to_responses_blocks(content, role=role),
+                })
+            else:
+                items.append({"role": role, "content": text})
+        for tool_call in tool_calls:
+            function = tool_call.get("function") or {}
+            items.append({
+                "type": "function_call",
+                "call_id": str(tool_call.get("id") or ""),
+                "name": str(function.get("name") or ""),
+                "arguments": str(function.get("arguments") or "{}"),
+            })
+    return "\n\n".join(instructions), items
+
+
+def _content_to_responses_blocks(
+    content: list[dict[str, Any]],
+    *,
+    role: str,
+) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    text_type = "output_text" if role == "assistant" else "input_text"
+    for block in content:
+        block_type = block.get("type")
+        if block_type in {"text", "input_text", "output_text"}:
+            text = str(block.get("text") or "")
+            if text:
+                blocks.append({"type": text_type, "text": text})
+        elif block_type in {"image_url", "input_image"}:
+            image = block.get("image_url")
+            image_url = image.get("url") if isinstance(image, dict) else image
+            if image_url:
+                blocks.append({"type": "input_image", "image_url": image_url})
+    return blocks
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return "" if content is None else str(content)
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") in {"text", "input_text", "output_text"}:
+            text = str(block.get("text") or "")
+            if text:
+                parts.append(text)
+    return "".join(parts)
+
+
+def _tool_to_responses(tool: dict[str, Any]) -> dict[str, Any]:
+    function = tool.get("function") or {}
+    converted = {
+        "type": "function",
+        "name": function["name"],
+        "description": function.get("description", ""),
+        "parameters": function.get("parameters") or {
+            "type": "object",
+            "properties": {},
+        },
+    }
+    if "strict" in function:
+        converted["strict"] = bool(function["strict"])
+    return converted
+
+
+def _wrap_openai_responses(response: Any) -> Any:
+    class _ToolCall:
+        def __init__(self, item: Any) -> None:
+            self.id = (
+                getattr(item, "call_id", None)
+                or getattr(item, "id", None)
+                or ""
+            )
+            self.function = type("F", (), {
+                "name": getattr(item, "name", ""),
+                "arguments": getattr(item, "arguments", "{}") or "{}",
+            })()
+
+    class _Message:
+        def __init__(self, content: str | None, tool_calls: list[Any]) -> None:
+            self.content = content
+            self.tool_calls = tool_calls or None
+
+    text_parts: list[str] = []
+    tool_calls: list[Any] = []
+    for item in getattr(response, "output", None) or []:
+        item_type = getattr(item, "type", None)
+        if item_type == "function_call":
+            tool_calls.append(_ToolCall(item))
+            continue
+        if item_type != "message":
+            continue
+        for block in getattr(item, "content", None) or []:
+            if getattr(block, "type", None) in {"output_text", "text", "refusal"}:
+                text = getattr(block, "text", None) or getattr(block, "refusal", None)
+                if text:
+                    text_parts.append(str(text))
+    text = "".join(text_parts)
+    return _Message(text or None, tool_calls)
 
 
 def _sanitize_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
@@ -238,7 +451,9 @@ _AZ_TOKEN_CACHE: dict[str, Any] = {"token": None, "expires_at": 0.0}
 
 def _azure_bearer_token() -> str:
     """Get Azure bearer token via `az` CLI, cached for 50 min."""
-    import os, subprocess, time
+    import os
+    import subprocess
+    import time
     now = time.time()
     if _AZ_TOKEN_CACHE["token"] and now < _AZ_TOKEN_CACHE["expires_at"]:
         return _AZ_TOKEN_CACHE["token"]
@@ -253,8 +468,9 @@ def _azure_bearer_token() -> str:
 
 
 def _anthropic_client():
-    import anthropic
     import os
+
+    import anthropic
 
     api_key = (
         os.environ.get("ANTHROPIC_API_KEY")
@@ -277,7 +493,6 @@ def _anthropic_call_with_tools(model: str, messages: list[dict[str, Any]],
                                 thinking_budget: int = 0,
                                 tool_choice_override: str | None = None,
                                 prefill: str | None = None) -> Any:
-    import os
     from roborsi.embodied.agent_loop.messages import _convert_messages_to_anthropic
     client = _anthropic_client()
     model_id = model.split("/", 1)[1] if "/" in model else model
@@ -427,31 +642,21 @@ def _vlm_complete_openai(model: str, system: str, convo: list[dict[str, Any]]) -
     when env vars aren't set. Default model gpt-5 (Azure deployment name; override
     via ROBORSI_VLM_MODEL=openai/<deployment_id>).
     """
-    import json as _json
-    import os
-    from openai import OpenAI
-    api_key = os.environ.get("OPENAI_API_KEY")
-    base_url = os.environ.get("OPENAI_BASE_URL")
-    if not api_key:
-        try:
-            with open(os.path.expanduser("~/.codex/auth.json")) as f:
-                api_key = _json.load(f).get("OPENAI_API_KEY")
-        except (FileNotFoundError, _json.JSONDecodeError):
-            pass
-    if not base_url:
-        # Parse codex config.toml for [model_providers.codex] base_url.
-        cfg_path = os.path.expanduser("~/.codex/config.toml")
-        if os.path.isfile(cfg_path):
-            with open(cfg_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("base_url"):
-                        base_url = line.split("=", 1)[1].strip().strip('"')
-                        break
-    client = OpenAI(api_key=api_key, base_url=base_url, timeout=180.0) if base_url else OpenAI(api_key=api_key, timeout=180.0)
+    client = _openai_client()
     model_id = model.split("/", 1)[1] if "/" in model else model
     if not model_id or model_id.startswith("anthropic"):
         model_id = "gpt-5"
+    if _openai_transport() == "responses":
+        message = _openai_responses_call(
+            client,
+            model_id=model_id,
+            messages=[
+                {"role": "system", "content": system},
+                *convo,
+            ],
+            tools=[],
+        )
+        return str(message.content or "")
     msgs: list[dict[str, Any]] = [{"role": "system", "content": system}]
     for m in convo:
         role = m.get("role", "user")
