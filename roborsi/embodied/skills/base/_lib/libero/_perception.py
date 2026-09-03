@@ -53,11 +53,15 @@ def remember_pixel(state, query: str, uv) -> tuple[int, int]:
         cache = {}
         setattr(state, "_perception_cache", cache)
     key = _query_key(query)
-    cache[key] = {
+    previous = cache.get(key) or {}
+    record = {
         "query": str(query),
         "pixel": pixel,
         "tokens": sorted(_query_tokens(query)),
     }
+    if tuple(previous.get("pixel") or ()) == pixel and previous.get("world"):
+        record["world"] = previous["world"]
+    cache[key] = record
     return pixel
 
 

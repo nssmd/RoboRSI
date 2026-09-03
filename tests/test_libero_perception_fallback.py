@@ -75,6 +75,40 @@ def test_unprojected_target_and_object_height_define_drop_point() -> None:
     assert np.allclose(drop, [-0.04, 0.27, 0.18])
 
 
+def test_remembering_same_pixel_preserves_unprojected_world() -> None:
+    state = _state()
+    _perception.remember_pixel(state, "basket", (20, 21))
+    _perception.remember_world(state, 20, 21, (-0.04, 0.27, 0.09))
+
+    _perception.remember_pixel(state, "basket", (20, 21))
+
+    assert _perception.recall_world(state, "basket") == (-0.04, 0.27, 0.09)
+
+
+def test_servo_to_drop_uses_lift_hover_and_descending_waypoints() -> None:
+    calls = []
+
+    class Control:
+        def read_pose(self):
+            return np.asarray([0.1, 0.0, 0.2]), None, None
+
+        def servo_to(self, pos, **kwargs):
+            calls.append((list(pos), kwargs))
+            return True, None
+
+    result = place_object_in._servo_to_drop(
+        Control(),
+        np.asarray([-0.04, 0.27, 0.18]),
+        0.12,
+    )
+
+    assert result == (True, True, True)
+    assert calls[0][0] == [0.1, 0.0, 0.3]
+    assert calls[1][0] == [-0.04, 0.27, 0.3]
+    assert calls[-1][0] == [-0.04, 0.27, 0.18]
+    assert len(calls) == 6
+
+
 def test_gripper_gap_distinguishes_open_holding_and_closed() -> None:
     assert classify_gripper_gap(0.001) == "closed_empty"
     assert classify_gripper_gap(0.0588) == "holding"

@@ -50,6 +50,32 @@ def _drop_from_memory(state, target_name: str, z_offset: float):
     ], dtype=float)
 
 
+def _servo_to_drop(ctrl, drop: np.ndarray, hover: float):
+    current, _, _ = ctrl.read_pose()
+    travel_z = max(float(current[2]) + 0.06, float(drop[2]) + hover)
+    lift_reached, _ = ctrl.servo_to(
+        [float(current[0]), float(current[1]), travel_z],
+        gripper="close",
+        max_iters=100,
+    )
+    hover_reached, _ = ctrl.servo_to(
+        [float(drop[0]), float(drop[1]), travel_z],
+        gripper="close",
+        max_iters=140,
+    )
+    descent_reached = True
+    for z in np.linspace(travel_z, float(drop[2]), 5)[1:]:
+        reached, _ = ctrl.servo_to(
+            [float(drop[0]), float(drop[1]), float(z)],
+            gripper="close",
+            max_iters=100,
+        )
+        descent_reached = descent_reached and reached
+        if not reached:
+            break
+    return lift_reached, hover_reached, descent_reached
+
+
 def dispatch_runtime(state, args: dict[str, Any]):
     env = state.env
     ctrl = LiberoControl(env)
@@ -125,21 +151,22 @@ def dispatch_runtime(state, args: dict[str, Any]):
         return ({"ok": False, "reason": "give pos=[x,y,z] or object=<name>"},
                 env.take_snapshot())
 
-    hover_reached, _ = ctrl.servo_to(
-        [drop[0], drop[1], drop[2] + hover],
-        gripper="close",
-        max_iters=100,
-    )
-    drop_reached, _ = ctrl.servo_to(
-        [drop[0], drop[1], drop[2]],
-        gripper="close",
-        max_iters=120,
+    lift_reached, hover_reached, drop_reached = _servo_to_drop(
+        ctrl,
+        drop,
+        hover,
     )
     release_ee, _, _ = ctrl.read_pose()
     error = np.asarray(release_ee, dtype=float) - drop
     horizontal_error = float(np.linalg.norm(error[:2]))
     vertical_error = abs(float(error[2]))
-    if horizontal_error > 0.05 or vertical_error > 0.06:
+    if (
+        not lift_reached
+        or not hover_reached
+        or not drop_reached
+        or horizontal_error > 0.025
+        or vertical_error > 0.03
+    ):
         # The arm WEDGED (kinematic limit) short of the target — releasing here
         # drops the object far from the goal and falsely reports success (the
         # "released but arm never moved, dropped at the pickup spot" failure).
@@ -150,6 +177,7 @@ def dispatch_runtime(state, args: dict[str, Any]):
                  "target_position": [round(float(v), 4) for v in drop],
                  "horizontal_error": round(horizontal_error, 4),
                  "vertical_error": round(vertical_error, 4),
+                 "lift_reached": bool(lift_reached),
                  "hover_reached": bool(hover_reached),
                  "drop_reached": bool(drop_reached)},
                 env.take_snapshot())
@@ -162,6 +190,7 @@ def dispatch_runtime(state, args: dict[str, Any]):
              "release_ee_pos": [round(float(v), 4) for v in release_ee],
              "horizontal_error": round(horizontal_error, 4),
              "vertical_error": round(vertical_error, 4),
+             "lift_reached": bool(lift_reached),
              "hover_reached": bool(hover_reached),
              "drop_reached": bool(drop_reached),
              "ee_pos": [round(float(v), 4) for v in ee]},
