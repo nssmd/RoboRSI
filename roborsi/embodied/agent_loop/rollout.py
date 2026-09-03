@@ -24,13 +24,18 @@ from typing import Any, Callable
 from roborsi.embodied.agent_loop.config import DEFAULT_MODEL, _skill_namespace
 from roborsi.embodied.agent_loop.env import Observation, Rollout, Step
 from roborsi.embodied.agent_loop.messages import (
-    _append_image, _assistant_tool_calls_msg, _initial_messages,
+    _append_image,
+    _assistant_tool_calls_msg,
+    _initial_messages,
     _summarize_old_trace,
 )
 from roborsi.embodied.agent_loop.prompt_tools import (
-    _build_status_check_prompt, _build_tool_specs, _dispatch_meta_tool,
-    _maybe_shortlist_skills, _try_load_plugin_dispatcher,
+    _build_status_check_prompt,
+    _build_tool_specs,
+    _dispatch_meta_tool,
+    _maybe_shortlist_skills,
     _try_load_compound_dispatcher,
+    _try_load_plugin_dispatcher,
 )
 from roborsi.embodied.agent_loop.vlm_io import _call_vlm_tools
 from roborsi.runtime_mode import current_mode, is_eval_mode
@@ -611,6 +616,10 @@ def _dispatch_with_timeout(state: DispatchContext, call: dict[str, Any],
                             ) -> tuple[dict[str, Any], Observation]:
     """Run _dispatch with a wall-time cap via ThreadPoolExecutor.
 
+    MuJoCo EGL contexts are thread-affine. LIBERO tools therefore execute on
+    the environment owner thread; their servo loops are already iteration
+    bounded. Other backends retain the worker-thread timeout path below.
+
     Main thread does future.result(timeout) which is pure Python wait —
     main always responsive regardless of worker state. Worker may leak
     (Python can't kill threads holding GIL in C extensions) but the
@@ -633,6 +642,12 @@ def _dispatch_with_timeout(state: DispatchContext, call: dict[str, Any],
     name = call.get("tool", "?")
     args = call.get("args") or {}
     key = name + "|" + _json.dumps(args, sort_keys=True, default=str)[:300]
+
+    backend_name = str(
+        getattr(getattr(state, "env", None), "backend_name", "")
+    )
+    if backend_name.startswith("libero"):
+        return _dispatch(state, call)
 
     pool = _cf.ThreadPoolExecutor(max_workers=1)
     dispatch_context = _contextvars.copy_context()

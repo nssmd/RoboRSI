@@ -445,6 +445,40 @@ def test_eval_mode_propagates_into_tool_worker_thread(
     assert result["mode"] == "eval"
 
 
+def test_libero_tool_dispatch_stays_on_environment_owner_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    from roborsi.embodied.agent_loop import rollout
+
+    owner_thread = threading.get_ident()
+    monkeypatch.setattr(
+        rollout,
+        "_dispatch",
+        lambda _state, _call: (
+            {
+                "thread": threading.get_ident(),
+                "mode": current_mode().value,
+            },
+            SimpleNamespace(),
+        ),
+    )
+    state = SimpleNamespace(
+        env=SimpleNamespace(backend_name="libero-pro"),
+        _timeout_history={},
+    )
+
+    with use_run_mode("eval"):
+        result, _ = rollout._dispatch_with_timeout(
+            state,
+            {"tool": "grasp_object", "args": {}},
+            timeout_s=1.0,
+        )
+
+    assert result == {"thread": owner_thread, "mode": "eval"}
+
+
 def test_usage_metrics_count_each_provider_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
