@@ -87,6 +87,7 @@ class DispatchContext:
     _timeout_history: dict[str, int] = field(default_factory=dict)
     _tool_handlers: dict[str, Callable] | None = None
     _attached_image_path: Path | None = None
+    _perception_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 # ────────────────────────────────────────────────────────────────────────

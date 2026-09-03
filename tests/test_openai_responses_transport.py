@@ -90,22 +90,23 @@ def test_openai_responses_call_uses_flat_function_schema(monkeypatch) -> None:
     client = SimpleNamespace(responses=Responses())
     monkeypatch.setenv("ROBORSI_OPENAI_MAX_OUTPUT_TOKENS", "256")
 
-    message = vlm_io._openai_responses_call(
-        client,
-        model_id="gpt-test",
-        messages=[
-            {"role": "system", "content": "Plan carefully."},
-            {"role": "user", "content": "Look."},
-        ],
-        tools=[{
-            "type": "function",
-            "function": {
-                "name": "look",
-                "description": "Capture a frame.",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }],
-    )
+    with vlm_io.capture_usage() as usage:
+        message = vlm_io._openai_responses_call(
+            client,
+            model_id="gpt-test",
+            messages=[
+                {"role": "system", "content": "Plan carefully."},
+                {"role": "user", "content": "Look."},
+            ],
+            tools=[{
+                "type": "function",
+                "function": {
+                    "name": "look",
+                    "description": "Capture a frame.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }],
+        )
 
     assert message.content is None
     assert captured["model"] == "gpt-test"
@@ -118,3 +119,6 @@ def test_openai_responses_call_uses_flat_function_schema(monkeypatch) -> None:
         "parameters": {"type": "object", "properties": {}},
     }]
     assert captured["tool_choice"] == "auto"
+    assert usage.vlm_calls == 1
+    assert usage.metered_calls == 1
+    assert usage.unmetered_calls == 0

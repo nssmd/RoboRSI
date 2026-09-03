@@ -13,18 +13,20 @@ from __future__ import annotations
 
 from typing import Any
 
-# Finger gap (qpos[0]-qpos[1]) above this ⇒ an object is wedged between the jaws.
-# Measured on LIBERO: held-wide ≈ 0.063, free-open ≈ 0.042, closed-on-air ≈ 0.
-_HELD_GAP = 0.05
+from roborsi.embodied.skills.base._lib.libero._helpers import (
+    classify_gripper_gap,
+)
 
 
 def dispatch_runtime(state, args: dict[str, Any]):
     obs = state.env.raw_obs()
     gq = obs.get("robot0_gripper_qpos")
     gap = round(float(gq[0] - gq[1]), 4) if gq is not None else None
-    holding = bool(gap is not None and gap > _HELD_GAP)
+    gripper_state = classify_gripper_gap(gap)
+    holding = gripper_state == "holding"
     query = str(args.get("object") or "").strip()
-    return ({"ok": True, "holding": holding, "gripper_gap": gap, "object": query,
-             "note": "proprioceptive finger-gap check; a thin "
-                     "rim grip gives a small gap — reason from gripper_gap too."},
+    return ({"ok": True, "holding": holding, "gripper_gap": gap,
+             "gripper_state": gripper_state, "object": query,
+             "note": "proprioceptive finger-gap classification: closed-empty, "
+                     "holding, or fully open."},
             state.env.take_snapshot())

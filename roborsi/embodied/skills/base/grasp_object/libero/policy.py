@@ -30,11 +30,19 @@ def _is_sentinel(uv) -> bool:
 # ── perception mode ──────────────────────────────────────────────────────
 def _locate_pixel(state, args):
     name = str(args.get("object") or "").strip()
+    from roborsi.embodied.skills.base._lib.libero._perception import (
+        recall_pixel,
+        remember_pixel,
+    )
+
     # Reuse the result of an explicit find_pixel call. Re-localizing here wastes
     # one perception call and can switch to a different same-category object.
     pix = args.get("pixel")
     if isinstance(pix, (list, tuple)) and len(pix) == 2:
-        return int(pix[0]), int(pix[1])
+        return remember_pixel(state, name, pix)
+    cached = recall_pixel(state, name)
+    if cached is not None:
+        return cached
     if name and _fix_on():
         from roborsi.embodied.skills.base._lib.libero._perception import localize_precise
         uv = localize_precise(state, name)
@@ -86,7 +94,11 @@ def _perception_grasp(state, args):
                 env.take_snapshot())
     p, ee, gq = execute_topdown(env, grasps[0], cloud=_cloud)
     gap = round(float(gq[0] - gq[1]), 4) if gq is not None else None
-    grasped = bool(gap is not None and gap > 0.01)     # fingers wedged on an object (proprio)
+    from roborsi.embodied.skills.base._lib.libero._helpers import (
+        classify_gripper_gap,
+    )
+
+    grasped = classify_gripper_gap(gap) == "holding"
     if _fix_on() and not grasped:
         # Rim straddle for bowls/wide-mouth: an accurate top-down grasp still
         # closes on air when the jaws lie ALONG the thin rim. Sweep the gripper
@@ -96,7 +108,7 @@ def _perception_grasp(state, args):
             for yaw in (0.785, -0.785, 1.571):
                 p, ee, gq = execute_topdown(env, cand, cloud=_cloud, yaw=yaw)
                 gap = round(float(gq[0] - gq[1]), 4) if gq is not None else None
-                if gap is not None and gap > 0.01:
+                if classify_gripper_gap(gap) == "holding":
                     grasped = True
                     break
             if grasped:

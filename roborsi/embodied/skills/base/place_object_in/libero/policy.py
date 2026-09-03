@@ -14,6 +14,7 @@ import numpy as np
 
 from roborsi.embodied.skills.base._lib.libero._control import LiberoControl
 
+
 def _bad_uv(uv) -> bool:
     """None, or the (128,128) 'found nothing' sentinel on a 256px LIBERO frame."""
     return uv is None or (abs(int(uv[0]) - 128) <= 2 and abs(int(uv[1]) - 128) <= 2)
@@ -43,11 +44,30 @@ def dispatch_runtime(state, args: dict[str, Any]):
     pos = args.get("pos")
     pixel = args.get("pixel")
     target_name = str(args.get("object") or "").strip()
+    from roborsi.embodied.skills.base._lib.libero._perception import (
+        recall_pixel,
+        remember_pixel,
+    )
+
+    if isinstance(pixel, (list, tuple)) and len(pixel) == 2:
+        pixel = list(remember_pixel(state, target_name, pixel))
+        if pos is None:
+            from roborsi.embodied.skills.base._lib.libero._perception import (
+                _place_fix_on,
+                retreat_from_head_view,
+            )
+
+            if _place_fix_on():
+                retreat_from_head_view(env, ctrl)
 
     # A bare object=<name> is localized from the current camera observation.
     if pixel is None and pos is None and target_name:
         from roborsi.embodied.skills.base._lib.libero._perception import (
-            localize_precise, _fix_on, _place_fix_on, retreat_from_head_view)
+            _fix_on,
+            _place_fix_on,
+            localize_precise,
+            retreat_from_head_view,
+        )
         if _fix_on():
             # CaP-style: the held object / arm / forearm OCCLUDES the place target
             # in the agentview head view, so RETREAT it out of view FIRST — lift
@@ -61,7 +81,9 @@ def dispatch_runtime(state, args: dict[str, Any]):
                 ee, _, _ = ctrl.read_pose()
                 ctrl.servo_to([float(ee[0]), float(ee[1]), float(ee[2]) + 0.18],
                               gripper="close", max_iters=50)
-            loc = _clear_localize(state, ctrl, target_name)
+            loc = recall_pixel(state, target_name)
+            if loc is None:
+                loc = _clear_localize(state, ctrl, target_name)
         else:
             loc = localize_precise(state, target_name)
             if loc is None:
@@ -93,18 +115,23 @@ def dispatch_runtime(state, args: dict[str, Any]):
 
     ctrl.servo_to([drop[0], drop[1], drop[2] + hover], gripper="close", max_iters=100)
     ctrl.servo_to([drop[0], drop[1], drop[2]], gripper="close", max_iters=100)
-    ee, _, _ = ctrl.read_pose()
-    if float(np.linalg.norm(np.asarray(ee, dtype=float)[:2] - drop[:2])) > 0.05:
+    release_ee, _, _ = ctrl.read_pose()
+    if float(np.linalg.norm(np.asarray(release_ee, dtype=float)[:2] - drop[:2])) > 0.05:
         # The arm WEDGED (kinematic limit) short of the target — releasing here
         # drops the object far from the goal and falsely reports success (the
         # "released but arm never moved, dropped at the pickup spot" failure).
         return ({"ok": False, "released": False,
                  "reason": "could not servo over the drop point (arm wedged short of the target) — "
                            "retry from a clearer approach",
-                 "ee_pos": [round(float(v), 4) for v in ee]}, env.take_snapshot())
+                 "ee_pos": [round(float(v), 4) for v in release_ee],
+                 "target_position": [round(float(v), 4) for v in drop]},
+                env.take_snapshot())
     ctrl.set_gripper(close=False)                            # release
     ctrl.servo_to([drop[0], drop[1], drop[2] + hover], gripper="open", max_iters=60)
     ee, _, _ = ctrl.read_pose()
     return ({"ok": True, "released": True,
+             "target_pixel": list(pixel) if pixel is not None else None,
+             "target_position": [round(float(v), 4) for v in drop],
+             "release_ee_pos": [round(float(v), 4) for v in release_ee],
              "ee_pos": [round(float(v), 4) for v in ee]},
             env.take_snapshot())

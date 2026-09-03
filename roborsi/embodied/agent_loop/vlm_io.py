@@ -289,7 +289,7 @@ def _openai_responses_call(
         kwargs["tool_choice"] = "auto"
     with _track_vlm_call():
         response = client.responses.create(**kwargs)
-    _log_tokens(response)
+        _log_tokens(response)
     return _wrap_openai_responses(response)
 
 

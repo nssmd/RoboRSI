@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from roborsi.embodied.skills.base._lib.libero import _perception
+from roborsi.embodied.skills.base._lib.libero._helpers import classify_gripper_gap
 from roborsi.embodied.skills.base.find_pixel.libero import policy as find_pixel
 from roborsi.embodied.skills.base.grasp_object.libero import policy as grasp_object
 
@@ -18,16 +19,18 @@ def _state() -> SimpleNamespace:
 
 
 def test_find_pixel_uses_perception_model_before_local_detector(monkeypatch) -> None:
+    state = _state()
     monkeypatch.setattr(_perception, "vlm_point", lambda *_args: (7, 9))
 
     result, _ = find_pixel.dispatch_runtime(
-        _state(),
+        state,
         {"object": "alphabet soup", "location": "center"},
     )
 
     assert result["ok"] is True
     assert (result["u"], result["v"]) == (7, 9)
     assert result["bbox"] is None
+    assert _perception.recall_pixel(state, "alphabet soup can") == (7, 9)
 
 
 def test_grasp_prefers_explicit_visual_pixel(monkeypatch) -> None:
@@ -41,6 +44,27 @@ def test_grasp_prefers_explicit_visual_pixel(monkeypatch) -> None:
         _state(),
         {"object": "alphabet soup", "pixel": [11, 13]},
     ) == (11, 13)
+
+
+def test_grasp_reuses_cached_visual_pixel(monkeypatch) -> None:
+    state = _state()
+    _perception.remember_pixel(state, "alphabet soup container", (17, 19))
+    monkeypatch.setattr(
+        _perception,
+        "localize_precise",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not relocalize")),
+    )
+
+    assert grasp_object._locate_pixel(
+        state,
+        {"object": "alphabet soup container at the right side"},
+    ) == (17, 19)
+
+
+def test_gripper_gap_distinguishes_open_holding_and_closed() -> None:
+    assert classify_gripper_gap(0.001) == "closed_empty"
+    assert classify_gripper_gap(0.0588) == "holding"
+    assert classify_gripper_gap(0.0799) == "open"
 
 
 def test_segmented_cloud_has_topdown_fallback_without_graspgen(

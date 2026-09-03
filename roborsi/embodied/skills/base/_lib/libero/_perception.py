@@ -16,12 +16,25 @@ motion — matches the working ground-truth grasp path).
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 import numpy as np
 
 _HEAD = "agentview"
 _POINT_SAM: dict[str, Any] = {}
+_QUERY_STOPWORDS = {
+    "a",
+    "an",
+    "at",
+    "in",
+    "of",
+    "on",
+    "side",
+    "the",
+    "to",
+    "visible",
+}
 
 
 def _fix_on() -> bool:
@@ -31,6 +44,57 @@ def _fix_on() -> bool:
     ~46cm to ~4cm and lift the right-object rate 25%→82%. Set
     ``ROBORSI_GRASP_FIX=0`` to fall back to the old unguarded path."""
     return os.environ.get("ROBORSI_GRASP_FIX", "1") != "0"
+
+
+def remember_pixel(state, query: str, uv) -> tuple[int, int]:
+    pixel = (int(uv[0]), int(uv[1]))
+    cache = getattr(state, "_perception_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(state, "_perception_cache", cache)
+    key = _query_key(query)
+    cache[key] = {
+        "query": str(query),
+        "pixel": pixel,
+        "tokens": sorted(_query_tokens(query)),
+    }
+    return pixel
+
+
+def recall_pixel(state, query: str) -> tuple[int, int] | None:
+    cache = getattr(state, "_perception_cache", None) or {}
+    key = _query_key(query)
+    exact = cache.get(key)
+    if exact:
+        return tuple(exact["pixel"])
+
+    query_tokens = _query_tokens(query)
+    if not query_tokens:
+        return None
+    best: tuple[float, dict[str, Any]] | None = None
+    for record in cache.values():
+        candidate_tokens = set(record.get("tokens") or [])
+        if not candidate_tokens:
+            continue
+        overlap = len(query_tokens & candidate_tokens) / min(
+            len(query_tokens),
+            len(candidate_tokens),
+        )
+        if overlap >= 0.6 and (best is None or overlap >= best[0]):
+            best = (overlap, record)
+    return tuple(best[1]["pixel"]) if best else None
+
+
+def _query_key(query: str) -> str:
+    return " ".join(sorted(_query_tokens(query)))
+
+
+def _query_tokens(query: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", str(query).lower())
+        if token not in _QUERY_STOPWORDS
+    }
 
 
 def vlm_point(state, obj: str, location: str = ""):
@@ -321,24 +385,24 @@ def localize_precise(state, obj: str):
         return None
     uv = locate_by_sam3(rgb, obj)
     if uv is not None:
-        return uv
+        return remember_pixel(state, obj, uv)
     uv = vlm_point(state, obj)
     if uv is not None:
-        return zoom_localize(state, obj, uv)
+        return remember_pixel(state, obj, zoom_localize(state, obj, uv))
     if os.environ.get("ROBORSI_OWLV2_ENABLE", "0") == "1":
         try:
             uv = locate_by_owlv2(env, rgb, obj)
         except Exception:
             uv = None
         if uv is not None:
-            return uv
+            return remember_pixel(state, obj, uv)
     try:
         uv = locate_pixel(rgb, obj)
     except Exception:
         uv = None
     if uv is None:
         return None
-    return zoom_localize(state, obj, uv)
+    return remember_pixel(state, obj, zoom_localize(state, obj, uv))
 
 
 def _load_point_sam():

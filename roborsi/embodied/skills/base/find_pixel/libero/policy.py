@@ -20,13 +20,17 @@ def dispatch_runtime(state, args: dict[str, Any]):
                 obs)
     obj = args.get("object", "the target")
     loc = str(args.get("location", ""))
-    from roborsi.embodied.skills.base._lib.libero._perception import vlm_point
+    from roborsi.embodied.skills.base._lib.libero._perception import (
+        remember_pixel,
+        vlm_point,
+    )
 
     try:
         point = vlm_point(state, str(obj), loc)
     except Exception:
         point = None
     if point is not None:
+        point = remember_pixel(state, str(obj), point)
         return ({
             "ok": True,
             "u": int(point[0]),
@@ -51,6 +55,7 @@ def dispatch_runtime(state, args: dict[str, Any]):
                             "noun phrase ('red mug' not 'the thing') and look() "
                             "to refresh the image, then retry.")}, obs)
     top = dets[0]
+    point = remember_pixel(state, str(obj), top.centroid)
     return ({"ok": True, "u": int(top.centroid[0]), "v": int(top.centroid[1]),
              "confidence": round(float(top.score), 3), "bbox": list(top.bbox),
              "n_alternatives": len(dets) - 1, "location": loc,
