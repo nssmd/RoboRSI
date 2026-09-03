@@ -34,11 +34,21 @@ def configure(
         exists=True,
         file_okay=False,
     ),
+    bddldir: Path | None = typer.Option(
+        None,
+        "--bddldir",
+        exists=True,
+        file_okay=False,
+    ),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Persist the checkout used by both CLI and evaluation workers."""
     try:
-        record = configure_runtime(root, initdir=initdir)
+        record = configure_runtime(
+            root,
+            initdir=initdir,
+            bddldir=bddldir,
+        )
     except LiberoRuntimeError as exc:
         raise typer.BadParameter(str(exc)) from exc
     _emit({"ok": True, **record}, as_json)
@@ -124,6 +134,7 @@ def _emit(data: dict[str, Any], as_json: bool) -> None:
     for key in (
         "configured_root",
         "configured_initdir",
+        "configured_bddldir",
         "root",
         "commit",
         "importable",

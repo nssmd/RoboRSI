@@ -509,6 +509,7 @@ def _runtime_fingerprint(backend: str) -> dict[str, Any]:
         "backend": backend,
         "libero_suites": os.environ.get("ROBORSI_LIBERO_SUITES", ""),
         "libero_initdir": os.environ.get("ROBORSI_LIBERO_INITDIR", ""),
+        "libero_bddldir": os.environ.get("ROBORSI_LIBERO_BDDLDIR", ""),
         "perception_model": os.environ.get("ROBORSI_PERCEPTION_MODEL", ""),
         "python": platform.python_version(),
         "platform": sys.platform,

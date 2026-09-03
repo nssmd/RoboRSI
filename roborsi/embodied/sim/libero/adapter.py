@@ -635,6 +635,18 @@ class LiberoProBackend(Backend):
         from libero.libero.envs import OffScreenRenderEnv
         bench = bdict[suite]()
         bddl = bench.get_task_bddl_file_path(task_id)
+        task_spec = bench.tasks[task_id]
+        from roborsi.embodied.sim.libero.runtime import configured_bddldir
+
+        bddl_root = configured_bddldir()
+        if bddl_root is not None:
+            candidate = (
+                bddl_root
+                / str(task_spec.problem_folder)
+                / os.path.basename(bddl)
+            )
+            if candidate.is_file():
+                bddl = str(candidate)
         with _torch_full_load():
             init_states = self._load_init_states(bench, task_id)
 
@@ -683,23 +695,60 @@ class LiberoProBackend(Backend):
         """Init-states for the task. If ROBORSI_LIBERO_INITDIR is set, load the
         regenerated .pruned_init from <INITDIR>/<problem_folder>/<file> (the
         ASPIRE-protocol run uses 70 states per task so seeds 1-50 / 51-65 are
-        disjoint); otherwise use the shipped 50-state files. Non-destructive."""
-        from roborsi.embodied.sim.libero.runtime import configured_initdir
+        disjoint). LIBERO-PRO perturbation suites reuse the corresponding base
+        suite's physical init states when no perturb-specific file is shipped."""
+        from pathlib import Path
+
+        from roborsi.embodied.sim.libero.runtime import (
+            configured_initdir,
+            configured_root,
+        )
 
         configured = configured_initdir()
-        root = os.environ.get("ROBORSI_LIBERO_INITDIR") or (
+        task = bench.tasks[task_id]
+        problem_folder = str(task.problem_folder)
+        base_folder = LiberoProBackend._base_init_problem_folder(
+            problem_folder
+        )
+        roots: list[Path] = []
+        custom = os.environ.get("ROBORSI_LIBERO_INITDIR") or (
             str(configured) if configured else None
         )
-        if not root:
-            return bench.get_task_init_states(task_id)
-        task = bench.tasks[task_id]
-        path = os.path.join(root, task.problem_folder, task.init_states_file)
-        if not os.path.exists(path):
-            # only the ASPIRE suites are regenerated; anything else (e.g. the
-            # atomic's default libero_object/0) uses the shipped 50-state files.
-            return bench.get_task_init_states(task_id)
+        if custom:
+            roots.append(Path(custom).expanduser())
+        checkout = configured_root()
+        if checkout is not None:
+            roots.append(
+                checkout / "libero" / "libero" / "init_files"
+            )
+
         import torch
-        return torch.load(path)
+
+        seen: set[Path] = set()
+        for root in roots:
+            for folder in dict.fromkeys((problem_folder, base_folder)):
+                path = (root / folder / task.init_states_file).resolve()
+                if path in seen:
+                    continue
+                seen.add(path)
+                if path.is_file():
+                    return torch.load(path)
+
+        states = bench.get_task_init_states(task_id)
+        if states is None:
+            raise FileNotFoundError(
+                "LIBERO init states are unavailable for "
+                f"{problem_folder}/{task.init_states_file}"
+            )
+        return states
+
+    @staticmethod
+    def _base_init_problem_folder(problem_folder: str) -> str:
+        value = str(problem_folder or "").strip()
+        for base in _BASE_SETS:
+            if value == base or value.startswith(f"{base}_"):
+                return base
+        return value
 
     @staticmethod
     def _parse_task(task: str) -> tuple[str, int]:

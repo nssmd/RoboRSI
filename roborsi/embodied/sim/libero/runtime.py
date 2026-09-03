@@ -18,6 +18,7 @@ CONFIG_SCHEMA = "roborsi.libero_runtime.v1"
 ROOT_ENV = "ROBORSI_LIBERO_ROOT"
 LEGACY_ROOT_ENV = "LIBERO_PRO_ROOT"
 INITDIR_ENV = "ROBORSI_LIBERO_INITDIR"
+BDDLDIR_ENV = "ROBORSI_LIBERO_BDDLDIR"
 UPSTREAM_CONFIG_ENV = "LIBERO_CONFIG_PATH"
 
 
@@ -33,13 +34,16 @@ def configure_runtime(
     root: str | Path,
     *,
     initdir: str | Path | None = None,
+    bddldir: str | Path | None = None,
 ) -> dict[str, Any]:
     checkout = validate_checkout(root)
     init_path = _optional_directory(initdir, "LIBERO init-state directory")
+    bddl_path = _optional_directory(bddldir, "LIBERO BDDL directory")
     record = {
         "schema": CONFIG_SCHEMA,
         "root": str(checkout),
         "initdir": str(init_path) if init_path else None,
+        "bddldir": str(bddl_path) if bddl_path else None,
         "upstream_config": str(_ensure_upstream_config(checkout)),
     }
     path = config_path()
@@ -53,6 +57,8 @@ def configure_runtime(
     os.environ[ROOT_ENV] = str(checkout)
     if init_path:
         os.environ[INITDIR_ENV] = str(init_path)
+    if bddl_path:
+        os.environ[BDDLDIR_ENV] = str(bddl_path)
     os.environ[UPSTREAM_CONFIG_ENV] = str(
         Path(record["upstream_config"]).parent
     )
@@ -88,6 +94,11 @@ def configured_initdir() -> Path | None:
     return _optional_directory(raw, "LIBERO init-state directory")
 
 
+def configured_bddldir() -> Path | None:
+    raw = os.environ.get(BDDLDIR_ENV) or load_runtime_config().get("bddldir")
+    return _optional_directory(raw, "LIBERO BDDL directory")
+
+
 def activate_runtime(root: str | Path | None = None) -> Path:
     """Put the configured checkout on ``sys.path`` and import LIBERO."""
     configure_headless_rendering()
@@ -107,6 +118,9 @@ def activate_runtime(root: str | Path | None = None) -> Path:
     initdir = configured_initdir()
     if initdir is not None:
         os.environ[INITDIR_ENV] = str(initdir)
+    bddldir = configured_bddldir()
+    if bddldir is not None:
+        os.environ[BDDLDIR_ENV] = str(bddldir)
     importlib.invalidate_caches()
     try:
         module = importlib.import_module("libero.libero")
@@ -162,6 +176,7 @@ def runtime_status() -> dict[str, Any]:
         "config_path": str(config_path()),
         "configured_root": None,
         "configured_initdir": None,
+        "configured_bddldir": None,
         "importable": False,
         "rendering": configure_headless_rendering(),
         "versions": {},
@@ -171,6 +186,8 @@ def runtime_status() -> dict[str, Any]:
         status["configured_root"] = str(root) if root else None
         initdir = configured_initdir()
         status["configured_initdir"] = str(initdir) if initdir else None
+        bddldir = configured_bddldir()
+        status["configured_bddldir"] = str(bddldir) if bddldir else None
         active_root = activate_runtime(root)
         status["root"] = str(active_root)
         status["commit"] = _git_revision(active_root)

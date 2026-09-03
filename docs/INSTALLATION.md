@@ -213,7 +213,10 @@ Clone the benchmark and persist its location:
 
 ```bash
 git clone --depth 1 https://github.com/Zxy-MLlab/LIBERO-PRO.git
-roborsi libero configure --root ./LIBERO-PRO
+roborsi libero configure \
+  --root ./LIBERO-PRO \
+  --bddldir ./LIBERO-PRO-assets/bddl_files \
+  --initdir ./LIBERO-PRO-assets/init_files
 ```
 
 RoboRSI writes `~/.roborsi/libero.json` and a non-interactive upstream LIBERO
