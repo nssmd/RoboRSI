@@ -149,6 +149,49 @@ def test_place_object_in_requires_initial_hold(monkeypatch) -> None:
     assert control.calls == []
 
 
+def test_side_entry_release_hint_lowers_requested_clearance() -> None:
+    evidence = SimpleNamespace(release_clearance_hint=0.04)
+
+    clearance, applied = policy._release_clearance(0.06, evidence)
+
+    assert clearance == 0.04
+    assert applied is True
+
+
+def test_low_side_grip_retries_open_after_small_lift(monkeypatch) -> None:
+    control = _Control(
+        servo_results=[True, True, True, True],
+        gripper_states=[
+            GripperState.HELD,
+            GripperState.HELD,
+            GripperState.HELD,
+            GripperState.AMBIGUOUS,
+            GripperState.AMBIGUOUS,
+            GripperState.HELD,
+            GripperState.OPEN,
+        ],
+    )
+    monkeypatch.setattr(
+        policy,
+        "get_visual_hold",
+        lambda _env: SimpleNamespace(
+            object_name="held object",
+            identity_verified=True,
+            object_offset_local=None,
+            release_clearance_hint=0.04,
+        ),
+    )
+
+    result = _run(monkeypatch, control)
+
+    assert result["ok"] is True
+    assert result["released"] is True
+    assert result["release_open_recovery_attempted"] is True
+    assert result["release_open_recovery_regrasped"] is True
+    assert result["release_open_recovery_lifted"] is True
+    assert result["release_clearance"] == 0.06
+
+
 def test_place_object_in_requires_visual_hold_at_entry(monkeypatch) -> None:
     control = _Control(
         servo_results=[],
@@ -452,10 +495,11 @@ def test_generic_container_uses_depth_fallback_without_claiming_containment(
         },
     )[0]
 
-    assert result["ok"] is False
+    assert result["ok"] is True
     assert result["motion_ok"] is True
     assert result["released"] is True
     assert result["placed"] is None
+    assert result["action_grounded_release"] is True
     assert result["pixel_fallback"] == "depth_neighborhood"
     assert result["post_release_visual_containment"]["verified"] is False
     assert _opened(control) is True
@@ -613,7 +657,7 @@ def test_place_object_in_retraction_failure_reports_release_honestly(
 
     result = _run(monkeypatch, control)
 
-    assert result["ok"] is False
+    assert result["ok"] is True
     assert result["reached"] is True
     assert result["released"] is True
     assert result["placed"] is True

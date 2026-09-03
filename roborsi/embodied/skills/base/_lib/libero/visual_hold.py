@@ -23,6 +23,7 @@ class VisualHoldEvidence:
     source_mad: float
     identity_verified: bool = False
     object_offset_local: tuple[float, float, float] | None = None
+    release_clearance_hint: float | None = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class PendingVisualHoldEvidence:
     source_patch_center: tuple[int, int]
     identity_verified: bool = False
     object_offset_local: tuple[float, float, float] | None = None
+    release_clearance_hint: float | None = None
 
 
 @dataclass(frozen=True)
@@ -144,6 +146,7 @@ def record_pending_visual_hold(
     before_depth: Any,
     identity_verified: bool = False,
     object_offset_local: tuple[float, float, float] | None = None,
+    release_clearance_hint: float | None = None,
 ) -> PendingVisualHoldEvidence | None:
     clear_visual_hold(env)
     before = _crop_patch(before_rgb, source_pixel)
@@ -163,6 +166,7 @@ def record_pending_visual_hold(
         ),
         identity_verified=bool(identity_verified),
         object_offset_local=object_offset_local,
+        release_clearance_hint=release_clearance_hint,
     )
     setattr(env, _PENDING_ATTR, evidence)
     return evidence
@@ -177,6 +181,7 @@ def record_visual_hold(
     after_rgb: Any,
     identity_verified: bool = False,
     object_offset_local: tuple[float, float, float] | None = None,
+    release_clearance_hint: float | None = None,
 ) -> VisualHoldEvidence | None:
     clear_visual_hold(env)
     before = _crop_patch(before_rgb, source_pixel)
@@ -194,6 +199,7 @@ def record_visual_hold(
         source_mad=source_mad,
         identity_verified=bool(identity_verified),
         object_offset_local=object_offset_local,
+        release_clearance_hint=release_clearance_hint,
     )
     setattr(env, _ATTR, evidence)
     return evidence
@@ -305,6 +311,7 @@ def verify_visual_hold(
             source_mad=current_source_mad,
             identity_verified=pending.identity_verified,
             object_offset_local=pending.object_offset_local,
+            release_clearance_hint=pending.release_clearance_hint,
         )
         setattr(env, _ATTR, promoted)
         setattr(env, _PENDING_ATTR, None)

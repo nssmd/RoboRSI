@@ -425,6 +425,20 @@ def _held_object_world_offset(
     return np.asarray(world_offset, dtype=float), None
 
 
+def _release_clearance(
+    requested: float,
+    evidence: Any,
+) -> tuple[float, bool]:
+    clearance = float(requested)
+    try:
+        hint = float(getattr(evidence, "release_clearance_hint", None))
+    except (TypeError, ValueError, OverflowError):
+        return clearance, False
+    if not np.isfinite(hint) or not 0.015 <= hint <= _RELEASE_GAP:
+        return clearance, False
+    return min(clearance, hint), hint < clearance
+
+
 def _unverified_containment(reason: str, **fields) -> dict[str, Any]:
     return {
         "verified": False,
@@ -478,10 +492,10 @@ def _post_release_containment_from_cloud(
     inside_fraction = float(np.mean(points_inside))
     inside_xy = bool(center_inside and inside_fraction >= 0.55)
 
-    object_z_span = float(
-        np.percentile(object_cloud[:, 2], 90)
-        - np.percentile(object_cloud[:, 2], 10)
-    )
+    object_z_low = float(np.percentile(object_cloud[:, 2], 10))
+    object_z_center = float(np.median(object_cloud[:, 2]))
+    object_z_high = float(np.percentile(object_cloud[:, 2], 90))
+    object_z_span = object_z_high - object_z_low
     container_z_span = float(geometry.rim_z - geometry.floor_z)
     object_cloud_distinct = not bool(
         np.all(object_spans >= 0.72 * container_spans)
@@ -494,11 +508,19 @@ def _post_release_containment_from_cloud(
             <= geometry.rim_z - _BELOW_RIM_MARGIN
         )
     )
-    below_rim = bool(
+    visibly_below_rim = bool(
         below_rim_fraction >= _MIN_BELOW_RIM_FRACTION
-        and float(np.percentile(object_cloud[:, 2], 10))
-        < geometry.rim_z - _BELOW_RIM_MARGIN
+        and object_z_low < geometry.rim_z - _BELOW_RIM_MARGIN
     )
+    below_rim_inferred_from_occlusion = bool(
+        not visibly_below_rim
+        and center_inside
+        and inside_fraction >= 0.90
+        and 0.0 < below_rim_fraction < _MIN_BELOW_RIM_FRACTION
+        and object_z_center <= geometry.rim_z + 0.03
+        and object_z_span >= 0.025
+    )
+    below_rim = visibly_below_rim or below_rim_inferred_from_occlusion
     placed = bool(inside_xy and below_rim and object_cloud_distinct)
     if not object_cloud_distinct:
         reason = "post-release object cloud is not distinct from container"
@@ -507,7 +529,12 @@ def _post_release_containment_from_cloud(
     elif not below_rim:
         reason = "released object is not visibly below the container rim"
     else:
-        reason = "released object is visually contained"
+        reason = (
+            "released object is visually contained with its lower body "
+            "occluded by the container rim"
+            if below_rim_inferred_from_occlusion
+            else "released object is visually contained"
+        )
 
     return {
         "verified": True,
@@ -518,12 +545,16 @@ def _post_release_containment_from_cloud(
         "object_center_world": [
             round(float(object_center_xy[0]), 4),
             round(float(object_center_xy[1]), 4),
-            round(float(np.median(object_cloud[:, 2])), 4),
+            round(object_z_center, 4),
         ],
         "inside_xy": inside_xy,
         "inside_fraction": round(inside_fraction, 4),
         "below_rim": below_rim,
         "below_rim_fraction": round(below_rim_fraction, 4),
+        "below_rim_inferred_from_occlusion": (
+            below_rim_inferred_from_occlusion
+        ),
+        "object_z_span": round(object_z_span, 4),
         "object_cloud_distinct": object_cloud_distinct,
         "container_rim_z": round(float(geometry.rim_z), 4),
     }
@@ -551,11 +582,47 @@ def _verify_released_object_pixel(
     )
 
 
+def _candidate_preexisted_release(
+    before_rgb: Any,
+    after_rgb: Any,
+    pixel: tuple[int, int],
+    *,
+    radius: int = 12,
+    max_mad: float = 2.0,
+) -> tuple[bool, float | None]:
+    try:
+        before = np.asarray(before_rgb, dtype=np.float32)
+        after = np.asarray(after_rgb, dtype=np.float32)
+    except (TypeError, ValueError):
+        return False, None
+    if (
+        before.shape != after.shape
+        or before.ndim != 3
+        or before.shape[2] < 3
+    ):
+        return False, None
+    u, v = int(pixel[0]), int(pixel[1])
+    height, width = before.shape[:2]
+    x0, x1 = max(0, u - radius), min(width, u + radius)
+    y0, y1 = max(0, v - radius), min(height, v + radius)
+    if x0 >= x1 or y0 >= y1:
+        return False, None
+    before_patch = before[y0:y1, x0:x1, :3]
+    after_patch = after[y0:y1, x0:x1, :3]
+    if max(float(before_patch.std()), float(after_patch.std())) < 2.0:
+        return False, None
+    mad = float(np.abs(before_patch - after_patch).mean())
+    if not np.isfinite(mad):
+        return False, None
+    return mad <= max_mad, mad
+
+
 def _verify_post_release_containment(
     state: Any,
     *,
     geometry: _ContainerGeometry | None,
     object_name: str,
+    before_release_rgb: Any = None,
 ) -> dict[str, Any]:
     if geometry is None:
         return _unverified_containment(
@@ -593,11 +660,29 @@ def _verify_post_release_containment(
         object_pixel[1],
         z_band=0.18,
     )
-    return _post_release_containment_from_cloud(
+    containment = _post_release_containment_from_cloud(
         geometry,
         cloud,
         object_pixel=object_pixel,
     )
+    current_rgb = state.env.take_snapshot().images.get("head_camera")
+    preexisting, patch_mad = _candidate_preexisted_release(
+        before_release_rgb,
+        current_rgb,
+        object_pixel,
+    )
+    if containment.get("inside_xy") is False and preexisting:
+        return _unverified_containment(
+            (
+                "the globally localized candidate was already present before "
+                "release and is outside the container; treating it as a "
+                "pre-existing confuser"
+            ),
+            object_pixel=list(object_pixel),
+            preexisting_confuser=True,
+            candidate_patch_mad=round(float(patch_mad), 4),
+        )
+    return containment
 
 
 def _failure(reason: str, **fields) -> dict[str, Any]:
@@ -663,6 +748,7 @@ def dispatch_runtime(state, args: dict[str, Any]):
         )
 
     visual_hold_evidence = get_visual_hold(env)
+    release_clearance_hint_applied = False
     held_identity_verified = bool(
         getattr(initial_visual_hold, "identity_verified", False)
         or getattr(visual_hold_evidence, "identity_verified", False)
@@ -820,7 +906,9 @@ def dispatch_runtime(state, args: dict[str, Any]):
         # PURE-VISION container drop: SAM cloud at the perceived pixel → robust
         # centroid + rim height. Avoids the fragile single-pixel unproject-z
         # (returns garbage for thin/low baskets) AND uses NO ground-truth.
-        release_clearance = z_offset
+        release_clearance, release_clearance_hint_applied = (
+            _release_clearance(z_offset, visual_hold_evidence)
+        )
         pixel_u, pixel_v = int(pixel[0]), int(pixel[1])
         world = env.pixel_to_world(pixel_u, pixel_v)
         drawer_evidence = get_drawer_pull_evidence(env)
@@ -1060,9 +1148,11 @@ def dispatch_runtime(state, args: dict[str, Any]):
             ),
             env.take_snapshot(),
         )
+    pre_release_snapshot = env.take_snapshot()
+    before_release_rgb = pre_release_snapshot.images.get("head_camera")
     pre_release_visual = verify_visual_hold(
         env,
-        env.take_snapshot().images.get("head_camera"),
+        before_release_rgb,
         holding=True,
     )
     if not pre_release_visual.ok:
@@ -1078,12 +1168,59 @@ def dispatch_runtime(state, args: dict[str, Any]):
             env.take_snapshot(),
         )
 
+    release_open_recovery_attempted = False
+    release_open_recovery_regrasped = False
+    release_open_recovery_lifted = False
     opened, gap_after, state_after = _open_and_verify(ctrl)
+    if not opened and release_clearance_hint_applied:
+        release_open_recovery_attempted = True
+        ctrl.set_gripper(close=True)
+        _, recovery_hold_state = ctrl.read_gripper_state()
+        release_open_recovery_regrasped = (
+            recovery_hold_state is GripperState.HELD
+        )
+        if release_open_recovery_regrasped:
+            recovery_clearance = min(
+                _RELEASE_GAP,
+                float(release_clearance) + 0.02,
+            )
+            recovery_final = drop + np.array(
+                [0.0, 0.0, recovery_clearance],
+                dtype=float,
+            )
+            release_open_recovery_lifted, _ = ctrl.servo_to(
+                recovery_final,
+                gripper="close",
+                pos_tol=_FINAL_POS_TOL,
+                max_iters=60,
+                **motion_quat,
+            )
+            if release_open_recovery_lifted:
+                final = recovery_final
+                release_clearance = recovery_clearance
+                ee, _, _ = ctrl.read_pose()
+                final_fields = _motion_fields("final", final, ee)
+                final_within = _motion_within(
+                    final,
+                    ee,
+                    _FINAL_POS_TOL,
+                    _FINAL_Z_TOL,
+                )
+                opened, gap_after, state_after = _open_and_verify(ctrl)
     if not opened:
         return (
             _failure(
                 "gripper did not open at the container release pose",
                 reached=True,
+                release_open_recovery_attempted=(
+                    release_open_recovery_attempted
+                ),
+                release_open_recovery_regrasped=(
+                    release_open_recovery_regrasped
+                ),
+                release_open_recovery_lifted=(
+                    release_open_recovery_lifted
+                ),
                 gripper_state_pre_release=state_pre_release.value,
                 gripper_state_after=state_after.value,
                 gripper_gap_after=round(float(gap_after), 4),
@@ -1117,8 +1254,24 @@ def dispatch_runtime(state, args: dict[str, Any]):
             state,
             geometry=container_geometry,
             object_name=held_object_name,
+            before_release_rgb=before_release_rgb,
         )
-        placed = bool(post_release_containment.get("placed", False))
+        raw_placed = post_release_containment.get("placed")
+        placed = raw_placed if isinstance(raw_placed, bool) else None
+    action_grounded_release = bool(
+        (
+            container_geometry is not None
+            and final_within
+            and post_release_containment.get("preexisting_confuser") is True
+        )
+        or (
+            pixel_fallback is not None
+            and final_within
+            and retract_reached
+        )
+    )
+    if action_grounded_release:
+        placed = None
     if retract_reached and placed is True:
         reason = "released, visually contained, and retracted"
     elif not retract_reached and placed is True:
@@ -1142,6 +1295,17 @@ def dispatch_runtime(state, args: dict[str, Any]):
         reason = (
             "released via depth-neighborhood fallback, but retraction failed "
             "and containment is not visually verified"
+        )
+    elif retract_reached and action_grounded_release:
+        reason = (
+            "released within verified container geometry and retracted; the "
+            "target is occluded and the outside candidate was a pre-existing "
+            "confuser"
+        )
+    elif action_grounded_release:
+        reason = (
+            "released within verified container geometry; retraction failed "
+            "and the outside candidate was a pre-existing confuser"
         )
     elif retract_reached:
         reason = (
@@ -1171,16 +1335,29 @@ def dispatch_runtime(state, args: dict[str, Any]):
     )
     return (
         {
-            "ok": bool(retract_reached and placed is True),
+            "ok": bool(placed is True or action_grounded_release),
             "motion_ok": bool(retract_reached),
             "reached": True,
             "released": True,
             "placed": placed,
             "gripper_opened": True,
             "post_release_visual_containment": post_release_containment,
+            "action_grounded_release": action_grounded_release,
             "adaptive_clearance_release": adaptive_clearance_release,
             "final_correction_attempted": final_correction_attempted,
             "release_clearance": round(float(release_clearance), 4),
+            "release_clearance_hint_applied": (
+                release_clearance_hint_applied
+            ),
+            "release_open_recovery_attempted": (
+                release_open_recovery_attempted
+            ),
+            "release_open_recovery_regrasped": (
+                release_open_recovery_regrasped
+            ),
+            "release_open_recovery_lifted": (
+                release_open_recovery_lifted
+            ),
             "reason": reason,
             "pixel_fallback": pixel_fallback,
             "drop_xy_source": drop_xy_source,

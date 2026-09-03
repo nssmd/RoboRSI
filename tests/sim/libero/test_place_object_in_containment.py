@@ -280,6 +280,25 @@ def test_post_release_identity_mismatch_is_not_placed(
     )
 
 
+def test_static_outside_candidate_is_treated_as_preexisting_confuser() -> None:
+    before = np.zeros((64, 64, 3), dtype=np.uint8)
+    before[20:44, 20:44] = np.arange(24 * 24 * 3, dtype=np.uint8).reshape(
+        24,
+        24,
+        3,
+    )
+    after = before.copy()
+
+    preexisting, mad = policy._candidate_preexisted_release(
+        before,
+        after,
+        (32, 32),
+    )
+
+    assert preexisting is True
+    assert mad == 0.0
+
+
 def test_object_resting_on_rim_is_released_but_not_placed(
     monkeypatch,
 ) -> None:
@@ -295,6 +314,24 @@ def test_object_resting_on_rim_is_released_but_not_placed(
     evidence = result["post_release_visual_containment"]
     assert evidence["inside_xy"] is True
     assert evidence["below_rim"] is False
+
+
+def test_upright_object_can_be_confirmed_when_lower_body_is_rim_occluded(
+    monkeypatch,
+) -> None:
+    released = _object_cloud(z_low=0.83, z_high=0.86)
+    released[0, 2] = 0.81
+
+    result, _ = _run(
+        monkeypatch,
+        container_cloud=_basket_cloud(),
+        released_cloud=released,
+    )
+
+    assert result["placed"] is True
+    evidence = result["post_release_visual_containment"]
+    assert evidence["below_rim"] is True
+    assert evidence["below_rim_inferred_from_occlusion"] is True
 
 
 def test_object_outside_container_is_released_but_not_placed(

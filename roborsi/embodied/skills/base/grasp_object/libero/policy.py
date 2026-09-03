@@ -108,6 +108,19 @@ def _uses_floor_level_package_grip(value: Any) -> bool:
     return bool(words & {"box", "carton", "cheese", "package"})
 
 
+def _uses_side_entry_package_grip(
+    value: Any,
+    package_hint: Any = None,
+) -> bool:
+    words = set(_normalized_object_name(value).split())
+    hint = _normalized_object_name(package_hint)
+    return bool(words & {"bottle", "can", "jar"}) or hint in {
+        "bottle",
+        "can",
+        "jar",
+    }
+
+
 def _requires_horizontal_cabinet_exit(value: Any) -> bool:
     text = _normalized_object_name(value)
     words = set(text.split())
@@ -332,6 +345,7 @@ def _perception_grasp(state, args):
     from roborsi.embodied.skills.base._lib.libero._perception import (
         _wide_hollow_rim_plan,
         execute_base_grip,
+        execute_package_side_entry,
         execute_rim_grip,
         execute_topdown,
         grasps_at_pixel,
@@ -536,6 +550,10 @@ def _perception_grasp(state, args):
     floor_package_grip_attempts = 0
     floor_package_grip_candidate_index = None
     floor_package_z_offset = None
+    side_entry_attempted = False
+    side_entry_succeeded = False
+    side_candidates_attempted = 0
+    side_candidate_index = None
     if (
         _fix_on()
         and use_hollow_base_grip
@@ -617,6 +635,34 @@ def _perception_grasp(state, args):
                     if grasped:
                         floor_package_grip_candidate_index = candidate_index
                         break
+    if (
+        not grasped
+        and _fix_on()
+        and _uses_side_entry_package_grip(
+            requested_object,
+            getattr(state, "_last_identity_package", None),
+        )
+        and grasps
+        and _cloud is not None
+        and len(_cloud) >= 10
+    ):
+        side_entry_attempted = True
+        p, ee, gq, side_evidence = execute_package_side_entry(
+            env,
+            grasps[0],
+            _cloud,
+            hover=hover,
+        )
+        side_entry_succeeded = bool(
+            side_evidence.get("side_entry_succeeded")
+        )
+        side_candidates_attempted = int(
+            side_evidence.get("side_candidates_attempted") or 0
+        )
+        side_candidate_index = side_evidence.get("side_candidate_index")
+        gap_raw, grip_state = ctrl.read_gripper_state()
+        gap = round(float(gap_raw), 4)
+        grasped = grip_state is GripperState.HELD
     if not grasped and grasps:
         for candidate in grasps[:3]:
             p, ee, gq = execute_topdown(
@@ -652,6 +698,71 @@ def _perception_grasp(state, args):
         elif grip_state is not GripperState.HELD:
             hold_lost_during_clear = True
             grasped = False
+    if (
+        not grasped
+        and hold_lost_during_clear
+        and _fix_on()
+        and _uses_side_entry_package_grip(
+            requested_object,
+            getattr(state, "_last_identity_package", None),
+        )
+    ):
+        from roborsi.embodied.skills.base._lib.libero._perception import (
+            localize_precise,
+        )
+
+        side_entry_attempted = True
+        recovery_loc = localize_precise(state, requested_object)
+        if recovery_loc is not None and not _is_sentinel(recovery_loc):
+            recovery_grasps, recovery_cloud = grasps_at_pixel(
+                env,
+                int(recovery_loc[0]),
+                int(recovery_loc[1]),
+                top_k=3,
+            )
+            if recovery_grasps and recovery_cloud is not None:
+                p, ee, gq, side_evidence = execute_package_side_entry(
+                    env,
+                    recovery_grasps[0],
+                    recovery_cloud,
+                    hover=hover,
+                )
+                side_candidates_attempted += int(
+                    side_evidence.get("side_candidates_attempted") or 0
+                )
+                side_candidate_index = side_evidence.get(
+                    "side_candidate_index"
+                )
+                gap_raw, grip_state = ctrl.read_gripper_state()
+                gap = round(float(gap_raw), 4)
+                if (
+                    side_evidence.get("side_entry_succeeded")
+                    and grip_state is GripperState.HELD
+                ):
+                    u, v = int(recovery_loc[0]), int(recovery_loc[1])
+                    _cloud = recovery_cloud
+                    try:
+                        _, grasp_quat, _ = ctrl.read_pose()
+                    except (AttributeError, TypeError, ValueError):
+                        grasp_quat = None
+                    visual_clear_reached, cleared_ee = _clear_source_view(
+                        env,
+                        ctrl,
+                    )
+                    if cleared_ee is not None:
+                        ee = cleared_ee
+                    gap_raw, grip_state = ctrl.read_gripper_state()
+                    gap = round(float(gap_raw), 4)
+                    grasped = bool(
+                        visual_clear_reached
+                        and grip_state is GripperState.HELD
+                    )
+                    side_entry_succeeded = grasped
+                    if grasped:
+                        hold_lost_during_clear = False
+                        visual_clear_failed = False
+    if side_entry_attempted and not grasped:
+        side_entry_succeeded = False
     after_obs = env.take_snapshot()
     source_patch_mad = None
     visual_source_unchanged = False
@@ -660,6 +771,7 @@ def _perception_grasp(state, args):
     visual_hold_pending = False
     held_object = None
     object_offset_local = None
+    release_clearance_hint = 0.04 if side_entry_succeeded else None
     if (
         p is not None
         and grasp_quat is not None
@@ -725,6 +837,7 @@ def _perception_grasp(state, args):
                 after_rgb=after_obs.images.get("head_camera"),
                 identity_verified=identity_verified,
                 object_offset_local=object_offset_local,
+                release_clearance_hint=release_clearance_hint,
             )
             visual_hold_recorded = evidence is not None
             held_object = evidence.object_name if evidence is not None else None
@@ -739,6 +852,7 @@ def _perception_grasp(state, args):
             before_depth=before_depth,
             identity_verified=identity_verified,
             object_offset_local=object_offset_local,
+            release_clearance_hint=release_clearance_hint,
         )
         visual_hold_pending = pending is not None
     holding = grip_state is GripperState.HELD
@@ -783,6 +897,11 @@ def _perception_grasp(state, args):
                  if floor_package_z_offset is not None
                  else None
              ),
+             "side_entry_attempted": side_entry_attempted,
+             "side_entry_succeeded": side_entry_succeeded,
+             "side_candidates_attempted": side_candidates_attempted,
+             "side_candidate_index": side_candidate_index,
+             "release_clearance_hint": release_clearance_hint,
              "object_offset_local": (
                  list(object_offset_local)
                  if object_offset_local is not None

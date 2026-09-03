@@ -60,6 +60,12 @@ def test_pointing_records_current_frame_provenance(monkeypatch) -> None:
     assert np.array_equal(evidence.frame, env.frame)
 
 
+def test_orbit_package_hint_enables_can_side_entry() -> None:
+    assert grasp._uses_side_entry_package_grip("alphabet soup", "can")
+    assert grasp._uses_side_entry_package_grip("tomato sauce can")
+    assert not grasp._uses_side_entry_package_grip("yellow plate", "package")
+
+
 def test_pointing_provenance_rejects_changed_frame_or_object(monkeypatch) -> None:
     env = _PointEnv()
     _point(monkeypatch, env)

@@ -68,10 +68,12 @@ def test_visual_hold_records_object_center_offset() -> None:
         before_rgb=before,
         after_rgb=after,
         object_offset_local=(0.03, -0.04, 0.0),
+        release_clearance_hint=0.04,
     )
 
     assert evidence is not None
     assert evidence.object_offset_local == (0.03, -0.04, 0.0)
+    assert evidence.release_clearance_hint == 0.04
 
 
 def test_visual_hold_identity_requires_independent_verification() -> None:

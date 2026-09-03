@@ -481,6 +481,7 @@ def _orbit_product_identity_point(state: Any, obj: str) -> tuple[int, int] | Non
         if candidate_package in allowed_packages:
             package_query = candidate_package
     package_query = package_query or "package"
+    setattr(state, "_last_identity_package", package_query)
 
     rows: list[dict[str, Any]] = []
     attempts: list[dict[str, Any]] = []
