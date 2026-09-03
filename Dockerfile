@@ -21,7 +21,7 @@ COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY roborsi/ roborsi/
 COPY bridge/ bridge/
 COPY frontend/web/ frontend/web/
-RUN uv pip install --system --no-cache ".[web]"
+RUN uv pip install --system --no-cache ".[web,libero]"
 
 # Build the WhatsApp bridge
 WORKDIR /app/bridge

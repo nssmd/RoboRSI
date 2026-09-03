@@ -122,8 +122,8 @@ RoboRSI is built so the numbers can't lie to you:
 
 - **Success is judged by the simulator's own `check_success` predicate**, never the model's own "I'm done" claim.
 - **The predicate is evaluated only after the Agent tool loop**; per-action
-  rewards, success flags, object-state observations, and the final predicate are
-  not exposed through the LIBERO skill interface.
+  rewards, success flags, filtered object-state observations, and the final
+  predicate are not exposed through the LIBERO skill interface.
 - **No physics overrides** — no `expert_replay`, no force-attach/teleport, no hard-coded answers. The Engineer reads live coordinates from the scene every time.
 - **Demos are recorded only when the predicate genuinely passes**, so a saved demo means the task was physically completed.
 - **Generated policy code is capability-limited** to literal calls into the released public skill surface; it cannot read `state.env`, simulator internals, files, processes, or networks.
@@ -159,6 +159,19 @@ or follow the guides:
 - [Non-Docker Installation](./docs/INSTALLATION.md)
 - [Docker Installation](./docs/DOCKERINSTALLATION.md)
 - [Architecture deep-dive](./docs/architecture.md)
+
+Configure a real LIBERO-PRO checkout once:
+
+```bash
+pip install -e ".[libero]"
+git clone --depth 1 https://github.com/Zxy-MLlab/LIBERO-PRO.git
+roborsi libero configure --root ./LIBERO-PRO
+roborsi libero doctor --backend libero --task libero_object/0 --reset
+```
+
+RoboRSI persists the checkout in `~/.roborsi/libero.json`, creates the upstream
+LIBERO path config non-interactively, and activates the checkout before backend
+imports. No hand-written `.pth` file is required.
 
 Start the local interfaces after installation:
 

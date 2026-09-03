@@ -7,15 +7,15 @@ baked into per-task BDDL files. It reuses LIBERO's ``OffScreenRenderEnv``
 differ. This adapter therefore wraps the SAME robosuite family as the RoboCasa
 backend, and mirrors its shape.
 
-Layout on this box (see ``~/.libero/config.yaml``)::
+Checkout layout::
 
-    /path/to/LIBERO-PRO/                  # the fork, on sys.path via a .pth
+    /path/to/LIBERO-PRO/                  # configured by `roborsi libero configure`
       libero/libero/bddl_files/<suite>/   # base + perturbed suites
       libero/libero/init_files/<suite>/   # matching pruned init states
 
-The import of ``libero`` is deferred into the methods that touch the simulator
-so this module imports cleanly on any box; ``available()`` is the only place
-that probes it (the registry loader can introspect the backend without MuJoCo).
+The import of ``libero`` is deferred into the methods that touch the simulator.
+The runtime resolver activates ``ROBORSI_LIBERO_ROOT`` or the persisted
+``~/.roborsi/libero.json`` checkout before importing.
 
 API surface we wrap (verified against the installed fork)::
 
@@ -308,6 +308,7 @@ class LiberoProEnv(Env):
         """Write the buffered episode frames to artifacts/demos/auto/ as an mp4."""
         import time as _t
         from pathlib import Path
+
         import cv2
         # adapter.py is at roborsi/embodied/sim/libero/ → repo root is parents[4]
         # (libero→sim→embodied→roborsi→repo); demos live under repo/artifacts.
@@ -347,8 +348,8 @@ class LiberoProEnv(Env):
     def raw_obs(self) -> dict[str, Any]:
         """Last robot-proprioception and camera/depth observation.
 
-        ``make_env`` disables LIBERO object observations, so this mapping does
-        not contain simulator object poses.
+        The adapter filters LIBERO's internal observation before storing it, so
+        this mapping does not contain simulator object poses.
         """
         return self._raw
 
@@ -443,21 +444,29 @@ class LiberoProBackend(Backend):
 
     def available(self) -> tuple[bool, str]:
         try:
+            from roborsi.embodied.sim.libero.runtime import activate_runtime
+
+            activate_runtime()
             import libero.libero  # noqa: F401
+            import mujoco  # noqa: F401
             import robosuite  # noqa: F401
-        except ImportError as exc:
+        except Exception as exc:
             return False, (
-                f"libero/robosuite not importable: {exc}. LIBERO-PRO must be on "
-                "sys.path (a .pth to your LIBERO-PRO checkout) with robosuite 1.4 + mujoco."
+                f"LIBERO runtime unavailable: {type(exc).__name__}: {exc}. "
+                "Run `roborsi libero configure --root /path/to/LIBERO-PRO` "
+                "and `roborsi libero doctor`."
             )
         return True, ""
 
     def _benchmark_dict(self) -> dict[str, Any]:
         try:
+            from roborsi.embodied.sim.libero.runtime import activate_runtime
+
+            activate_runtime()
             from libero.libero import benchmark
-        except ImportError as exc:
+        except Exception as exc:
             raise BackendUnavailable(
-                f"libero not importable: {exc}. Put LIBERO-PRO on sys.path."
+                f"LIBERO runtime unavailable: {type(exc).__name__}: {exc}"
             ) from exc
         return benchmark.get_benchmark_dict()
 
@@ -500,7 +509,10 @@ class LiberoProBackend(Backend):
             bddl_file_name=bddl,
             controller="JOINT_POSITION",   # Jacobian-IK servo (LiberoControl); OSC wedged at joint limits
             ignore_done=True,
-            use_object_obs=False,
+            # LIBERO-PRO 0.1 assumes object observables exist while building its
+            # sensor list. Keep them inside the simulator, then remove every
+            # object key at the adapter boundary via _visible_raw_obs().
+            use_object_obs=True,
             camera_heights=cam_h,
             camera_widths=cam_w,
             camera_depths=cfg.get("camera_depths", True),  # enables unproject/pixel skills
@@ -532,7 +544,12 @@ class LiberoProBackend(Backend):
         regenerated .pruned_init from <INITDIR>/<problem_folder>/<file> (the
         ASPIRE-protocol run uses 70 states per task so seeds 1-50 / 51-65 are
         disjoint); otherwise use the shipped 50-state files. Non-destructive."""
-        root = os.environ.get("ROBORSI_LIBERO_INITDIR")
+        from roborsi.embodied.sim.libero.runtime import configured_initdir
+
+        configured = configured_initdir()
+        root = os.environ.get("ROBORSI_LIBERO_INITDIR") or (
+            str(configured) if configured else None
+        )
         if not root:
             return bench.get_task_init_states(task_id)
         task = bench.tasks[task_id]

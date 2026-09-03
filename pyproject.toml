@@ -13,7 +13,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
 ]
 
 dependencies = [
@@ -70,6 +69,24 @@ langsmith = [
 web = [
     "fastapi>=0.115.0,<1.0.0",
     "uvicorn[standard]>=0.34.0,<1.0.0",
+]
+libero = [
+    "bddl==1.0.1",
+    "cloudpickle>=2.1,<4.0",
+    "easydict>=1.9,<2.0",
+    "future>=0.18.2",
+    "gym==0.25.2",
+    "h5py>=3.8,<4.0",
+    "imageio>=2.36,<3.0",
+    "imageio-ffmpeg>=0.5,<1.0",
+    "matplotlib>=3.5,<4.0",
+    "mujoco==3.3.0",
+    "numpy>=2.0,<2.3",
+    "opencv-python>=4.10,<5.0",
+    "pyyaml>=6.0,<7.0",
+    "robosuite==1.4.0",
+    "scipy>=1.11,<2.0",
+    "termcolor>=2.4,<4.0",
 ]
 dev = [
     "pytest>=9.0.0,<10.0.0",

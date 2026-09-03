@@ -37,6 +37,7 @@ from roborsi.cli.skill import skill_app
 from roborsi.cli.sim import sim_app
 from roborsi.cli.task import task_app
 from roborsi.cli.farm import farm_app
+from roborsi.cli.libero import libero_app
 from roborsi.cli.skill_tiers import base_app, atomic_app, long_horizon_app
 from roborsi.cli.bench import bench_app
 from roborsi.cli.bench_lh import bench_lh_app
@@ -48,6 +49,7 @@ app.add_typer(skill_app, name="skill", help="Skill catalog (docs + policies).")
 app.add_typer(sim_app, name="sim", help="Simulator backends (RoboTwin, ...).")
 app.add_typer(task_app, name="task", help="Task bundle runner (collection→dataset→train→eval→rl).")
 app.add_typer(farm_app, name="farm", help="Parallel Farm: multi-worker data collection.")
+app.add_typer(libero_app, name="libero", help="Configure and verify LIBERO.")
 app.add_typer(base_app, name="base", help="Base skills — robot primitives.")
 app.add_typer(atomic_app, name="atomic", help="Atomic tasks (zeroshot/train/eval/reset_*).")
 app.add_typer(long_horizon_app, name="long-horizon", help="Long-horizon tasks (plan/judge/posttrain).")

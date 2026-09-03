@@ -201,7 +201,38 @@ roborsi web --host 0.0.0.0 --evo-port 8787 --cockpit-port 8795
 Use `--evo-only` or `--cockpit-only` to serve one interface. Set
 `ROBORSI_WEB_TOKEN` or pass `--token` to require bearer authentication.
 
-## 8. Run Frozen LIBERO Evaluation
+## 8. Configure a Real LIBERO Runtime
+
+Install the simulator dependencies:
+
+```bash
+pip install -e ".[libero]"
+```
+
+Clone the benchmark and persist its location:
+
+```bash
+git clone --depth 1 https://github.com/Zxy-MLlab/LIBERO-PRO.git
+roborsi libero configure --root ./LIBERO-PRO
+```
+
+RoboRSI writes `~/.roborsi/libero.json` and a non-interactive upstream LIBERO
+`config.yaml`. The backend activates this checkout before importing
+`libero.libero`, so no manual `.pth` or `PYTHONPATH` edit is needed.
+
+Verify import, task enumeration, and one real reset:
+
+```bash
+roborsi libero doctor \
+  --backend libero \
+  --task libero_object/0 \
+  --reset
+```
+
+Use `--initdir /path/to/regenerated/init_files` during `configure` only when a
+campaign has a separate fixed init-state panel.
+
+## 9. Run Frozen LIBERO Evaluation
 
 One task:
 
