@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from typing import Any
 
-import numpy as np
 # LIBERO head frames render at 256px; the perception fallbacks emit the image
 # CENTRE (128,128) as a "found nothing" sentinel. Grasping there always closes
 # on empty table AND makes the VLM re-find_pixel forever (budget_exceeded), so we
@@ -31,18 +30,16 @@ def _is_sentinel(uv) -> bool:
 # ── perception mode ──────────────────────────────────────────────────────
 def _locate_pixel(state, args):
     name = str(args.get("object") or "").strip()
-    # In fix mode, trust the SAM3/OWLv2 detector ladder (localize_precise) over the
-    # VLM's find_pixel guess: on LIBERO groceries SAM3 discriminates the right
-    # object ~4/7 vs VLM-point ~1/7, so a raw VLM pixel is the weakest signal and
-    # is what drives grasping the WRONG object (verified: clean mask, 27cm off).
+    # Reuse the result of an explicit find_pixel call. Re-localizing here wastes
+    # one perception call and can switch to a different same-category object.
+    pix = args.get("pixel")
+    if isinstance(pix, (list, tuple)) and len(pix) == 2:
+        return int(pix[0]), int(pix[1])
     if name and _fix_on():
         from roborsi.embodied.skills.base._lib.libero._perception import localize_precise
         uv = localize_precise(state, name)
         if uv is not None:
             return uv
-    pix = args.get("pixel")
-    if isinstance(pix, (list, tuple)) and len(pix) == 2:
-        return int(pix[0]), int(pix[1])
     if not name:
         return None
     from roborsi.embodied.skills.base._lib.libero._perception import localize_precise
@@ -51,7 +48,9 @@ def _locate_pixel(state, args):
 
 def _perception_grasp(state, args):
     from roborsi.embodied.skills.base._lib.libero._perception import (
-        grasps_at_pixel, execute_topdown)
+        execute_topdown,
+        grasps_at_pixel,
+    )
     env = state.env
     loc = _locate_pixel(state, args)
     if loc is None:
@@ -83,7 +82,7 @@ def _perception_grasp(state, args):
                     grasps, _cloud, u, v = g2, c2, int(loc2[0]), int(loc2[1])
     if not grasps:
         return ({"ok": False, "grasped": False,
-                 "reason": "GraspGen found no grasp for that pixel — re-find_pixel or look() closer"},
+                 "reason": "Could not construct a segmented grasp for that pixel."},
                 env.take_snapshot())
     p, ee, gq = execute_topdown(env, grasps[0], cloud=_cloud)
     gap = round(float(gq[0] - gq[1]), 4) if gq is not None else None
@@ -102,7 +101,8 @@ def _perception_grasp(state, args):
                     break
             if grasped:
                 break
-    return ({"ok": True, "grasped": grasped, "backend": "graspgen+sam",
+    backend = grasps[0].get("source", "graspgen+sam")
+    return ({"ok": True, "grasped": grasped, "backend": backend,
              "grasp_point": [round(float(x), 4) for x in p],
              "grasp_pixel": [u, v], "gripper_gap": gap,
              "ee_pos": [round(float(x), 4) for x in ee],

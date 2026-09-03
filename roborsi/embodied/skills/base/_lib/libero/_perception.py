@@ -21,6 +21,7 @@ from typing import Any
 import numpy as np
 
 _HEAD = "agentview"
+_POINT_SAM: dict[str, Any] = {}
 
 
 def _fix_on() -> bool:
@@ -40,7 +41,9 @@ def vlm_point(state, obj: str, location: str = ""):
     None if the VLM can't find it. Falls back to the detector via locate_pixel at
     the call site."""
     import os
+
     import cv2
+
     from roborsi.embodied.agent_loop.config import _POINT_SYSTEM_PROMPT
     from roborsi.embodied.agent_loop.vlm_io import _call_vlm_image, _parse_json
     rgb = state.env.take_snapshot().images.get("head_camera")
@@ -67,6 +70,7 @@ def locate_pixel(rgb, query: str, scale: int = 3):
     256px and objects are small, so upscale ~3× before detection, then scale the
     centroid back. Returns (u, v) or None."""
     import cv2
+
     from roborsi.embodied.skills.base.detect_object.robotwin.policy import detect
     rgb = np.asarray(rgb)
     up = cv2.resize(rgb, (rgb.shape[1] * scale, rgb.shape[0] * scale),
@@ -87,7 +91,9 @@ def zoom_localize(state, obj: str, coarse_uv, half: int = 40, upscale: int = 4,
     small-object localization: on the full frame an object is ~20px and the VLM
     points imprecisely / on a look-alike; in a 4× crop it's ~80px and crisp."""
     import os
+
     import cv2
+
     from roborsi.embodied.agent_loop.config import _POINT_SYSTEM_PROMPT
     from roborsi.embodied.agent_loop.vlm_io import _call_vlm_image, _parse_json
     rgb = state.env.take_snapshot().images.get(camera)
@@ -127,7 +133,7 @@ def _load_gdino_base():
     if "mod" in _GDINO_BASE:
         return _GDINO_BASE
     import torch
-    from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+    from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     _GDINO_BASE["proc"] = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-base")
     _GDINO_BASE["mod"] = AutoModelForZeroShotObjectDetection.from_pretrained(
@@ -144,6 +150,7 @@ def locate_by_candidates(_env, rgb, target: str, scale: int = 2,
     are deliberately unavailable. Returns ``(u, v)`` in native pixels or None.
     """
     import re
+
     import cv2
     import torch
     from PIL import Image
@@ -190,7 +197,7 @@ def _load_owlv2():
     if "mod" in _OWLV2:
         return _OWLV2
     import torch
-    from transformers import Owlv2Processor, Owlv2ForObjectDetection
+    from transformers import Owlv2ForObjectDetection, Owlv2Processor
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     _OWLV2["proc"] = Owlv2Processor.from_pretrained("google/owlv2-large-patch14-ensemble")
     _OWLV2["mod"] = Owlv2ForObjectDetection.from_pretrained(
@@ -301,30 +308,60 @@ def retreat_from_head_view(env, ctrl, lift: float = 0.18, back: float = 0.22,
 
 
 def localize_precise(state, obj: str):
-    """Full localization cascade: SAM3 PCS (strongest, 4/7) → OWLv2-large
-    (complementary, 3/7) → VLM-point / tiny-detector, with a zoom refine only on
-    the coarse fallbacks (zoom DEGRADES the accurate detector pixels — measured
-    milk 0.026→0.080m). Returns a (u,v) or None.
+    """Full localization cascade over visible RGB only.
 
-    Discrimination ladder on LIBERO groceries: SAM3 4/7 ≥ OWLv2-large 3/7 >
-    VLM-point 1/7 > Grounded-DINO-base 0/5. SAM3 needs its own venv, so it runs
-    as a ZMQ service (ROBORSI_SAM3_PORT); unset → OWLv2 is primary."""
+    Optional local detectors are used when explicitly configured. The
+    perception VLM is the portable path and the tiny detector is a final local
+    fallback. Missing model assets must not turn one tool call into a network
+    retry loop.
+    """
     env = state.env
     rgb = env.take_snapshot().images.get("head_camera")
     if rgb is None:
         return None
-    uv = locate_by_sam3(rgb, obj)       # SAM3 PCS — strongest, if service up
+    uv = locate_by_sam3(rgb, obj)
     if uv is not None:
         return uv
-    uv = locate_by_owlv2(env, rgb, obj)  # OWLv2 — accurate, complementary
-    if uv is not None:
-        return uv                       # accurate already — do NOT zoom-degrade it
     uv = vlm_point(state, obj)
-    if uv is None:
+    if uv is not None:
+        return zoom_localize(state, obj, uv)
+    if os.environ.get("ROBORSI_OWLV2_ENABLE", "0") == "1":
+        try:
+            uv = locate_by_owlv2(env, rgb, obj)
+        except Exception:
+            uv = None
+        if uv is not None:
+            return uv
+    try:
         uv = locate_pixel(rgb, obj)
+    except Exception:
+        uv = None
     if uv is None:
         return None
-    return zoom_localize(state, obj, uv)   # refine only the coarse fallbacks
+    return zoom_localize(state, obj, uv)
+
+
+def _load_point_sam():
+    if "model" in _POINT_SAM:
+        return _POINT_SAM["processor"], _POINT_SAM["model"]
+    import torch
+    from transformers import SamModel, SamProcessor
+
+    model_name = os.environ.get("ROBORSI_POINT_SAM_MODEL", "facebook/sam-vit-base")
+    local_only = (
+        os.environ.get("HF_HUB_OFFLINE") == "1"
+        or os.environ.get("TRANSFORMERS_OFFLINE") == "1"
+    )
+    processor = SamProcessor.from_pretrained(
+        model_name,
+        local_files_only=local_only,
+    )
+    model = SamModel.from_pretrained(
+        model_name,
+        local_files_only=local_only,
+    ).to("cuda" if torch.cuda.is_available() else "cpu").eval()
+    _POINT_SAM.update({"processor": processor, "model": model})
+    return processor, model
 
 
 def sam_mask_at_point(rgb, u: int, v: int) -> np.ndarray:
@@ -336,8 +373,8 @@ def sam_mask_at_point(rgb, u: int, v: int) -> np.ndarray:
     look-alikes."""
     import torch
     from PIL import Image
-    from roborsi.embodied.skills.base.detect_object.robotwin.policy import _load
-    _, _, sp, sm = _load()
+
+    sp, sm = _load_point_sam()
     inp = sp(images=Image.fromarray(np.asarray(rgb)),
              input_points=[[[int(u), int(v)]]], return_tensors="pt").to(sm.device)
     with torch.no_grad():
@@ -466,12 +503,27 @@ def _add_wrist_view(env, obj_pts, wrist: str = "robot0_eye_in_hand", pad: float 
 
 
 def grasps_at_pixel(env, u: int, v: int, top_k: int = 3):
-    """(top-K GraspGen 6-DoF grasps, object cloud) for the object under (u,v)."""
+    """Construct a grasp from the segmented object cloud under ``(u, v)``."""
     cloud = object_cloud(env, u, v)
     if cloud is None:
         return [], None
-    from roborsi.embodied.sim.robotwin.graspgen_infer import _grasps_from_cloud
-    return _grasps_from_cloud(cloud.astype(np.float32), top_k=top_k), cloud
+    if os.environ.get("GRASPGEN_PORT"):
+        try:
+            from roborsi.embodied.sim.robotwin.graspgen_infer import _grasps_from_cloud
+
+            grasps = _grasps_from_cloud(cloud.astype(np.float32), top_k=top_k)
+        except Exception:
+            grasps = []
+        if grasps:
+            return grasps, cloud
+
+    point = np.median(cloud, axis=0)
+    return [{
+        "score": 0.0,
+        "translation_tcp_world": point.tolist(),
+        "rotation_matrix_world": None,
+        "source": "sam+depth-topdown",
+    }], cloud
 
 
 def graspgen_to_eef_quat(R_grasp_world):

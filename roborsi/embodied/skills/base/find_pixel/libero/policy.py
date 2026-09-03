@@ -1,10 +1,9 @@
 """find_pixel — object-center grounding on the latest camera frame (base/libero).
 
-Pure vision: NO ground-truth pose read. Grounds a noun phrase to a pixel with
-the shared Grounding-DINO + SAM detector (reused from the RoboTwin detector —
-it is embodiment-agnostic: it only consumes an RGB array). Mirrors the RoboTwin
-`find_pixel` so the LIBERO Engineer localizes the same way a camera-only robot
-would: look() -> find_pixel(object) -> (u,v) -> unproject_pixel(u,v) -> world XYZ.
+Pure vision: NO ground-truth pose read. A perception model points at the named
+object in RGB; Grounding-DINO is an optional local fallback. The resulting
+pixel can be unprojected through visible depth or passed directly to a
+code-backed grasp skill.
 """
 from __future__ import annotations
 
@@ -21,18 +20,39 @@ def dispatch_runtime(state, args: dict[str, Any]):
                 obs)
     obj = args.get("object", "the target")
     loc = str(args.get("location", ""))
-    # Reuse the shared Grounding-DINO + SAM detector (pure RGB in, no sim GT).
-    from roborsi.embodied.skills.base.detect_object.robotwin.policy import detect
-    dets = detect(np.asarray(head), obj, top_k=3)
+    from roborsi.embodied.skills.base._lib.libero._perception import vlm_point
+
+    try:
+        point = vlm_point(state, str(obj), loc)
+    except Exception:
+        point = None
+    if point is not None:
+        return ({
+            "ok": True,
+            "u": int(point[0]),
+            "v": int(point[1]),
+            "confidence": None,
+            "bbox": None,
+            "n_alternatives": 0,
+            "location": loc,
+            "note": "Perception-model point grounded from the visible head image.",
+        }, obs)
+
+    # Deterministic local fallback when the detector assets are installed.
+    try:
+        from roborsi.embodied.skills.base.detect_object.robotwin.policy import detect
+
+        dets = detect(np.asarray(head), obj, top_k=3)
+    except Exception:
+        dets = []
     if not dets:
         return ({"ok": False,
-                 "reason": (f"Grounded-SAM did not find '{obj}'. Use a concrete "
+                 "reason": (f"Vision grounding did not find '{obj}'. Use a concrete "
                             "noun phrase ('red mug' not 'the thing') and look() "
                             "to refresh the image, then retry.")}, obs)
     top = dets[0]
     return ({"ok": True, "u": int(top.centroid[0]), "v": int(top.centroid[1]),
              "confidence": round(float(top.score), 3), "bbox": list(top.bbox),
              "n_alternatives": len(dets) - 1, "location": loc,
-             "note": ("Grounded-SAM mask centroid (detector score, not a VLM "
-                      "self-report). Feed u,v to unproject_pixel for world XYZ.")},
+             "note": "Grounded-SAM mask centroid. Feed u,v to unproject_pixel."},
             obs)
