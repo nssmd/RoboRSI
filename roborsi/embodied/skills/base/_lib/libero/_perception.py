@@ -697,7 +697,14 @@ def execute_6dof(env, grasp: dict, cloud=None, standoff: float = 0.08,
     return tcp, np.asarray(ee), gq
 
 
-def execute_topdown(env, grasp: dict, cloud=None, hover: float = 0.10, yaw: float = 0.0):
+def execute_topdown(
+    env,
+    grasp: dict,
+    cloud=None,
+    hover: float = 0.10,
+    yaw: float = 0.0,
+    z_offset: float = 0.0,
+):
     """Grasp at GraspGen's chosen point. With ``ROBORSI_GRASP_6DOF`` on (default)
     and a grasp rotation available AND no explicit ``yaw`` override, execute the
     FULL 6-DoF pose (``execute_6dof``) so bowls/side-grasp objects get grasped;
@@ -733,6 +740,9 @@ def execute_topdown(env, grasp: dict, cloud=None, hover: float = 0.10, yaw: floa
             p[2] = float(np.clip(p[2], zmin + 0.005, zmed))
         else:
             p[2] = float(np.clip(p[2], zmed - 0.01, zmax))   # keep the grasp on the object body
+    p[2] += float(z_offset)
+    if cloud is not None and len(cloud) >= 10:
+        p[2] = max(p[2], float(np.min(cloud[:, 2])) + 0.001)
     q = None
     if yaw:
         import robosuite.utils.transform_utils as T

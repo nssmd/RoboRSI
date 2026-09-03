@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from roborsi.embodied.skills.base._lib.libero import _perception
 from roborsi.embodied.skills.base._lib.libero._helpers import classify_gripper_gap
@@ -69,10 +70,11 @@ def test_unprojected_target_and_object_height_define_drop_point() -> None:
     _perception.remember_pixel(state, "basket", (20, 21))
     _perception.remember_world(state, 20, 21, (-0.04, 0.27, 0.09))
     state._held_object_height = 0.12
+    state._held_grasp_z_offset = 0.025
 
     drop = place_object_in._drop_from_memory(state, "basket", 0.03)
 
-    assert np.allclose(drop, [-0.04, 0.27, 0.18])
+    assert np.allclose(drop, [-0.04, 0.27, 0.205])
 
 
 def test_remembering_same_pixel_preserves_unprojected_world() -> None:
@@ -113,6 +115,33 @@ def test_gripper_gap_distinguishes_open_holding_and_closed() -> None:
     assert classify_gripper_gap(0.001) == "closed_empty"
     assert classify_gripper_gap(0.0588) == "holding"
     assert classify_gripper_gap(0.0799) == "open"
+
+
+def test_tall_object_gets_automatic_upper_body_grasp() -> None:
+    cloud = np.asarray([
+        [x, y, z]
+        for x in (0.00, 0.02)
+        for y in (0.00, 0.02)
+        for z in (0.00, 0.04, 0.08)
+    ])
+
+    offset = grasp_object._grasp_z_offset({"grasp_z_offset": 0.0}, cloud)
+
+    assert offset == pytest.approx(0.028)
+
+
+def test_explicit_grasp_offset_overrides_automatic_profile() -> None:
+    cloud = np.asarray([
+        [x, y, z]
+        for x in (0.00, 0.02)
+        for y in (0.00, 0.02)
+        for z in (0.00, 0.04, 0.08)
+    ])
+
+    assert grasp_object._grasp_z_offset(
+        {"grasp_z_offset": -0.015},
+        cloud,
+    ) == -0.015
 
 
 def test_segmented_cloud_has_topdown_fallback_without_graspgen(

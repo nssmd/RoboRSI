@@ -9,7 +9,7 @@ args:
   object:         { type: string, required: true, description: "Concrete visual object phrase, e.g. 'alphabet soup can'." }
   pixel:          { type: list, description: "Optional [u, v] returned by find_pixel. Prefer this to avoid re-localizing or switching instances." }
   hover:          { type: float, description: "Hover / lift height above the object (m, default 0.10)." }
-  grasp_z_offset: { type: float, description: "Grip-site height above the object center at close time (m, default 0.0). Raise if the gripper pushes the object instead of straddling it." }
+  grasp_z_offset: { type: float, description: "Grip-site height adjustment in meters. Zero enables an automatic upper-body grip for tall objects; set explicitly to override." }
 returns:
   ok: bool
   grasped: bool

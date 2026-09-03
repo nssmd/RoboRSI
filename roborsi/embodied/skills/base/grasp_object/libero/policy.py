@@ -29,6 +29,27 @@ def _is_sentinel(uv) -> bool:
     return abs(int(uv[0]) - su) <= _SENTINEL_TOL and abs(int(uv[1]) - sv) <= _SENTINEL_TOL
 
 
+def _grasp_z_offset(args: dict[str, Any], cloud) -> float:
+    try:
+        requested = float(args.get("grasp_z_offset", 0.0))
+    except (TypeError, ValueError, OverflowError):
+        requested = 0.0
+    if not np.isfinite(requested):
+        requested = 0.0
+    requested = float(np.clip(requested, -0.04, 0.04))
+    points = np.asarray(cloud, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) < 10:
+        return requested
+    points = points[np.all(np.isfinite(points), axis=1)]
+    if len(points) < 10:
+        return requested
+    spans = np.ptp(points, axis=0)
+    horizontal = max(float(spans[0]), float(spans[1]), 1e-6)
+    if abs(requested) < 1e-6 and spans[2] >= 0.06 and spans[2] >= 1.2 * horizontal:
+        return float(np.clip(0.35 * spans[2], 0.015, 0.03))
+    return requested
+
+
 # ── perception mode ──────────────────────────────────────────────────────
 def _locate_pixel(state, args):
     name = str(args.get("object") or "").strip()
@@ -94,7 +115,13 @@ def _perception_grasp(state, args):
         return ({"ok": False, "grasped": False,
                  "reason": "Could not construct a segmented grasp for that pixel."},
                 env.take_snapshot())
-    p, ee, gq = execute_topdown(env, grasps[0], cloud=_cloud)
+    grasp_z_offset = _grasp_z_offset(args, _cloud)
+    p, ee, gq = execute_topdown(
+        env,
+        grasps[0],
+        cloud=_cloud,
+        z_offset=grasp_z_offset,
+    )
     gap = round(float(gq[0] - gq[1]), 4) if gq is not None else None
     from roborsi.embodied.skills.base._lib.libero._helpers import (
         classify_gripper_gap,
@@ -108,7 +135,13 @@ def _perception_grasp(state, args):
         # holds — CaP's "try candidates, check in-hand" idea, extended to yaw.
         for cand in grasps[:1]:
             for yaw in (0.785, -0.785, 1.571):
-                p, ee, gq = execute_topdown(env, cand, cloud=_cloud, yaw=yaw)
+                p, ee, gq = execute_topdown(
+                    env,
+                    cand,
+                    cloud=_cloud,
+                    yaw=yaw,
+                    z_offset=grasp_z_offset,
+                )
                 gap = round(float(gq[0] - gq[1]), 4) if gq is not None else None
                 if classify_gripper_gap(gap) == "holding":
                     grasped = True
@@ -124,10 +157,12 @@ def _perception_grasp(state, args):
     object_height = float(np.clip(object_height, 0.02, 0.16))
     if grasped:
         state._held_object_height = object_height
+        state._held_grasp_z_offset = grasp_z_offset
     return ({"ok": True, "grasped": grasped, "backend": backend,
              "grasp_point": [round(float(x), 4) for x in p],
              "grasp_pixel": [u, v], "gripper_gap": gap,
              "object_height": round(object_height, 4),
+             "grasp_z_offset": round(grasp_z_offset, 4),
              "ee_pos": [round(float(x), 4) for x in ee],
              "note": "perception grasp (no GT); 'grasped' is a proprioceptive finger-gap check, sim predicate is final."},
             env.take_snapshot())

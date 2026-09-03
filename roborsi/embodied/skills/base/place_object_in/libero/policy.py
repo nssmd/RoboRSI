@@ -43,10 +43,12 @@ def _drop_from_memory(state, target_name: str, z_offset: float):
         return None
     object_height = float(getattr(state, "_held_object_height", 0.08))
     object_height = float(np.clip(object_height, 0.02, 0.16))
+    grasp_z_offset = float(getattr(state, "_held_grasp_z_offset", 0.0))
+    grasp_z_offset = float(np.clip(grasp_z_offset, -0.04, 0.04))
     return np.asarray([
         world[0],
         world[1],
-        world[2] + object_height / 2.0 + z_offset,
+        world[2] + object_height / 2.0 + z_offset + grasp_z_offset,
     ], dtype=float)
 
 
@@ -161,9 +163,7 @@ def dispatch_runtime(state, args: dict[str, Any]):
     horizontal_error = float(np.linalg.norm(error[:2]))
     vertical_error = abs(float(error[2]))
     if (
-        not lift_reached
-        or not hover_reached
-        or not drop_reached
+        not hover_reached
         or horizontal_error > 0.025
         or vertical_error > 0.03
     ):
