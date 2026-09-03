@@ -117,6 +117,7 @@ allow-direct-references = true
 include = [
     "roborsi/**/*.py",
     "roborsi/frontend/tui/**/*",
+    "roborsi/embodied/skills/**/*.md",
     "roborsi/templates/**/*.md",
     "roborsi/skills/**/*.md",
     "roborsi/skills/**/*.sh",
