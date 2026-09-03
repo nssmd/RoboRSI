@@ -78,8 +78,13 @@ roborsi eval-suite \
   --seed-start 0 \
   --workers 4 \
   --tool-budget 40 \
+  --code-on \
   --out ~/.roborsi/evals/libero-pro-pass5
 ```
+
+`--code-on` is the default and exposes released, code-backed compound skills
+without allowing any capability write-back. Use `--code-off` only for the
+matched ablation.
 
 The suite runner:
 
@@ -103,6 +108,52 @@ summary.json    task-level pass@K and group breakdowns
 Reuse the same `--out` directory to resume. RoboRSI refuses the resume if the
 task list, seed range, backend, role models, tool budget, worker count, or retry
 policy differs from `campaign.json`.
+
+## Reproduce a current-release LIBERO-PRO Pass 1
+
+After configuring the official LIBERO-PRO BDDL and init-state directories and
+starting PyRoKi, run:
+
+```bash
+ROBORSI_EVAL_MODEL=gpt-5.6-sol \
+ROBORSI_EVAL_WORKERS=8 \
+scripts/run_libero_pro_matched_pass1.sh \
+  ~/.roborsi/evals/suites/libero-pro-matched-pass1
+```
+
+This profile is fixed to the complete 120-task short panel, seed `0`, one
+attempt per task, tool budget `80`, and reasoning effort `medium`. The campaign
+manifest records the exact code revision, task order, model aliases, reasoning
+effort, asset paths, worker count, and retry policy. A different model alias or
+reasoning effort is a new experiment, not an exact replication.
+
+Audit a completed or in-progress campaign directly from its journal:
+
+```bash
+roborsi eval-audit \
+  ~/.roborsi/evals/suites/libero-pro-matched-pass1 \
+  --check-media \
+  --require-complete
+```
+
+`eval-audit` independently recomputes task-level pass@K, subset and suite
+breakdowns, terminal counts, infrastructure exclusion, unresolved
+implementation errors, success-lock behavior, and summary parity. It writes
+`audit.json` beside the original immutable manifest and append-only journal.
+
+### Historical result boundary
+
+The previously reported LIBERO-PRO `80/120` is a historical adaptive,
+cross-release seed-0 result. It accumulated successes across five code
+releases and reran only tasks that had not yet succeeded. Its first-stage
+`43/120` was itself a closure over several disjoint runs and recovery runs.
+Neither number is a fixed-policy single pass.
+
+The script above intentionally measures a stricter object: one current frozen
+release over all 120 tasks. It is the supported path for a fresh simulator
+rerun. Historical summary artifacts can be audited as retained evidence, but
+they must not be presented as though this command deterministically recreates
+the old `80/120`.
 
 ## Benchmarking
 

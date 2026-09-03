@@ -212,6 +212,7 @@ def eval_task(
     planner_model: str | None = typer.Option(None, "--planner-model"),
     engineer_model: str | None = typer.Option(None, "--engineer-model"),
     reviewer_model: str | None = typer.Option(None, "--reviewer-model"),
+    reasoning_effort: str | None = typer.Option(None, "--reasoning-effort"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Evaluate a frozen RoboRSI release without self-evolution."""
@@ -235,6 +236,7 @@ def eval_task(
         planner_model=planner_model,
         engineer_model=engineer_model,
         reviewer_model=reviewer_model,
+        reasoning_effort=reasoning_effort,
         progress=_progress,
     )
     if as_json:
@@ -294,6 +296,12 @@ def eval_suite(
     planner_model: str | None = typer.Option(None, "--planner-model"),
     engineer_model: str | None = typer.Option(None, "--engineer-model"),
     reviewer_model: str | None = typer.Option(None, "--reviewer-model"),
+    reasoning_effort: str | None = typer.Option(None, "--reasoning-effort"),
+    code_on: bool = typer.Option(
+        True,
+        "--code-on/--code-off",
+        help="Expose released code-backed compound skills during frozen eval.",
+    ),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Run resumable task-level pass@K on LIBERO short tasks."""
@@ -334,6 +342,8 @@ def eval_suite(
             planner_model=planner_model,
             engineer_model=engineer_model,
             reviewer_model=reviewer_model,
+            reasoning_effort=reasoning_effort,
+            atomic_compound_enabled=code_on,
             progress=_progress,
         )
     except (RuntimeError, ValueError) as exc:
@@ -363,6 +373,59 @@ def eval_suite(
     exit_code = suite_exit_code(summary)
     if exit_code:
         raise typer.Exit(exit_code)
+
+
+@app.command("eval-audit")
+def eval_audit(
+    root: Path = typer.Argument(..., exists=True, file_okay=False),
+    check_media: bool = typer.Option(False, "--check-media"),
+    require_complete: bool = typer.Option(False, "--require-complete"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Recompute and audit a LIBERO short-suite result from its journal."""
+    import json
+
+    from roborsi.evaluation.audit import (
+        audit_libero_short_suite,
+        write_audit_report,
+    )
+
+    report = audit_libero_short_suite(root, check_media=check_media)
+    audit_path = write_audit_report(root, report)
+    if as_json:
+        sys.stdout.write(json.dumps(report, ensure_ascii=False, default=str) + "\n")
+    else:
+        recomputed = report.get("recomputed", {})
+        table = Table(title="LIBERO short suite audit")
+        table.add_column("field")
+        table.add_column("value", justify="right")
+        table.add_row("integrity", str(report["integrity_status"]))
+        table.add_row("campaign", str(report["campaign_status"]))
+        table.add_row(
+            "tasks solved",
+            f"{recomputed.get('tasks_solved', 0)}/"
+            f"{recomputed.get('tasks_total', 0)}",
+        )
+        table.add_row(
+            "episodes",
+            f"{recomputed.get('episode_successes', 0)} success / "
+            f"{recomputed.get('episode_failures', 0)} failure",
+        )
+        table.add_row("infra", str(recomputed.get("infra_count", 0)))
+        table.add_row(
+            "implementation errors",
+            str(recomputed.get("implementation_error_count", 0)),
+        )
+        console.print(table)
+        console.print(f"[dim]audit[/dim] {audit_path}")
+        for warning in report["warnings"]:
+            console.print(f"[yellow]warning:[/yellow] {warning}")
+        for error in report["errors"]:
+            console.print(f"[red]error:[/red] {error}")
+    if report["integrity_status"] != "pass":
+        raise typer.Exit(1)
+    if require_complete and report["campaign_status"] != "complete":
+        raise typer.Exit(2)
 
 
 # ============================================================================

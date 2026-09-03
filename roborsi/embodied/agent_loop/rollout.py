@@ -36,6 +36,7 @@ from roborsi.embodied.agent_loop.prompt_tools import (
     _maybe_shortlist_skills,
     _try_load_compound_dispatcher,
     _try_load_plugin_dispatcher,
+    atomic_compounds_enabled,
 )
 from roborsi.embodied.agent_loop.vlm_io import _call_vlm_tools
 from roborsi.runtime_mode import current_mode, is_eval_mode
@@ -714,10 +715,9 @@ def _dispatch(state: DispatchContext, call: dict[str, Any]) -> tuple[dict[str, A
     handler = state._tool_handlers.get(name)
     if handler is None:
         handler = _try_load_plugin_dispatcher(name, state.ns)
-    # Opt-in atomic-scoped compound (atomic/<task>/<name>/policy.py), resolved
+    # Released atomic-scoped compound (atomic/<task>/<name>/policy.py), resolved
     # only after base tools miss and only for the running task.
-    if handler is None and state.task and \
-            os.environ.get("ROBORSI_ATOMIC_COMPOUND") == "1":
+    if handler is None and state.task and atomic_compounds_enabled():
         handler = _try_load_compound_dispatcher(name, state.task)
     if handler is None:
         return ({"ok": False, "reason": f"unknown tool '{name}'"}, state.env.take_snapshot())

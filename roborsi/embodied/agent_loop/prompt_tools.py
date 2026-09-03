@@ -12,9 +12,10 @@ from __future__ import annotations
 from typing import Any
 
 from roborsi.embodied.agent_loop.config import (
-    _SHORTLIST_ALWAYS, _embodiment_line, _rules_for,
+    _SHORTLIST_ALWAYS,
+    _embodiment_line,
+    _rules_for,
 )
-
 
 # ---- Plugin dispatcher cache (skills-only; no sim). Shared by prompt/tool
 #      builders here and the sim dispatch path in robotwin_agent. ----
@@ -22,6 +23,14 @@ _PLUGIN_CACHE: dict[str, Any] = {}
 # Atomic-scoped compound policies, keyed by (task, name). Opt-in; see
 # _try_load_compound_dispatcher.
 _COMPOUND_CACHE: dict[tuple[str, str], Any] = {}
+
+
+def atomic_compounds_enabled() -> bool:
+    """Return whether released atomic compounds belong to the runtime surface."""
+    import os
+
+    return os.environ.get("ROBORSI_ATOMIC_COMPOUND", "1") != "0"
+
 
 # ---- Tools that exist for INTERNAL base-skill composition only and must NEVER
 #      appear in the Engineer's (VLM's) tool surface. Success is adjudicated only
@@ -191,10 +200,9 @@ def _maybe_shortlist_skills(instruction: str, task_name: str,
     if ns != "robotwin":
         return None
     try:
-        from roborsi.agents.skill_selector import SkillSelector
-        from roborsi.agents.engineer import (
-            _count_active_skills, _build_skill_index)
+        from roborsi.agents.engineer import _build_skill_index, _count_active_skills
         from roborsi.agents.skill_history import get_success_counts
+        from roborsi.agents.skill_selector import SkillSelector
         # Always run the Sonnet selector — it surfaces specialized skills the
         # Engineer skips among the crowd even at ~44 active (verified: it picks
         # pick_actor_by_contact_point + grasp_then_lift_graspgen for a bowl). Only
@@ -285,11 +293,8 @@ def _spec_from_skill(sk, type_map: dict[str, str]) -> dict[str, Any]:
 
 
 def _compound_specs(task: str, type_map: dict[str, str]) -> list[dict[str, Any]]:
-    """Tool specs for THIS task's solidified compounds. Opt-in: empty unless
-    ROBORSI_ATOMIC_COMPOUND=1 and a task is given, so the live campaign's tool
-    surface is unchanged until a compound is deliberately switched on."""
-    import os
-    if os.environ.get("ROBORSI_ATOMIC_COMPOUND") != "1" or not task:
+    """Tool specs for this task's released, solidified compound policies."""
+    if not atomic_compounds_enabled() or not task:
         return []
     from roborsi.embodied.skills import discover_compounds
     return [_spec_from_skill(sk, type_map) for sk in discover_compounds(task)

@@ -46,6 +46,13 @@ _ACTIVE_USAGE: ContextVar[UsageMetrics | None] = ContextVar(
 )
 
 
+def _openai_reasoning_effort() -> str | None:
+    import os
+
+    value = os.environ.get("ROBORSI_REASONING_EFFORT", "").strip().lower()
+    return value or None
+
+
 @contextmanager
 def capture_usage() -> Iterator[UsageMetrics]:
     metrics = UsageMetrics()
@@ -195,12 +202,18 @@ def _openai_call_with_tools(model: str, messages: list[dict[str, Any]],
             tools=tools,
         )
     sanitized_tools = [_sanitize_openai_tool(t) for t in (tools or [])] or None
+    kwargs: dict[str, Any] = {
+        "model": model_id,
+        "messages": messages,
+        "tools": sanitized_tools,
+        "tool_choice": "auto" if sanitized_tools else None,
+        "max_completion_tokens": 2048,
+    }
+    reasoning_effort = _openai_reasoning_effort()
+    if reasoning_effort:
+        kwargs["reasoning_effort"] = reasoning_effort
     with _track_vlm_call():
-        resp = client.chat.completions.create(
-            model=model_id, messages=messages, tools=sanitized_tools,
-            tool_choice="auto" if sanitized_tools else None,
-            max_completion_tokens=2048,
-        )
+        resp = client.chat.completions.create(**kwargs)
         _log_tokens(resp)
     return resp.choices[0].message
 
@@ -287,6 +300,9 @@ def _openai_responses_call(
     if response_tools:
         kwargs["tools"] = response_tools
         kwargs["tool_choice"] = "auto"
+    reasoning_effort = _openai_reasoning_effort()
+    if reasoning_effort:
+        kwargs["reasoning"] = {"effort": reasoning_effort}
     with _track_vlm_call():
         response = client.responses.create(**kwargs)
         _log_tokens(response)

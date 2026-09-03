@@ -7,9 +7,11 @@ cannot silently measure different execution stacks.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -71,6 +73,7 @@ def run_atomic_attempt(
     planner_model: str | None = None,
     engineer_model: str | None = None,
     reviewer_model: str | None = None,
+    reasoning_effort: str | None = None,
     chat_id: str | None = None,
 ) -> dict[str, Any]:
     """Run one Planner -> Engineer -> Reviewer attempt and classify its result."""
@@ -97,7 +100,7 @@ def run_atomic_attempt(
         request += f" Simulator task key: {sim_task}."
     sess.last_user_message = request
 
-    with use_run_mode(parsed_mode):
+    with use_run_mode(parsed_mode), _reasoning_effort(reasoning_effort):
         try:
             details = _run_atomic_3role(
                 text=request,
@@ -119,6 +122,7 @@ def run_atomic_attempt(
                 raise TypeError("atomic runner returned a non-dict result")
             details["verdict"] = "success" if details["success"] else "failure"
             details["status"] = "terminal"
+            details["reasoning_effort"] = reasoning_effort
             sess.append(
                 "done",
                 final_text=details["text"],
@@ -144,6 +148,7 @@ def run_atomic_attempt(
                 "tool_calls": 0,
                 "reviewer_verdict": None,
                 "proposal_decision": "NO_PROPOSAL",
+                "reasoning_effort": reasoning_effort,
                 "video_path": None,
                 "error": error,
             }
@@ -172,6 +177,7 @@ def run_atomic_campaign(
     planner_model: str | None = None,
     engineer_model: str | None = None,
     reviewer_model: str | None = None,
+    reasoning_effort: str | None = None,
     persist_manifest: bool = True,
     progress=None,
 ) -> dict[str, Any]:
@@ -199,6 +205,7 @@ def run_atomic_campaign(
             planner_model=planner_model,
             engineer_model=engineer_model,
             reviewer_model=reviewer_model,
+            reasoning_effort=reasoning_effort,
         ))
 
     summary = summarize_campaign(
@@ -211,6 +218,7 @@ def run_atomic_campaign(
         tool_budget=tool_budget,
         backend=backend,
         sim_task=sim_task,
+        reasoning_effort=reasoning_effort,
         started_at=started_at,
     )
     if persist_manifest:
@@ -240,6 +248,7 @@ def summarize_campaign(
     tool_budget: int,
     backend: str | None,
     sim_task: str | None,
+    reasoning_effort: str | None,
     started_at: datetime,
 ) -> dict[str, Any]:
     passed = sum(1 for row in rows if row["verdict"] == "success")
@@ -263,6 +272,7 @@ def summarize_campaign(
         "task": task,
         "backend_override": backend,
         "sim_task_override": sim_task,
+        "reasoning_effort": reasoning_effort,
         "tool_budget": tool_budget,
         "seeds": seeds,
         "seed_start": seed_start,
@@ -303,6 +313,21 @@ def _git_state() -> tuple[str, bool]:
         check=False,
     )
     return sha_proc.stdout.strip() or "unknown", bool(status_proc.stdout.strip())
+
+
+@contextmanager
+def _reasoning_effort(value: str | None):
+    name = "ROBORSI_REASONING_EFFORT"
+    previous = os.environ.get(name)
+    if value:
+        os.environ[name] = value
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
 
 
 def _slug(value: str) -> str:

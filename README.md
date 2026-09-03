@@ -105,11 +105,20 @@ roborsi eval-suite \
   --backend libero-pro \
   --pass-at 5 \
   --workers 4 \
+  --code-on \
   --out ~/.roborsi/evals/libero-pro-pass5
 ```
 
 The output directory pins the task panel, seeds, role models, tool budget, and
 retry policy in `campaign.json`; incompatible resumes are rejected.
+
+For the exact current-release LIBERO-PRO seed-0/tool-budget-80 profile, use
+[`scripts/run_libero_pro_matched_pass1.sh`](./scripts/run_libero_pro_matched_pass1.sh).
+Then run `roborsi eval-audit <campaign-dir> --check-media --require-complete`
+to recompute the result from the append-only journal. See
+[Frozen Evaluation](./docs/EVALUATION.md#reproduce-a-current-release-libero-pro-pass-1)
+for the boundary between this fresh fixed-release run and the historical
+cross-release adaptive result.
 
 `roborsi bench skill ...` uses frozen `eval` mode by default. See
 [Frozen evaluation](./docs/EVALUATION.md) for the complete boundary.

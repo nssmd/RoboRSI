@@ -89,6 +89,7 @@ def test_openai_responses_call_uses_flat_function_schema(monkeypatch) -> None:
 
     client = SimpleNamespace(responses=Responses())
     monkeypatch.setenv("ROBORSI_OPENAI_MAX_OUTPUT_TOKENS", "256")
+    monkeypatch.setenv("ROBORSI_REASONING_EFFORT", "medium")
 
     with vlm_io.capture_usage() as usage:
         message = vlm_io._openai_responses_call(
@@ -112,6 +113,7 @@ def test_openai_responses_call_uses_flat_function_schema(monkeypatch) -> None:
     assert captured["model"] == "gpt-test"
     assert captured["instructions"] == "Plan carefully."
     assert captured["max_output_tokens"] == 256
+    assert captured["reasoning"] == {"effort": "medium"}
     assert captured["tools"] == [{
         "type": "function",
         "name": "look",

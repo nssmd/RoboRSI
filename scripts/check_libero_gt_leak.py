@@ -97,15 +97,7 @@ FROZEN_DISABLED_META_TOOLS = frozenset(
 def _visible_compound_skills(*, frozen: bool | None = None):
     import os
 
-    is_frozen = (
-        os.environ.get("ROBORSI_SELFEVO_FREEZE", "0") != "0"
-        if frozen is None
-        else bool(frozen)
-    )
-    if (
-        os.environ.get("ROBORSI_ATOMIC_COMPOUND", "1") != "1"
-        or is_frozen
-    ):
+    if os.environ.get("ROBORSI_ATOMIC_COMPOUND", "1") == "0":
         return []
     return discover_compounds("libero_pick_place")
 
@@ -118,12 +110,12 @@ def expected_visible_tool_names(*, frozen: bool | None = None) -> frozenset[str]
         if frozen is None
         else bool(frozen)
     )
-    expected = EXPECTED_VISIBLE_TOOL_NAMES
+    expected = EXPECTED_VISIBLE_TOOL_NAMES | frozenset(
+        skill.name for skill in _visible_compound_skills(frozen=is_frozen)
+    )
     if is_frozen:
         return expected - FROZEN_DISABLED_META_TOOLS
-    return expected | frozenset(
-        skill.name for skill in _visible_compound_skills(frozen=False)
-    )
+    return expected
 
 
 def _resolve_visible_skill(name: str):
@@ -218,6 +210,7 @@ def libero_skill_docs() -> list[Path]:
     skills = PACKAGE_ROOT / "embodied/skills"
     roots = (
         skills / "atomic/libero",
+        skills / "atomic/libero_pick_place",
         skills / "task_families/libero",
         skills / "compound/libero",
         skills / "executors/libero",
@@ -567,6 +560,7 @@ def scan_visible_tool_manifest() -> list[str]:
 
     shipped_base = (PACKAGE_ROOT / "embodied/skills/base").resolve()
     shipped_compound = (PACKAGE_ROOT / "embodied/skills/compound").resolve()
+    shipped_atomic = (PACKAGE_ROOT / "embodied/skills/atomic").resolve()
     for row in specs:
         fn = row["function"]
         name = str(fn["name"])
@@ -580,7 +574,7 @@ def scan_visible_tool_manifest() -> list[str]:
             continue
         source = sk.path.resolve()
         shipped = False
-        for root in (shipped_base, shipped_compound):
+        for root in (shipped_base, shipped_compound, shipped_atomic):
             try:
                 source.relative_to(root)
                 shipped = True

@@ -25,6 +25,7 @@ from roborsi.evaluation.atomic import (
 _SHORT_TASK = re.compile(
     r"^libero_(spatial|object|goal)(?:_(task|object|swap|lan))?/(\d+)$"
 )
+_TASKS_PER_PROCESS = 4
 
 
 def select_libero_short_tasks(
@@ -62,6 +63,8 @@ def run_libero_short_suite(
     planner_model: str | None = None,
     engineer_model: str | None = None,
     reviewer_model: str | None = None,
+    reasoning_effort: str | None = None,
+    atomic_compound_enabled: bool = True,
     progress=None,
 ) -> dict[str, Any]:
     """Run task-level pass@K with exact journal resume and success protection."""
@@ -112,6 +115,8 @@ def run_libero_short_suite(
         planner_model=planner_model,
         engineer_model=engineer_model,
         reviewer_model=reviewer_model,
+        reasoning_effort=reasoning_effort,
+        atomic_compound_enabled=atomic_compound_enabled,
         journal=journal,
         created_at=started_at,
         runtime=runtime,
@@ -137,26 +142,20 @@ def run_libero_short_suite(
     }
     rows = list(existing)
 
-    executor: cf.Executor
-    if workers == 1:
-        executor = cf.ThreadPoolExecutor(max_workers=1)
-    else:
-        executor = cf.ProcessPoolExecutor(
-            max_workers=workers,
-            mp_context=mp.get_context("spawn"),
-        )
-    try:
-        for seed in range(seed_start, seed_start + seeds):
-            pending = [
-                task_key
-                for task_key in task_keys
-                if task_key not in solved
-                and (task_key, seed) not in terminal_by_key
-            ]
-            futures = {}
-            for task_key in pending:
+    for seed in range(seed_start, seed_start + seeds):
+        pending = [
+            task_key
+            for task_key in task_keys
+            if task_key not in solved
+            and (task_key, seed) not in terminal_by_key
+        ]
+        completed = 0
+        batch_size = workers * _TASKS_PER_PROCESS
+        for offset in range(0, len(pending), batch_size):
+            payloads = []
+            for task_key in pending[offset : offset + batch_size]:
                 key = (task_key, seed)
-                payload = {
+                payloads.append({
                     "task_key": task_key,
                     "atomic": atomic,
                     "backend": backend,
@@ -167,16 +166,12 @@ def run_libero_short_suite(
                     "planner_model": planner_model,
                     "engineer_model": engineer_model,
                     "reviewer_model": reviewer_model,
-                }
-                futures[executor.submit(_run_suite_attempt, payload)] = task_key
+                    "reasoning_effort": reasoning_effort,
+                    "atomic_compound_enabled": atomic_compound_enabled,
+                })
 
-            completed = 0
-            for future in cf.as_completed(futures):
-                task_key = futures[future]
-                try:
-                    attempt_rows = future.result()
-                except Exception as exc:
-                    attempt_rows = [_parent_worker_error(task_key, seed, exc)]
+            for payload, attempt_rows in _run_payload_batch(payloads, workers):
+                task_key = str(payload["task_key"])
                 for row in attempt_rows:
                     rows.append(row)
                     _append_journal(journal, row)
@@ -200,8 +195,6 @@ def run_libero_short_suite(
                         len(solved),
                         len(task_keys),
                     )
-    finally:
-        executor.shutdown(wait=True)
 
     summary = _summarize_suite(
         campaign_id=campaign_id,
@@ -234,36 +227,95 @@ def suite_exit_code(summary: dict[str, Any]) -> int:
 def _run_suite_attempt(payload: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     max_attempts = int(payload["infra_retries"]) + 1
-    for offset in range(max_attempts):
-        attempt = int(payload["attempt_start"]) + offset
-        row = run_atomic_attempt(
-            task=payload["atomic"],
-            seed=int(payload["seed"]),
-            mode="eval",
-            tool_budget=int(payload["tool_budget"]),
-            backend=payload["backend"],
-            sim_task=payload["task_key"],
-            planner_model=payload.get("planner_model"),
-            engineer_model=payload.get("engineer_model"),
-            reviewer_model=payload.get("reviewer_model"),
-        )
-        row["task_key"] = payload["task_key"]
-        row["attempt"] = attempt
-        rows.append(row)
-        if row["verdict"] != "infra":
-            break
+    env_name = "ROBORSI_ATOMIC_COMPOUND"
+    prior = os.environ.get(env_name)
+    os.environ[env_name] = (
+        "1" if payload.get("atomic_compound_enabled", True) else "0"
+    )
+    try:
+        for offset in range(max_attempts):
+            attempt = int(payload["attempt_start"]) + offset
+            row = run_atomic_attempt(
+                task=payload["atomic"],
+                seed=int(payload["seed"]),
+                mode="eval",
+                tool_budget=int(payload["tool_budget"]),
+                backend=payload["backend"],
+                sim_task=payload["task_key"],
+                planner_model=payload.get("planner_model"),
+                engineer_model=payload.get("engineer_model"),
+                reviewer_model=payload.get("reviewer_model"),
+                reasoning_effort=payload.get("reasoning_effort"),
+            )
+            row["task_key"] = payload["task_key"]
+            row["attempt"] = attempt
+            row["atomic_compound_enabled"] = bool(
+                payload.get("atomic_compound_enabled", True)
+            )
+            rows.append(row)
+            if row["verdict"] != "infra":
+                break
+    finally:
+        if prior is None:
+            os.environ.pop(env_name, None)
+        else:
+            os.environ[env_name] = prior
     return rows
 
 
-def _parent_worker_error(task_key: str, seed: int, exc: Exception) -> dict[str, Any]:
+def _run_payload_batch(
+    payloads: list[dict[str, Any]],
+    workers: int,
+) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+    """Bound worker lifetime and queue damage from a native simulator crash."""
+    if not payloads:
+        return []
+    if workers == 1:
+        results = []
+        for payload in payloads:
+            try:
+                rows = _run_suite_attempt(payload)
+            except Exception as exc:
+                rows = [_parent_worker_error(payload, exc)]
+            results.append((payload, rows))
+        return results
+
+    executor = cf.ProcessPoolExecutor(
+        max_workers=min(workers, len(payloads)),
+        mp_context=mp.get_context("spawn"),
+        max_tasks_per_child=_TASKS_PER_PROCESS,
+    )
+    futures: dict[cf.Future, dict[str, Any]] = {}
+    results: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    try:
+        for payload in payloads:
+            try:
+                future = executor.submit(_run_suite_attempt, payload)
+            except Exception as exc:
+                results.append((payload, [_parent_worker_error(payload, exc)]))
+            else:
+                futures[future] = payload
+        for future in cf.as_completed(futures):
+            payload = futures[future]
+            try:
+                rows = future.result()
+            except Exception as exc:
+                rows = [_parent_worker_error(payload, exc)]
+            results.append((payload, rows))
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+    return results
+
+
+def _parent_worker_error(payload: dict[str, Any], exc: Exception) -> dict[str, Any]:
     verdict = classify_attempt_exception(exc)
     return {
         "task": "libero_pick_place",
-        "task_key": task_key,
-        "sim_task": task_key,
-        "backend": None,
-        "seed": seed,
-        "attempt": 1,
+        "task_key": payload["task_key"],
+        "sim_task": payload["task_key"],
+        "backend": payload.get("backend"),
+        "seed": int(payload["seed"]),
+        "attempt": int(payload.get("attempt_start", 1)),
         "run_mode": "eval",
         "success": None,
         "verdict": verdict,
@@ -307,6 +359,8 @@ def _load_or_create_campaign(
     planner_model: str | None,
     engineer_model: str | None,
     reviewer_model: str | None,
+    reasoning_effort: str | None,
+    atomic_compound_enabled: bool,
     journal: Path,
     created_at: datetime,
     runtime: dict[str, Any],
@@ -326,6 +380,8 @@ def _load_or_create_campaign(
             "engineer": engineer_model,
             "reviewer": reviewer_model,
         },
+        "reasoning_effort": reasoning_effort,
+        "atomic_compound_enabled": atomic_compound_enabled,
         "runtime": runtime,
     }
     if path.exists():
@@ -459,6 +515,10 @@ def _summarize_suite(
         "seed_start": seed_start,
         "workers": workers,
         "tool_budget": tool_budget,
+        "reasoning_effort": campaign.get("reasoning_effort"),
+        "atomic_compound_enabled": bool(
+            campaign.get("atomic_compound_enabled", True)
+        ),
         "tasks_total": len(task_keys),
         "tasks_solved": solved_tasks,
         "task_success_rate": solved_tasks / len(task_keys),
@@ -511,6 +571,10 @@ def _runtime_fingerprint(backend: str) -> dict[str, Any]:
         "libero_initdir": os.environ.get("ROBORSI_LIBERO_INITDIR", ""),
         "libero_bddldir": os.environ.get("ROBORSI_LIBERO_BDDLDIR", ""),
         "perception_model": os.environ.get("ROBORSI_PERCEPTION_MODEL", ""),
+        "reasoning_effort_env": os.environ.get("ROBORSI_REASONING_EFFORT", ""),
+        "atomic_compound_default": (
+            os.environ.get("ROBORSI_ATOMIC_COMPOUND", "1") != "0"
+        ),
         "python": platform.python_version(),
         "platform": sys.platform,
     }
