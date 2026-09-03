@@ -256,11 +256,10 @@ def _task_history_block(task: str) -> str:
     every seed. Feeds the count of past failed traces + the already Manager-
     APPROVED leads (known fixes it must not re-file). This is what makes the
     Reviewer a SESSION over the task's wiki, not a one-shot single-run reviewer."""
-    from roborsi.agents.task_wiki import wiki_path
-    p = wiki_path(task)
-    if not p.exists():
+    from roborsi.agents.task_wiki import read_wiki
+    md = read_wiki(task)
+    if not md:
         return "(no prior wiki — these are the first attempts on this task)"
-    md = p.read_text(encoding="utf-8", errors="replace")
     n_fail = md.count("- outcome: ✗")
     leads = "(none approved yet)"
     if "## Manager-approved leads" in md:
@@ -612,15 +611,20 @@ class Reviewer:
     DEFAULT_MODEL = "anthropic/claude-opus-4-8"
 
     def __init__(self, model: str | None = None,
-                 filter_mode: str | None = None) -> None:
+                 filter_mode: str | None = None,
+                 allow_evolution: bool | None = None) -> None:
         self.model = model or self.DEFAULT_MODEL
+        from roborsi.runtime_mode import evolution_enabled
+        self.allow_evolution = evolution_enabled() and allow_evolution is not False
         # FILTER_MODE controls what happens when a proposal is emitted.
         # "human" (default): drop into skill_review/ for human approval +
         #   generate an HTML diff page.
         # "auto": let Planner run harness + similarity validation; auto-apply.
-        self.filter_mode = (filter_mode
-                            or os.environ.get("ROBORSI_FILTER_MODE", "human")
-                            ).lower()
+        self.filter_mode = (
+            (filter_mode or os.environ.get("ROBORSI_FILTER_MODE", "human")).lower()
+            if self.allow_evolution
+            else "disabled"
+        )
 
     def review(self, *, workspace: Workspace,
                 engineer_result: dict[str, Any],
@@ -657,6 +661,12 @@ class Reviewer:
         )
         system_prompt = (_SYSTEM_PROMPT if ns == "robotwin"
                          else _SYSTEM_PROMPT.replace("base/robotwin", f"base/{ns}"))
+        if not self.allow_evolution:
+            system_prompt += (
+                "\n\nEVALUATION MODE: diagnose this attempt for the report, but "
+                "set proposal_decision=NO_PROPOSAL. Do not propose a skill, patch, "
+                "compound, plan promotion, or persistent-memory update."
+            )
         # Reviewer runs as a PERSISTENT (role=reviewer, task) session — the same
         # session resumes across this task's runs, so it remembers its own prior
         # verdicts (the PRIOR HISTORY block above is the durable wiki slice that
@@ -672,6 +682,12 @@ class Reviewer:
         review.setdefault("next_action", "")
         review.setdefault("proposal_decision", "NO_PROPOSAL")
         review.setdefault("review_md", "(no review body)")
+        if not self.allow_evolution:
+            if review.get("proposal_decision") != "NO_PROPOSAL":
+                review["proposal_suppressed"] = True
+            review["proposal_decision"] = "NO_PROPOSAL"
+            review["proposal_payload"] = {}
+            review.pop("plan_amend", None)
 
         # ── Write review.md ──
         review_body = (
@@ -686,7 +702,7 @@ class Reviewer:
         workspace.write_review(review_body)
 
         # ── Optional proposal output ──
-        if review["proposal_decision"] != "NO_PROPOSAL":
+        if self.allow_evolution and review["proposal_decision"] != "NO_PROPOSAL":
             payload = review.get("proposal_payload") or {}
             pid = self._drop_proposal(payload, review, workspace)
             workspace.link_proposal(pid)
@@ -861,6 +877,8 @@ class Reviewer:
                         workspace: Workspace) -> str:
         """Write a skill_review/<pid>.json in the existing propose format
         so scripts/apply_selfevo_proposal.py picks it up unchanged."""
+        from roborsi.runtime_mode import require_evolution
+        require_evolution("writing a skill proposal")
         ts = int(time.time())
         name = payload.get("name", "unnamed")
         kind = payload.get("kind", "update")
@@ -912,6 +930,8 @@ class Reviewer:
         Returns (ok, message). Uses --skip-harness since we just ran the
         gate ourselves in ProposalValidator; the apply path's gate would
         re-run it which wastes a sim startup."""
+        from roborsi.runtime_mode import require_evolution
+        require_evolution("applying a skill proposal")
         import subprocess
         repo = Path(__file__).resolve().parents[2]
         cmd = ["python3", "scripts/apply_selfevo_proposal.py", pid,

@@ -245,6 +245,9 @@ def append_success_trace(*, task: str, atomic: str, seed: int,
                           run_id: str, tool_events: list[dict],
                           tool_calls_total: int) -> Path:
     """Append a successful execution trace to the wiki (capped)."""
+    from roborsi.runtime_mode import evolution_enabled
+    if not evolution_enabled():
+        return wiki_path(task)
     p = _ensure_wiki(task)
     md = p.read_text(encoding="utf-8")
     seq_md = _tool_sequence_to_md(tool_events)
@@ -276,6 +279,9 @@ def append_failure_trace(*, task: str, atomic: str, seed: int,
     cannot silently become authoritative task knowledge that the Planner reads:
     both the Reviewer (author) and the Manager (approver) must look first.
     """
+    from roborsi.runtime_mode import evolution_enabled
+    if not evolution_enabled():
+        return wiki_path(task)
     review_path = _enqueue_hypothesis_review(
         task=task, run_id=run_id,
         root_cause=reviewer_root_cause, next_action=reviewer_next_action)
@@ -304,6 +310,8 @@ def _enqueue_hypothesis_review(*, task: str, run_id: str,
     """Queue a failed-run Reviewer hypothesis for Manager review, so the Manager
     (cron self-check) sees every unverified next_action and can approve or
     reject it against sim ground truth."""
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("queueing a wiki hypothesis")
     WIKI_REVIEW_ROOT.mkdir(parents=True, exist_ok=True)
     pid = f"{int(time.time())}-hyp-{uuid.uuid4().hex[:6]}"
     p = WIKI_REVIEW_ROOT / f"{pid}.json"
@@ -330,6 +338,8 @@ def resolve_wiki_hypothesis(proposal_path: Path, *, approve: bool,
     (now a trusted, human-signed-off lead). approve=False leaves the wiki
     untouched — the unverified guess never entered it, so nothing to retract.
     Marks the proposal resolved either way."""
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("resolving a wiki hypothesis")
     payload = json.loads(Path(proposal_path).read_text(encoding="utf-8"))
     task = payload["task"]
     p = _ensure_wiki(task)
@@ -362,6 +372,8 @@ def _enqueue_plan_promotion(*, task: str, run_id: str, workspace_plan_md: str,
     is nothing to promote, so the queue stays signal-rich (only genuinely
     changed plans surface). The prior seed is stashed in the payload so an
     approved promotion can be rolled back."""
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("queueing a persistent plan promotion")
     from roborsi.agents.planner import persistent_plan_path
     seed_path = persistent_plan_path(task)
     prior = seed_path.read_text(encoding="utf-8") if seed_path.exists() else ""
@@ -396,6 +408,8 @@ def resolve_plan_promotion(proposal_path: Path, *, approve: bool,
     untouched (the unproven plan never entered it). Marks the proposal resolved
     either way. Mirrors resolve_wiki_hypothesis — does NOT move the file (the
     Manager cron archives resolved proposals to applied/)."""
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("resolving a persistent plan promotion")
     from roborsi.agents.planner import persistent_plan_path
     payload = json.loads(Path(proposal_path).read_text(encoding="utf-8"))
     if approve:
@@ -415,6 +429,8 @@ def propose_measurement(*, task: str, measurement_md: str, rationale: str,
 
     Returns the path of the wiki_review JSON. Use
     `apply_measurement_proposal(path)` after human review."""
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("queueing a wiki measurement")
     WIKI_REVIEW_ROOT.mkdir(parents=True, exist_ok=True)
     pid = f"{int(time.time())}-{uuid.uuid4().hex[:6]}"
     p = WIKI_REVIEW_ROOT / f"{pid}.json"
@@ -434,6 +450,8 @@ def propose_measurement(*, task: str, measurement_md: str, rationale: str,
 
 def apply_measurement_proposal(proposal_path: Path) -> Path:
     """Apply an approved measurement proposal to the wiki."""
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("applying a wiki measurement")
     payload = json.loads(proposal_path.read_text(encoding="utf-8"))
     task = payload["task"]
     p = _ensure_wiki(task)
@@ -458,9 +476,14 @@ def read_wiki(task: str) -> str:
     '' if the task has no .zeroshot/.execute skill dir yet — the Planner now
     calls this before a skill may exist and must not crash on that."""
     try:
-        p = _ensure_wiki(task)
+        p = wiki_path(task)
     except ValueError:
         return ""
+    if not p.exists():
+        from roborsi.runtime_mode import evolution_enabled
+        if not evolution_enabled():
+            return ""
+        p = _ensure_wiki(task)
     raw = p.read_text(encoding="utf-8")
     from roborsi.agents.gt_firewall import redact
     clean, _dropped = redact(task, raw)
@@ -488,6 +511,8 @@ def _enqueue_policy_proposal(*, task: str, run_id: str, compound_name: str,
     """Queue a Planner-authored compound policy for Manager review. Nothing is
     written into the repo here — the code + SKILL.md sit in the queue until a
     Manager runs the harness gate and approves via resolve_policy_proposal."""
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("queueing a compound policy")
     compound_dir(task, compound_name)   # validate name early (raises if unsafe)
     POLICY_REVIEW_ROOT.mkdir(parents=True, exist_ok=True)
     pid = f"{int(time.time())}-policy-{uuid.uuid4().hex[:6]}"
@@ -518,6 +543,8 @@ def resolve_policy_proposal(proposal_path: Path, *, approve: bool,
     the harness gate); approve=False leaves the repo untouched. Marks the
     proposal resolved either way — mirrors resolve_wiki_hypothesis, does NOT
     move the file (the Manager cron archives resolved proposals to applied/)."""
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("resolving a compound policy")
     payload = json.loads(Path(proposal_path).read_text(encoding="utf-8"))
     if approve:
         d = compound_dir(payload["task"], payload["compound_name"])

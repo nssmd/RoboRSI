@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from roborsi.embodied.agent_loop.config import (
-    _RULES, _SHORTLIST_ALWAYS, _embodiment_line, _rules_for,
+    _SHORTLIST_ALWAYS, _embodiment_line, _rules_for,
 )
 
 
@@ -132,6 +132,7 @@ def _build_tools_block(restrict_to_names: set[str] | None = None,
     #   1. this module defines _do_<name> (legacy path), OR
     #   2. its policy.py exports `dispatch_runtime` (plugin path).
     wired_legacy = _legacy_tool_names(ns)
+    from roborsi.runtime_mode import evolution_enabled
     rows: list[tuple[str, str]] = []
     for sk in discover_ns(ns):
         if sk.name not in wired_legacy and _try_load_plugin_dispatcher(sk.name, ns) is None:
@@ -139,6 +140,8 @@ def _build_tools_block(restrict_to_names: set[str] | None = None,
         if restrict_to_names is not None and sk.name not in restrict_to_names:
             continue
         if sk.name in _hidden_tools(ns):
+            continue
+        if not evolution_enabled() and sk.name == "register_skill":
             continue
         fm = sk.frontmatter or {}
         desc = str(fm.get("description") or "").strip().replace("\n", " ")
@@ -230,12 +233,16 @@ def _system_prompt(restrict_to_names: set[str] | None = None,
     system prompt only carries the essentials that apply across all
     tasks.
     """
-    return (
+    prompt = (
         _embodiment_line(ns) + "\n\n"
         "TOOLS: full schemas are provided via the `tools` parameter — browse "
         "them there.\n\n"
         + _rules_for(ns)
     )
+    from roborsi.runtime_mode import evaluation_prompt, is_eval_mode
+    if is_eval_mode():
+        prompt += "\n\n" + evaluation_prompt()
+    return prompt
 
 
 # Kept for backwards compat; live callers should use _system_prompt() each
@@ -302,10 +309,13 @@ def _build_tool_specs(ns: str = "robotwin", task: str = "") -> list[dict[str, An
     type_map = {"int": "integer", "float": "number", "list": "array",
                 "object": "object", "bool": "boolean", "string": "string"}
     specs: list[dict[str, Any]] = []
+    from roborsi.runtime_mode import evolution_enabled
     for sk in discover_ns(ns):
         if sk.name not in wired_legacy and _try_load_plugin_dispatcher(sk.name, ns) is None:
             continue
         if sk.name in _hidden_tools(ns):
+            continue
+        if not evolution_enabled() and sk.name == "register_skill":
             continue
         specs.append(_spec_from_skill(sk, type_map))
     specs.sort(key=lambda s: s["function"]["name"])
@@ -349,37 +359,38 @@ def _build_tool_specs(ns: str = "robotwin", task: str = "") -> list[dict[str, An
                          "skills exist before proposing a new one."),
         "parameters": {"type": "object", "properties": {}},
     }})
-    specs.append({"type": "function", "function": {
-        "name": "propose_new_skill",
-        "description": ("Propose a brand-new base skill. `code` MUST be "
-                         "complete valid Python (full policy.py drop-in). "
-                         "`skill_md` MUST include YAML frontmatter with a "
-                         "`harness:` block (sim_task + args + pass_criteria). "
-                         "Goes to skill_review/ for Claude 3-gate approval; "
-                         "applied next LH run if approved."),
-        "parameters": {"type": "object",
-            "properties": {"name": {"type": "string"},
-                            "category": {"type": "string"},
-                            "description": {"type": "string"},
-                            "code": {"type": "string"},
-                            "skill_md": {"type": "string"},
-                            "rationale": {"type": "string"}},
-            "required": ["name", "description", "code",
-                          "skill_md", "rationale"]},
-    }})
-    specs.append({"type": "function", "function": {
-        "name": "propose_skill_update",
-        "description": ("Propose updating an existing skill. `new_code` "
-                         "MUST be complete valid Python (full policy.py "
-                         "replacement, NOT a diff or TODO). Goes to "
-                         "skill_review/ for Claude approval."),
-        "parameters": {"type": "object",
-            "properties": {"name": {"type": "string"},
-                            "new_code": {"type": "string"},
-                            "skill_md": {"type": "string"},
-                            "rationale": {"type": "string"}},
-            "required": ["name", "new_code", "rationale"]},
-    }})
+    if evolution_enabled():
+        specs.append({"type": "function", "function": {
+            "name": "propose_new_skill",
+            "description": ("Propose a brand-new base skill. `code` MUST be "
+                             "complete valid Python (full policy.py drop-in). "
+                             "`skill_md` MUST include YAML frontmatter with a "
+                             "`harness:` block (sim_task + args + pass_criteria). "
+                             "Goes to skill_review/ for Claude 3-gate approval; "
+                             "applied next LH run if approved."),
+            "parameters": {"type": "object",
+                "properties": {"name": {"type": "string"},
+                                "category": {"type": "string"},
+                                "description": {"type": "string"},
+                                "code": {"type": "string"},
+                                "skill_md": {"type": "string"},
+                                "rationale": {"type": "string"}},
+                "required": ["name", "description", "code",
+                              "skill_md", "rationale"]},
+        }})
+        specs.append({"type": "function", "function": {
+            "name": "propose_skill_update",
+            "description": ("Propose updating an existing skill. `new_code` "
+                             "MUST be complete valid Python (full policy.py "
+                             "replacement, NOT a diff or TODO). Goes to "
+                             "skill_review/ for Claude approval."),
+            "parameters": {"type": "object",
+                "properties": {"name": {"type": "string"},
+                                "new_code": {"type": "string"},
+                                "skill_md": {"type": "string"},
+                                "rationale": {"type": "string"}},
+                "required": ["name", "new_code", "rationale"]},
+        }})
     return specs
 
 
@@ -418,38 +429,67 @@ def _build_status_check_prompt() -> str:
         f"  SUCCESS EVIDENCE TO LOOK FOR: {cur.get('success_evidence') or '(none specified)'}\n"
         f"  Fallback: {cur.get('fallback') or '(none specified)'}\n"
         f"  Retries used on this substep: {retry_n}\n"
-        "Verify the action result against SUCCESS EVIDENCE before PROCEEDing.\n"
-        "If no existing skill can do what you need, you may call "
-        "register_skill(name, code, docstring) to define a new helper, "
-        "then use it from exec_python."
+        "Verify the action result against SUCCESS EVIDENCE before PROCEEDing."
     )
+    from roborsi.runtime_mode import evolution_enabled
+    if evolution_enabled():
+        extra += (
+            "\nIf no existing skill can do what you need, you may call "
+            "register_skill(name, code, docstring) to define a new helper, "
+            "then use it from exec_python."
+        )
     return base + extra
 
 
-def _dispatch_meta_tool(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
+def _dispatch_meta_tool(
+    name: str,
+    args: dict[str, Any],
+    *,
+    ns: str = "robotwin",
+) -> dict[str, Any] | None:
     """Handle the codebase-introspection + skill-proposal meta tools.
     Returns a result dict if the tool is meta, None otherwise so callers
     fall through to the regular skill dispatchers."""
     if name == "read_skill_code":
-        from roborsi.embodied.skills import get as get_skill
-        sk = get_skill(args.get("name", ""))
+        from roborsi.embodied.skills import get_ns
+        requested = args.get("name", "")
+        if requested in _hidden_tools(ns):
+            return {
+                "ok": False,
+                "reason": f"skill '{requested}' is not visible to the Engineer",
+            }
+        sk = get_ns(requested, ns)
         if sk is None:
-            return {"ok": False, "reason": f"skill '{args.get('name')}' not found"}
+            return {
+                "ok": False,
+                "reason": (
+                    f"public base skill '{requested}' not found in namespace '{ns}'"
+                ),
+            }
         py = sk.path.parent / "policy.py"
         if not py.exists():
             return {"ok": True, "note": f"'{sk.name}' has no policy.py"}
         return {"ok": True, "name": sk.name,
                  "policy_py": py.read_text(encoding="utf-8")[:8000]}
     if name == "list_base_skills":
-        from roborsi.embodied.skills import discover
+        from roborsi.embodied.skills import discover_ns
+        from roborsi.runtime_mode import evolution_enabled
         rows = []
-        for s in sorted(discover(), key=lambda x: x.name):
-            if not s.name.startswith("base"):
+        for s in sorted(discover_ns(ns), key=lambda x: x.name):
+            if s.name in _hidden_tools(ns):
                 continue
-            desc = (s.metadata.get("description") or "")[:90]
+            if not evolution_enabled() and s.name == "register_skill":
+                continue
+            desc = (s.description or "")[:90]
             rows.append({"name": s.name, "description": desc})
         return {"ok": True, "count": len(rows), "skills": rows[:120]}
     if name in ("propose_new_skill", "propose_skill_update"):
+        from roborsi.runtime_mode import evolution_enabled
+        if not evolution_enabled():
+            return {
+                "ok": False,
+                "reason": "skill proposals are disabled in eval mode",
+            }
         from roborsi.channels.core.agent import _enqueue_proposal
         kind = "new" if name == "propose_new_skill" else "update"
         pid_or_msg = _enqueue_proposal(kind=kind, **args)

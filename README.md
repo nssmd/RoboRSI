@@ -78,6 +78,31 @@ in git.
 
 ---
 
+## Frozen evaluation
+
+`roborsi eval` runs the same Planner → Engineer → Reviewer path against a frozen
+release:
+
+```bash
+roborsi eval libero_pick_place \
+  --backend libero \
+  --sim-task libero_object/0 \
+  --seeds 5
+```
+
+Evaluation keeps per-run plans, reviews, traces, videos, timing, tool calls, and
+the final simulator verdict. It does **not** create or apply proposals, register
+skills, update task wikis or persistent plans, append successful-plan history,
+reuse persistent role sessions, or place episodes in the training data store.
+Run rows are marked `run_mode=eval`; evaluation datasets live separately under
+`~/.roborsi/evals/`. Each invocation also writes a campaign manifest, and
+infrastructure errors are reported separately rather than counted as failures.
+
+`roborsi bench skill ...` uses frozen `eval` mode by default. See
+[Frozen evaluation](./docs/EVALUATION.md) for the complete boundary.
+
+---
+
 ## Integrity by construction
 
 RoboRSI is built so the numbers can't lie to you:

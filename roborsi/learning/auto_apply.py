@@ -88,6 +88,8 @@ def apply_proposal(
       bench_skill:           bench this skill name instead of the
                              proposal's stored `skill` field.
     """
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("applying an extracted skill proposal")
     rows = _td.list_proposals(limit=1000)
     proposal = next((r for r in rows if r["id"] == proposal_id), None)
     if proposal is None:

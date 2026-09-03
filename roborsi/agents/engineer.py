@@ -95,6 +95,9 @@ class Engineer:
         goal = mission_spec.get("goal", workspace.task)
         success_criteria = "; ".join(mission_spec.get("success_criteria", [])) \
                             or "done(success=True)"
+        from roborsi.runtime_mode import current_mode, evolution_enabled
+        run_mode = current_mode().value
+        can_evolve = evolution_enabled()
 
         # ── Skill selection: top-K when registry exceeds cap ──
         restrict: set[str] | None = None
@@ -113,15 +116,23 @@ class Engineer:
                 restrict = set(picked)
 
         # ── Compose engineer instruction ──
+        discipline = (
+            "DISCIPLINE: any throwaway debug/probe/calibration script you write goes "
+            "in THIS skill's own folder (embodied/skills/<tier>/<name>/scripts/), never "
+            "the repo-root scripts/. When done, bake the result into policy.py/plan.md "
+            "(cite it in a comment) and DELETE the script."
+            if can_evolve
+            else
+            "EVALUATION DISCIPLINE: the released capability set is frozen. Do not "
+            "write code, register helpers, propose changes, or persist lessons. "
+            "Use existing skills only and report an honest failure if they are insufficient."
+        )
         instruction = (
             f"GOAL: {goal}\n\n"
             f"PLAN (from Planner — follow this; amend only if scene differs):\n"
             f"{plan_md}\n\n"
             f"SUCCESS CRITERIA: {success_criteria}\n\n"
-            f"DISCIPLINE: any throwaway debug/probe/calibration script you write goes "
-            f"in THIS skill's own folder (embodied/skills/<tier>/<name>/scripts/), never "
-            f"the repo-root scripts/. When done, bake the result into policy.py/plan.md "
-            f"(cite it in a comment) and DELETE the script."
+            f"{discipline}"
         )
 
         # ── Drive sim loop. Backend context-manages env lifecycle. ──
@@ -159,9 +170,10 @@ class Engineer:
             "restricted_skills": sorted(restrict) if restrict else None,
             "n_active_skills": n_active,
         }
+        result["run_mode"] = run_mode
 
         # ── Record per-(task, skill) success for SkillSelector ranking ──
-        if result["success"]:
+        if result["success"] and can_evolve:
             skills_used = sorted({
                 (step.get("tool_call") or {}).get("tool")
                 for step in trace
@@ -182,6 +194,7 @@ class Engineer:
             "",
             f"**Outcome**: `{result['outcome']}` "
             f"({'SUCCESS' if result['success'] else 'FAIL'})",
+            f"**Run mode**: `{result['run_mode']}`",
             f"**Tool calls**: {result['tool_calls']}",
             f"**Skills exposed**: {n_active} active"
             + (f" · narrowed to {len(restrict)} via SkillSelector"

@@ -32,7 +32,8 @@ _SUCCESS_PREDICATE = '%"predicate_check": true%'
 
 
 def _enabled() -> bool:
-    return os.environ.get("ROBORSI_ATOMIC_COMPOUND") == "1"
+    from roborsi.runtime_mode import evolution_enabled
+    return evolution_enabled() and os.environ.get("ROBORSI_ATOMIC_COMPOUND") == "1"
 
 
 def _success_count(wiki_md: str) -> int:
@@ -50,7 +51,8 @@ def _stable_success(task: str) -> bool:
     trace_db.init()
     row = trace_db._conn().execute(
         "SELECT SUM(CASE WHEN status='success' AND episode_summary_json LIKE ? "
-        "THEN 1 ELSE 0 END) AS ok, COUNT(*) AS total FROM runs WHERE task = ?",
+        "THEN 1 ELSE 0 END) AS ok, COUNT(*) AS total FROM runs WHERE task = ? "
+        "AND COALESCE(run_mode, 'evolve') = 'evolve'",
         (_SUCCESS_PREDICATE, task),
     ).fetchone()
     ok = (row["ok"] or 0) if row else 0

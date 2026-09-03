@@ -163,6 +163,9 @@ def synthesize_skill_if_missing(task: str) -> tuple[bool, str]:
     from roborsi.agents import persistent_agent
     if skill_exists(task):
         return True, "exists"
+    from roborsi.runtime_mode import evolution_enabled
+    if not evolution_enabled():
+        return False, "missing skill; synthesis is disabled in eval mode"
     parent_dir = _ATOMIC_ROOT / task
     parent_md = parent_dir / "SKILL.md"
     skill_dir = parent_dir / "zeroshot"

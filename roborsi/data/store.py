@@ -17,7 +17,6 @@ Browse:
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,8 +24,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from roborsi.data.trajectory import WrittenEpisode, write_rollout
-from roborsi.embodied.paths import data_root
 from roborsi.embodied.agent_loop.env import Rollout
+from roborsi.embodied.paths import data_root
 
 
 def _default_root() -> Path:
@@ -60,6 +59,15 @@ class EpisodeSummary:
 
 class DataStore:
     def __init__(self, root: Path | None = None) -> None:
+        from roborsi.runtime_mode import is_eval_mode
+        if is_eval_mode():
+            from roborsi.embodied.paths import evals_root
+            requested = Path(root).expanduser().resolve() if root is not None else None
+            training_root = data_root().resolve()
+            if requested is None:
+                root = evals_root()
+            elif requested == training_root or training_root in requested.parents:
+                root = evals_root() / requested.relative_to(training_root)
         self.root = (root or _default_root()).resolve()
 
     def ensure(self) -> None:
@@ -82,6 +90,9 @@ class DataStore:
     ) -> WrittenEpisode:
         self.ensure()
         rid = run_id or self._new_run_id()
+        from roborsi.runtime_mode import current_mode
+        meta = dict(extra_meta or {})
+        meta.setdefault("run_mode", current_mode().value)
         return write_rollout(
             rollout,
             skill=skill,
@@ -89,7 +100,7 @@ class DataStore:
             store_root=self.root,
             plan_trace=plan_trace,
             judge_scores=judge_scores,
-            extra_meta=extra_meta,
+            extra_meta=meta,
         )
 
     def list(self, skill: str | None = None) -> Iterable[EpisodeSummary]:

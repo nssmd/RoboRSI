@@ -19,11 +19,20 @@ _RUNTIME_REGISTRY: dict[str, Any] = {}
 
 def get_runtime_registered() -> dict[str, Any]:
     """exec_python uses this to bind VLM-authored helpers into snippets."""
+    from roborsi.runtime_mode import evolution_enabled
+    if not evolution_enabled():
+        return {}
     return dict(_RUNTIME_REGISTRY)
 
 
 def dispatch_runtime(state, args: dict[str, Any]):
     from roborsi.embodied.agent_loop.rollout import _snapshot
+    from roborsi.runtime_mode import evolution_enabled
+    if not evolution_enabled():
+        return (
+            {"ok": False, "reason": "register_skill is disabled in eval mode"},
+            _snapshot(state.env),
+        )
     from roborsi.embodied.sim.robotwin.robotwin_agent import _ensure_registry
     name = (args.get("name") or "").strip()
     code = args.get("code") or ""

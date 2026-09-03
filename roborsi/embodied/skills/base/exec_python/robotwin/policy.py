@@ -8,7 +8,6 @@ Output captured. Sandbox uses exec() with a controlled globals dict
 from __future__ import annotations
 
 import io
-import sys
 import traceback
 from contextlib import redirect_stdout, redirect_stderr
 from typing import Any
@@ -78,7 +77,7 @@ def dispatch_runtime(state, args: dict[str, Any]):
     bound: dict[str, Any] = {
         "np": np, "numpy": np, "math": __import__("math"),
         "return_dict": return_dict,
-        "state_scratch": _SHARED_SCRATCH,
+        "state_scratch": _scratch_for_state(state),
         "__builtins__": _safe_builtins(),
     }
     n_bound = 0
@@ -141,6 +140,18 @@ def dispatch_runtime(state, args: dict[str, Any]):
 
 
 _SHARED_SCRATCH: dict[str, Any] = {}
+
+
+def _scratch_for_state(state: Any) -> dict[str, Any]:
+    """Keep eval scratch episode-local while preserving evolve semantics."""
+    from roborsi.runtime_mode import is_eval_mode
+    if not is_eval_mode():
+        return _SHARED_SCRATCH
+    scratch = getattr(state, "_roborsi_eval_scratch", None)
+    if scratch is None:
+        scratch = {}
+        setattr(state, "_roborsi_eval_scratch", scratch)
+    return scratch
 
 
 def _safe_builtins() -> dict[str, Any]:

@@ -23,6 +23,8 @@ dependencies. Configure those paths with `ROBORSI_ROBOTWIN_ROOT` and
 - Preserve failed runs and exact resume state in runtime storage.
 - Submit complete skill implementations through the existing proposal and
   harness-gate path.
+- Keep `eval` frozen: evaluation records may not enter skill history, task
+  memory, proposal queues, persistent role sessions, or training datasets.
 
 ## Before opening a pull request
 

@@ -148,6 +148,9 @@ def synthesize_env_if_missing(task: str) -> tuple[bool, str]:
         return True, "non-RoboTwin backend (sim env is the benchmark; nothing to author)"
     if env_exists(task):
         return True, "exists"
+    from roborsi.runtime_mode import evolution_enabled
+    if not evolution_enabled():
+        return False, "missing simulator environment; synthesis is disabled in eval mode"
     root = _write_root()
     prev_error = ""
     for attempt in range(1, _MAX_ATTEMPTS + 1):

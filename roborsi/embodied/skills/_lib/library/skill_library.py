@@ -24,12 +24,11 @@ from __future__ import annotations
 
 import ast
 import json
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from roborsi.data.store import DataStore
+from roborsi.embodied.paths import data_root
 
 
 @dataclass
@@ -74,11 +73,11 @@ def get_proven_recipes(atomic_skill: str, *, min_occurrences: int = 2,
                        max_recipes: int = 5) -> list[ProvenRecipe]:
     """Scan DataStore for successful episodes of `atomic_skill`,
     extract tool sequences, return promoted recipes (≥min_occurrences)."""
-    store = DataStore()
-    if not store.root.exists():
+    released_root = data_root()
+    if not released_root.exists():
         return []
     # Episode dirs: <root>/<skill>/<run_id>/{trace.json, meta.json, ...}
-    skill_dir = store.root / atomic_skill
+    skill_dir = released_root / atomic_skill
     if not skill_dir.exists():
         return []
     # tuple(sequence) → list[run_id]
@@ -139,7 +138,7 @@ def format_recipes_for_prompt(recipes: list[ProvenRecipe],
 
 
 def _function_library_path(task_name: str) -> Path:
-    return DataStore().root / task_name / "_function_library.json"
+    return data_root() / task_name / "_function_library.json"
 
 
 def load_function_library(task_name: str) -> list[dict[str, Any]]:
@@ -163,6 +162,8 @@ def promote_functions_from_code(task_name: str, code: str,
     extract top-level def statements, merge into the persistent library
     with occurrence counting. Returns list of newly-promoted function
     names (those whose count crossed the min_occurrences threshold)."""
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("promoting code into the released function library")
     p = _function_library_path(task_name)
     p.parent.mkdir(parents=True, exist_ok=True)
     existing = {}

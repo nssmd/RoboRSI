@@ -59,3 +59,12 @@ is a contract violation to fix in the prompt, not an intended path. The only
 **hard** gate is the harness gate on base-skill applies — that runs regardless
 of approver. If you want a hard filesystem sandbox (read-only dirs / tool
 allow-lists), that is a separate piece.
+
+## Evaluation mode
+
+`ROBORSI_RUN_MODE=eval` or the `roborsi eval` command freezes the released
+capability set. The runtime removes proposal and skill-registration tools,
+forces Planner and Reviewer to stateless calls, suppresses wiki/plan/history
+write-back, separates collected episodes from training data, and rejects
+proposal extraction or application. Per-run workspaces, traces, videos,
+metrics, and final simulator verdicts remain writable evaluation evidence.

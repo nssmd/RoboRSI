@@ -49,3 +49,12 @@ user (Feishu / `roborsi chat`)
 
 See `manager/MANAGER.md` for the Manager's full brief and `PROCESS_PERMISSIONS.md`
 for the apply-permission model.
+
+## Frozen eval mode
+
+`roborsi eval <atomic>` keeps the Planner, Engineer, Reviewer, simulator, and
+evidence path, but freezes all cross-run learning. Planner and Reviewer calls
+are stateless, proposal tools and `register_skill` are absent, and successful or
+failed attempts do not update task wikis, persistent plans, skill history, or
+training data. In-episode replanning remains allowed because it changes only the
+current workspace.

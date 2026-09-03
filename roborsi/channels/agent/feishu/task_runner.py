@@ -24,7 +24,26 @@ def runs_dir() -> Path:
 def run_task_sync(task: str, seed: int = 0, episodes: int = 1,
                    tool_budget: int = 12,
                    skill_name: str | None = None,
-                   chat_id: str | None = None) -> dict[str, Any]:
+                   chat_id: str | None = None,
+                   run_mode: str | None = None) -> dict[str, Any]:
+    """Run one task under an explicit or inherited RoboRSI run mode."""
+    from roborsi.runtime_mode import current_mode, use_run_mode
+    selected = run_mode or current_mode()
+    with use_run_mode(selected):
+        return _run_task_sync_impl(
+            task=task,
+            seed=seed,
+            episodes=episodes,
+            tool_budget=tool_budget,
+            skill_name=skill_name,
+            chat_id=chat_id,
+        )
+
+
+def _run_task_sync_impl(task: str, seed: int = 0, episodes: int = 1,
+                        tool_budget: int = 12,
+                        skill_name: str | None = None,
+                        chat_id: str | None = None) -> dict[str, Any]:
     """Run a roborsi atomic task INLINE in the calling thread.
     BLOCKS until done. Persists progress to sqlite (`runs` + `steps` +
     `events` tables) so the HTML monitor follows in real time.
@@ -79,6 +98,8 @@ def run_task_sync(task: str, seed: int = 0, episodes: int = 1,
             }
         else:
             eps = {}
+        from roborsi.runtime_mode import current_mode
+        eps["run_mode"] = current_mode().value
         ok = bool(eps.get("success"))
         outcome = eps.get("outcome", "")
         summary = (f"✓ success ({outcome}, {eps.get('tool_calls','?')} tool calls)"
@@ -120,9 +141,12 @@ def _result_dict(run_id: str) -> dict[str, Any]:
 
 
 def spawn_task(task: str, seed: int = 0, episodes: int = 1,
-                tool_budget: int = 12, on_complete=None) -> str:
+                tool_budget: int = 12, on_complete=None,
+                run_mode: str | None = None) -> str:
     """Synchronous shim for the legacy callback-based API."""
-    st = run_task_sync(task, seed, episodes, tool_budget)
+    st = run_task_sync(
+        task, seed, episodes, tool_budget, run_mode=run_mode
+    )
     if on_complete:
         on_complete(st.get("run_id"))
     return st.get("run_id", "")

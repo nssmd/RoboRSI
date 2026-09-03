@@ -74,7 +74,8 @@ def _gather_traces(tasks: list[str], min_runs_per_task: int = 1,
     out: dict[str, list[dict]] = {}
     for task in tasks:
         runs = _td.list_runs(skill=f"{task}.zeroshot",
-                              status="success", limit=max_runs_per_task)
+                              status="success", run_mode="evolve",
+                              limit=max_runs_per_task)
         traces: list[list[dict]] = []
         for r in runs:
             steps = _td.list_steps(run_id=r["id"], layer="inner")
@@ -116,6 +117,8 @@ def extract_candidates(
 
     Records each candidate to the sqlite ``proposals`` table with
     ``kind='new'`` and the candidate's full diff."""
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("extracting new base-skill candidates")
     bundle = _gather_traces(train_tasks, max_runs_per_task=max_runs_per_task)
     if not bundle:
         return []

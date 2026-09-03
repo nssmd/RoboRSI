@@ -19,7 +19,10 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from roborsi.channels.agent.base import Channel, ChannelCtx
 
 _REPO_ROOT = str(Path(__file__).resolve().parents[3])
 
@@ -300,6 +303,38 @@ _TOOLS = [
             "required": []},
     }},
 ]
+
+_EVAL_OUTER_TOOL_NAMES = frozenset({
+    "list_skills",
+    "read_skill",
+    "run_skill",
+    "recent_runs",
+    "get_status",
+    "render_demo",
+    "read_skill_code",
+    "read_file",
+    "list_dir",
+    "grep_repo",
+    "git_log",
+    "git_show",
+    "get_inner_trace",
+    "get_sim_debug",
+    "view_frame",
+    "read_recent_reflections",
+})
+
+
+def _outer_tool_specs(*, can_evolve: bool) -> list[dict[str, Any]]:
+    """Return the outer-agent tool surface for the active run mode."""
+    if can_evolve:
+        return _TOOLS
+    return [
+        spec
+        for spec in _TOOLS
+        if (spec.get("function") or {}).get("name") in _EVAL_OUTER_TOOL_NAMES
+    ]
+
+
 def _send_to_chat(target_chat_id: str | None, card_or_text,
                     channel=None, ctx=None) -> None:
     """Channel-agnostic outbound helper.
@@ -328,6 +363,14 @@ def _exec_tool(name: str, args: dict, target_chat_id: str | None,
     from roborsi.channels.agent.feishu.task_runner import render_demo_video
     from roborsi.store import trace_db as _td
     from roborsi.channels.agent.feishu.feishu_upload import _public_base_url
+    from roborsi.runtime_mode import evolution_enabled
+    can_evolve = evolution_enabled()
+    if not can_evolve and name in {
+        "propose_new_skill",
+        "propose_skill_update",
+        "run_python",
+    }:
+        return f"REFUSED: {name} is disabled in eval mode."
     if name == "list_skills":
         cat = (args.get("category") or "").strip().lower()
         kind = (args.get("kind") or "").strip().lower()
@@ -365,6 +408,20 @@ def _exec_tool(name: str, args: dict, target_chat_id: str | None,
         return sk.path.read_text(encoding="utf-8")[:8000]
     if name == "run_skill":
         skill_name = (args.get("name") or "").strip()
+        if not can_evolve:
+            frozen_skill = get(skill_name)
+            parts = frozen_skill.path.parts if frozen_skill is not None else ()
+            is_atomic_zeroshot = (
+                frozen_skill is not None
+                and skill_name.endswith(".zeroshot")
+                and "atomic" in parts
+            )
+            if not is_atomic_zeroshot:
+                return (
+                    "REFUSED: eval mode only executes existing atomic "
+                    "*.zeroshot skills; training, reset, scripted-expert, "
+                    "and long-horizon skills are disabled."
+                )
         # Anti-cheat (no_sim_cheating): an agent must SOLVE the task via the VLM
         # rollout (<task>.zeroshot / .execute), never bypass it by invoking the
         # scripted expert or a lifecycle/collection pipeline skill. expert_replay
@@ -539,6 +596,12 @@ def _exec_tool(name: str, args: dict, target_chat_id: str | None,
 def _enqueue_proposal(kind: str, **fields) -> str:
     """Write proposal to ~/.roborsi/skill_review/<id>.json for HTML review,
     AND mirror into the sqlite proposals table."""
+    from roborsi.runtime_mode import evolution_enabled
+    if not evolution_enabled():
+        return json.dumps({
+            "ok": False,
+            "reason": "skill proposals are disabled in eval mode",
+        })
     import time as _t
     import uuid as _u
     from pathlib import Path as _P
@@ -640,9 +703,6 @@ def _list_atomic_frames(atomic: str | None, n: int) -> str:
             "recent_frames": [str(f) for f in frames],
         })
     return json.dumps(out, ensure_ascii=False)
-
-
-    return json.dumps({"frame": str(p), "answer": text}, ensure_ascii=False)[:4000]
 
 
 def _get_failure_patterns(atomic: str | None, task: str | None, last_n: int) -> str:
@@ -822,9 +882,10 @@ def _get_inner_trace(run_id: str | None, tool_filter: str | None,
 
 def _run_python(code: str | None) -> str:
     """Ad-hoc python evaluator. Repo on sys.path, captures stdout."""
-    import io
-    import contextlib
     import subprocess
+    from roborsi.runtime_mode import evolution_enabled
+    if not evolution_enabled():
+        return "REFUSED: run_python is disabled in eval mode."
     if not code:
         return "ERROR: code required"
     # Subprocess for isolation + clean timeout + no namespace pollution.
@@ -1018,7 +1079,10 @@ def _detect_lh_intent(text: str) -> tuple[str, int] | None:
 
 def _run_atomic_3role(*, text: str, atomic: str, seed: int,
                        sess, target_chat_id: str | None,
-                       channel, ctx) -> str:
+                       channel, ctx, tool_budget: int = 40,
+                       backend_name: str | None = None,
+                       sim_task: str | None = None,
+                       return_details: bool = False) -> str | dict[str, Any]:
     """Run Planner → Engineer → Reviewer pipeline for one atomic.
     Returns the user-facing reply text."""
     from roborsi.agents import (
@@ -1027,7 +1091,11 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
     from roborsi.channels.agent.feishu.task_runner import RUNS_DIR  # noqa: F401 — ensures dirs exist
     import time as _t
 
-    sess.append("3role_start", atomic=atomic, seed=seed)
+    from roborsi.runtime_mode import current_mode, evolution_enabled
+    run_mode = current_mode().value
+    can_evolve = evolution_enabled()
+    run_started_at = _t.time()
+    sess.append("3role_start", atomic=atomic, seed=seed, run_mode=run_mode)
     workspace = new_workspace(atomic)
     sess.append("3role_workspace", path=str(workspace.root))
 
@@ -1038,11 +1106,16 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
     from roborsi.agents.atomic_backend import resolve as _resolve_atomic
     from roborsi.embodied.agent_loop.config import _skill_namespace
     ab = _resolve_atomic(atomic)
-    ns = _skill_namespace(ab.backend_name)
+    resolved_backend = backend_name or ab.backend_name
+    resolved_sim_task = sim_task or ab.sim_task
+    ns = _skill_namespace(resolved_backend)
 
     # 1. Planner writes plan.md
     reflections_text = _read_recent_reflections(n=5)
+    from roborsi.agents.gt_firewall import redact as _redact_gt
+    reflections_text, _ = _redact_gt(atomic, reflections_text)
     planner = Planner()
+    planner_model = getattr(planner, "model", None)
     t0 = _t.time()
     print(f"[3role] 🧠 Planner planning {atomic} (ns={ns}) ...", flush=True)
     mission_spec = planner.plan(
@@ -1053,13 +1126,15 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
           flush=True)
     for _i, _sg in enumerate(mission_spec.get("sub_goals", [])[:8]):
         print(f"[3role]      {_i+1}. {str(_sg)[:150]}", flush=True)
-    sess.append("3role_planned", t=_t.time() - t0,
+    planner_wallclock_s = _t.time() - t0
+    sess.append("3role_planned", t=planner_wallclock_s,
                  sub_goals=mission_spec.get("sub_goals", [])[:3])
 
     # 2. Engineer drives sim (owns env lifecycle) on the resolved backend/task.
-    print(f"[3role] 🎛️  backend={ab.backend_name} sim_task={ab.sim_task}",
+    print(f"[3role] 🎛️  backend={resolved_backend} sim_task={resolved_sim_task}",
           flush=True)
     engineer = Engineer()
+    engineer_model = getattr(engineer, "model", None)
     t0 = _t.time()
     eng_result = engineer.execute(
         mission_spec=mission_spec, workspace=workspace,
@@ -1067,10 +1142,11 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
         # regrasp-from-top→stand→verify) spend ~half the budget on perception/IK
         # probing and never reach the action chain → budget_exceeded. Matches the
         # LH sub-atomic budget. NOTE: raises the ceiling, doesn't cure the churn.
-        seed=seed, tool_budget=40,
-        backend_name=ab.backend_name, sim_task=ab.sim_task,
+        seed=seed, tool_budget=tool_budget,
+        backend_name=resolved_backend, sim_task=resolved_sim_task,
     )
-    sess.append("3role_executed", t=_t.time() - t0,
+    engineer_wallclock_s = _t.time() - t0
+    sess.append("3role_executed", t=engineer_wallclock_s,
                  success=eng_result["success"],
                  outcome=eng_result["outcome"])
 
@@ -1082,81 +1158,133 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
     from roborsi.store import trace_db as _td
     _meta = eng_result.get("rollout_meta") or {}
     _td.insert_run(workspace.run_id, task=atomic, seed=seed,
-                    model=_meta.get("model"))
+                    model=_meta.get("model"), run_mode=run_mode)
     _td.update_run(
         workspace.run_id,
         status="success" if eng_result["success"] else "failed",
         outcome=eng_result["outcome"],
         video_path=_meta.get("demo_video"),
-        finished_at=_t.strftime("%Y-%m-%d %H:%M:%S"),
         episode_summary={
             "vlm_declared": _meta.get("vlm_declared"),
             "predicate_check": _meta.get("predicate_check"),
             "tool_calls": eng_result.get("tool_calls"),
+            "run_mode": run_mode,
+            "planner_wallclock_s": planner_wallclock_s,
+            "engineer_wallclock_s": engineer_wallclock_s,
         },
     )
 
     # 3. Reviewer reads everything, writes review.md (+ optional proposal)
-    reviewer = Reviewer()
+    reviewer = Reviewer(allow_evolution=can_evolve)
+    reviewer_model = getattr(reviewer, "model", None)
     t0 = _t.time()
     print("[3role] 🔍 Reviewer reviewing the attempt ...", flush=True)
-    review = reviewer.review(workspace=workspace,
-                              engineer_result=eng_result,
-                              run_id=None, ns=ns)
-    sess.append("3role_reviewed", t=_t.time() - t0,
+    reviewer_error = None
+    try:
+        review = reviewer.review(
+            workspace=workspace,
+            engineer_result=eng_result,
+            run_id=None,
+            ns=ns,
+        )
+    except Exception as exc:
+        if can_evolve:
+            raise
+        reviewer_error = f"{type(exc).__name__}: {exc}"
+        review = {
+            "verdict": "unavailable",
+            "root_cause": reviewer_error,
+            "next_action": "",
+            "proposal_decision": "NO_PROPOSAL",
+        }
+        workspace.write_review(
+            f"# Review · {atomic}\n\n"
+            "**Verdict**: `unavailable`\n"
+            f"**Reviewer error**: {reviewer_error}\n"
+            "**Proposal decision**: `NO_PROPOSAL`\n"
+        )
+        sess.append("3role_reviewer_error", text=reviewer_error)
+    reviewer_wallclock_s = _t.time() - t0
+    total_wallclock_s = _t.time() - run_started_at
+    sess.append("3role_reviewed", t=reviewer_wallclock_s,
                  verdict=review.get("verdict"),
                  proposal=review.get("proposal_decision"))
+    _td.update_run(
+        workspace.run_id,
+        finished_at=_t.strftime("%Y-%m-%d %H:%M:%S"),
+        wallclock_s=total_wallclock_s,
+        episode_summary={
+            "vlm_declared": _meta.get("vlm_declared"),
+            "predicate_check": _meta.get("predicate_check"),
+            "tool_calls": eng_result.get("tool_calls"),
+            "run_mode": run_mode,
+            "models": {
+                "planner": planner_model,
+                "engineer": engineer_model,
+                "reviewer": reviewer_model,
+            },
+            "planner_wallclock_s": planner_wallclock_s,
+            "engineer_wallclock_s": engineer_wallclock_s,
+            "reviewer_wallclock_s": reviewer_wallclock_s,
+            "reviewer_error": reviewer_error,
+            "total_wallclock_s": total_wallclock_s,
+        },
+    )
 
     # 3b. Persist this attempt to the task wiki so the NEXT round's Planner
     # learns from it (closes the self-evo loop for atomics — previously only
     # the LH path recorded traces, so auto-authored atomic skills never matured
     # on strategy failures: the Reviewer's root_cause/next_action evaporated in
     # the per-run review.md and the Planner re-planned blind every round).
-    from roborsi.agents.task_wiki import (
-        append_success_trace, append_failure_trace, _enqueue_plan_promotion,
-    )
     trace_events = [
-        {"tool": e.get("tool", "?"), "args": e.get("args") or {}}
+        {
+            "tool": (e.get("tool_call") or {}).get("tool", "?"),
+            "args": (e.get("tool_call") or {}).get("args") or {},
+        }
         for e in (eng_result.get("trace") or [])
     ]
     _tc_total = eng_result.get("tool_calls", len(trace_events))
-    if eng_result["success"]:
-        append_success_trace(
-            task=atomic, atomic=atomic, seed=seed, run_id=workspace.run_id,
-            tool_events=trace_events, tool_calls_total=_tc_total,
+    if can_evolve:
+        from roborsi.agents.task_wiki import (
+            append_success_trace, append_failure_trace, _enqueue_plan_promotion,
         )
-        # Propose promoting this successful run's workspace plan into the
-        # persistent (read-only) seed. Manager-gated via resolve_plan_promotion;
-        # a no-op when the plan is identical to the seed. engineer_replanned
-        # flags a mid-run plan() revision so the Manager can weigh whether the
-        # promoted plan reflects the Planner's design or the Engineer's divergence.
-        from roborsi.embodied.skills.base.plan.robotwin.policy import (
-            get_active_plan,
-        )
-        _ap = get_active_plan()
-        _enqueue_plan_promotion(
-            task=atomic, run_id=workspace.run_id,
-            workspace_plan_md=workspace.read_plan(),
-            rationale=review.get("root_cause", "") or eng_result.get("outcome", ""),
-            engineer_replanned=bool(_ap.get("is_revision")),
-            reason_for_revision=_ap.get("reason_for_revision", "") or "",
-        )
-    else:
-        append_failure_trace(
-            task=atomic, atomic=atomic, seed=seed, run_id=workspace.run_id,
-            tool_events=trace_events, tool_calls_total=_tc_total,
-            reviewer_root_cause=review.get("root_cause", ""),
-            reviewer_next_action=review.get("next_action", ""),
-        )
+        if eng_result["success"]:
+            append_success_trace(
+                task=atomic, atomic=atomic, seed=seed, run_id=workspace.run_id,
+                tool_events=trace_events, tool_calls_total=_tc_total,
+            )
+            # Propose promoting this successful run's workspace plan into the
+            # persistent (read-only) seed. Manager-gated via resolve_plan_promotion;
+            # a no-op when the plan is identical to the seed.
+            from roborsi.embodied.skills.base.plan.robotwin.policy import (
+                get_active_plan,
+            )
+            _ap = get_active_plan()
+            _enqueue_plan_promotion(
+                task=atomic, run_id=workspace.run_id,
+                workspace_plan_md=workspace.read_plan(),
+                rationale=review.get("root_cause", "") or eng_result.get("outcome", ""),
+                engineer_replanned=bool(_ap.get("is_revision")),
+                reason_for_revision=_ap.get("reason_for_revision", "") or "",
+            )
+        else:
+            append_failure_trace(
+                task=atomic, atomic=atomic, seed=seed, run_id=workspace.run_id,
+                tool_events=trace_events, tool_calls_total=_tc_total,
+                reviewer_root_cause=review.get("root_cause", ""),
+                reviewer_next_action=review.get("next_action", ""),
+            )
 
     # 4. Compose user-facing reply
     badge = "✓" if eng_result["success"] else "✗"
     lines = [
         f"{badge} **{atomic}** seed={seed} · {eng_result['outcome']} "
         f"({eng_result['tool_calls']} tool calls)",
+        f"Mode: `{run_mode}`"
+        + (" · released capability set frozen" if not can_evolve else ""),
         "",
         f"Workspace: `{workspace.root}`",
-        f"  plan.md · summary.md · review.md",
+        "  plan.md · summary.md · review.md",
         "",
         f"Reviewer verdict: `{review.get('verdict')}` · "
         f"proposal: `{review.get('proposal_decision')}`",
@@ -1168,7 +1296,35 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
     if review.get("next_action"):
         lines.append("")
         lines.append(f"Next: {review['next_action']}")
-    return "\n".join(lines)
+    reply = "\n".join(lines)
+    if return_details:
+        return {
+            "text": reply,
+            "run_id": workspace.run_id,
+            "workspace": str(workspace.root),
+            "task": atomic,
+            "backend": resolved_backend,
+            "sim_task": resolved_sim_task,
+            "seed": seed,
+            "run_mode": run_mode,
+            "success": bool(eng_result["success"]),
+            "outcome": eng_result["outcome"],
+            "tool_calls": eng_result["tool_calls"],
+            "reviewer_verdict": review.get("verdict"),
+            "proposal_decision": review.get("proposal_decision"),
+            "reviewer_error": reviewer_error,
+            "models": {
+                "planner": planner_model,
+                "engineer": engineer_model,
+                "reviewer": reviewer_model,
+            },
+            "planner_wallclock_s": planner_wallclock_s,
+            "engineer_wallclock_s": engineer_wallclock_s,
+            "reviewer_wallclock_s": reviewer_wallclock_s,
+            "total_wallclock_s": total_wallclock_s,
+            "video_path": _meta.get("demo_video"),
+        }
+    return reply
 
 
 def _post_3role(sess, final_text: str, target_chat_id: str | None) -> None:
@@ -1177,6 +1333,9 @@ def _post_3role(sess, final_text: str, target_chat_id: str | None) -> None:
     next turn's Planner sees this reflection."""
     sess.set_busy(False)
     sess.append("done", final_text=final_text)
+    from roborsi.runtime_mode import evolution_enabled
+    if not evolution_enabled():
+        return
     try:
         # Reuse the existing harness reflection so reflections.jsonl
         # keeps gaining one row per turn regardless of path.
@@ -1245,7 +1404,7 @@ def _run_lh_3role(*, text: str, lh_task: str, seed: int,
         f"{lh_result.completed_atomics}/{lh_result.total_atomics} atomics complete",
         "",
         f"Workspace: `{workspace.root}`",
-        f"  lh_plan.md · lh_summary.md · lh_review.md",
+        "  lh_plan.md · lh_summary.md · lh_review.md",
         "",
         f"LH review verdict: `{review.get('lh_verdict')}` · "
         f"proposal: `{review.get('proposal_decision')}`",
@@ -1289,6 +1448,8 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
     from roborsi.embodied.agent_loop.config import DEFAULT_MODEL
     from roborsi.embodied.agent_loop.vlm_io import _call_vlm_tools
     from roborsi.channels.agent.feishu.live_trace import get_session, AgentInterrupted
+    from roborsi.runtime_mode import evaluation_prompt, evolution_enabled
+    can_evolve = evolution_enabled()
 
     if ctx is not None and target_chat_id is None:
         target_chat_id = ctx.chat_id
@@ -1300,7 +1461,7 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
     # the persistent RoboRSI Manager — it reads the user, drives the triangle
     # + approves itself, replies. ROBORSI_DIRECT_3ROLE=1 bypasses to the legacy
     # in-channel triangle/Opus loop below.
-    if os.environ.get("ROBORSI_DIRECT_3ROLE", "0") == "0":
+    if can_evolve and os.environ.get("ROBORSI_DIRECT_3ROLE", "0") == "0":
         from roborsi.agents import manager_chat
         return manager_chat.reply(text)
     monitor = os.environ.get("ROBORSI_MONITOR_URL", "http://localhost:8770")
@@ -1317,6 +1478,12 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
         # _detect_atomic_intent's blocklist).
         lh_hit = _detect_lh_intent(text)
         if lh_hit is not None:
+            if not can_evolve:
+                sess.set_busy(False)
+                return (
+                    "Eval mode currently supports atomic tasks only; "
+                    "long-horizon evaluation remains disabled."
+                )
             lh_task, seed_hint = lh_hit
             try:
                 reply = _run_lh_3role(text=text, lh_task=lh_task,
@@ -1353,6 +1520,14 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
             except Exception as exc:
                 import traceback as _tb
                 sess.append("3role_exception", text=str(exc))
+                if not can_evolve:
+                    reply = (
+                        f"Eval infrastructure error for `{atomic_name}` "
+                        f"(seed={seed_hint}): {type(exc).__name__}: {exc}. "
+                        "No fallback execution was launched."
+                    )
+                    _post_3role(sess, reply, target_chat_id)
+                    return reply
                 print(f"[3role] atomic path CRASHED → falling back to legacy "
                       f"(success here is NOT reviewer-verified): {exc}",
                       file=sys.stderr)
@@ -1609,6 +1784,12 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
         "       [task runs 30-90s, demo auto-pushes]\n"
         "       Reply: \"完成了，click_bell 成功 ✓\"\n"
     )
+    if not can_evolve:
+        system += (
+            "\n\n" + evaluation_prompt()
+            + "\nIgnore every proposal/apply instruction above. The proposal "
+              "tools are unavailable and no persistent capability may change."
+        )
     if history is None:
         messages = [
             {"role": "system", "content": system},
@@ -1621,12 +1802,13 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
         if not messages:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": text})
+    tools = _outer_tool_specs(can_evolve=can_evolve)
     final_text = ""
     try:
         for hop in range(max_hops):
             sess.check_interrupt()
             sess.append("opus_call", hop=hop)
-            msg = _call_vlm_tools(DEFAULT_MODEL, messages, _TOOLS,
+            msg = _call_vlm_tools(DEFAULT_MODEL, messages, tools,
                                     thinking_budget=4000)
             tool_calls = getattr(msg, "tool_calls", None) or []
             content = getattr(msg, "content", "") or ""
@@ -1640,7 +1822,7 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                 # history so subsequent stateful turns can see it.
                 if content:
                     messages.append({"role": "assistant", "content": content})
-                    if _needs_force_propose(content, messages):
+                    if can_evolve and _needs_force_propose(content, messages):
                         sess.append("opus_force_propose",
                                       text="diagnosed failure but no propose_* call")
                         messages.append({"role": "user", "content": (
@@ -1657,8 +1839,9 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                             "the four valid 'why no proposal' reasons "
                             "(infra-level / already-pending / duplicate-of-"
                             "commit / sim-limitation). No third option.")})
-                        forced = _call_vlm_tools(DEFAULT_MODEL, messages,
-                                                    _TOOLS, thinking_budget=2000)
+                        forced = _call_vlm_tools(
+                            DEFAULT_MODEL, messages, tools, thinking_budget=2000
+                        )
                         f_tool_calls = getattr(forced, "tool_calls", None) or []
                         fc = getattr(forced, "content", "") or ""
                         if isinstance(fc, list):
@@ -1781,7 +1964,7 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
         # text but never reached the in-loop 'if not tool_calls' branch
         # where force_propose used to live). Idempotent: returns False
         # if a propose_* call already happened this turn.
-        if final_text and _needs_force_propose(final_text, messages):
+        if can_evolve and final_text and _needs_force_propose(final_text, messages):
             sess.append("opus_force_propose_post_loop",
                           text="post-loop: diagnosed without propose_*")
             messages.append({"role": "user", "content": (
@@ -1792,7 +1975,7 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                 "exact code change you described — no narration, just the "
                 "tool_use. If you genuinely cannot, rewrite as Format C "
                 "with one of 4 valid reasons.")})
-            forced = _call_vlm_tools(DEFAULT_MODEL, messages, _TOOLS,
+            forced = _call_vlm_tools(DEFAULT_MODEL, messages, tools,
                                         thinking_budget=2000)
             f_tool_calls = getattr(forced, "tool_calls", None) or []
             fc = getattr(forced, "content", "") or ""
@@ -1839,14 +2022,14 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
     finally:
         sess.set_busy(False)
         sess.append("done", final_text=final_text)
-        # Harness-driven reflection — runs unconditionally, decoupled from
-        # whatever the agent did or didn't say. Persists to
-        # ~/.roborsi/reflections.jsonl for next turn's tool to read.
-        try:
-            r = _harness_reflect(messages, final_text, target_chat_id)
-            sess.append("harness_reflection", text=r[:500])
-        except Exception as e:
-            sess.append("harness_reflection_error", text=str(e))
+        if can_evolve:
+            # Reflection is persistent cross-run memory, so eval may read the
+            # released file but never append to it.
+            try:
+                r = _harness_reflect(messages, final_text, target_chat_id)
+                sess.append("harness_reflection", text=r[:500])
+            except Exception as e:
+                sess.append("harness_reflection_error", text=str(e))
     if final_text:
         return final_text
     # Empty-reply fallback: agent went silent after tool chain (V13 round 3

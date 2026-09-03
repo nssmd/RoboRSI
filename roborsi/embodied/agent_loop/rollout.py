@@ -33,6 +33,7 @@ from roborsi.embodied.agent_loop.prompt_tools import (
     _try_load_compound_dispatcher,
 )
 from roborsi.embodied.agent_loop.vlm_io import _call_vlm_tools
+from roborsi.runtime_mode import current_mode, is_eval_mode
 
 
 def _fmt_args(args: dict[str, Any]) -> str:
@@ -225,7 +226,7 @@ def run_rollout(
     # message so Engineer stays within ~20k tokens. Per 2026-06-15 user
     # request "trace 累计加一下达到一定 token 就总结".
     SUMMARIZE_AT_MSGS = 30
-    import sys as _sys, time as _t
+    import time as _t
     for step_idx in range(tool_budget):
         _t0 = _t.time()
         # Summarize old trace if conversation got too long.
@@ -269,7 +270,6 @@ def run_rollout(
             # VLM produced text instead of a tool call. Retry up to 2 times by
             # nudging it to act, then give up. Without this, GPT-5.4 sometimes
             # returns a "let me think" text and we abandon the whole atomic.
-            retried = False
             for retry_idx in range(2):
                 trace.append({"step": step_idx, "tool_call": None,
                               "raw": (getattr(msg, "content", "") or "")[:200],
@@ -287,7 +287,6 @@ def run_rollout(
                 msg = _call_vlm_tools(model or DEFAULT_MODEL, convo, tools)
                 tool_calls = list(getattr(msg, "tool_calls", None) or [])
                 if tool_calls:
-                    retried = True
                     break
             if not tool_calls:
                 trace.append({"step": step_idx, "tool_call": None,
@@ -458,13 +457,13 @@ def run_rollout(
     # source of truth.
     rollout.success = success
     rollout.outcome = outcome
-    # Keep a demo video ONLY when the episode genuinely succeeded (sim
-    # predicate). Failed runs' frames are discarded so we never accumulate
-    # junk. User-requested: "record every run, keep success, delete fail".
+    # Evolve mode keeps only simulator-confirmed success demos. Frozen eval
+    # preserves both verdict classes and their source frames as evidence.
     _demo_video = _finalize_demo_video(workdir, task_name, seed, success)
     rollout.meta = {
         "backend": env.backend_name,
         "collector": "rollout_vlm",
+        "run_mode": current_mode().value,
         "model": model or DEFAULT_MODEL,
         "tool_calls": len(trace),
         "vlm_declared": vlm_declared,
@@ -479,18 +478,19 @@ def run_rollout(
 
 def _finalize_demo_video(workdir: Path, task_name: str, seed: int,
                          success: bool):
-    """Assemble the per-tick head_camera frames into an mp4 IFF the episode
-    genuinely succeeded (sim predicate); otherwise delete the frames.
+    """Assemble per-tick head-camera frames into an evaluation/demo video.
 
-    Implements the user-requested "record every run, keep success, delete
-    fail" demo policy. Successful demos land in <repo>/artifacts/demos/auto/
-    so they survive (and can be shown), failed runs leave nothing behind.
-    Returns the mp4 Path on success, else None. Never raises into the caller.
+    Evolve mode retains only simulator-confirmed success videos. Frozen eval
+    retains success and failure videos plus the original frames so each verdict
+    remains inspectable. Never raises into the caller.
     """
     import glob
     import time as _time
     frames = sorted(glob.glob(str(workdir / "tick_*.jpg")))
-    if not success or not frames:
+    frozen_eval = is_eval_mode()
+    if not frames:
+        return None
+    if not success and not frozen_eval:
         for f in frames:
             try:
                 os.remove(f)
@@ -499,18 +499,23 @@ def _finalize_demo_video(workdir: Path, task_name: str, seed: int,
         return None
     # This file lives at roborsi/embodied/agent_loop/rollout.py, so the repo
     # root is parents[3] (agent_loop → embodied → roborsi → repo).
-    demos_dir = Path(__file__).resolve().parents[3] / "artifacts" / "demos" / "auto"
+    artifact_group = "evals" if frozen_eval else "demos/auto"
+    demos_dir = Path(__file__).resolve().parents[3] / "artifacts" / artifact_group
     demos_dir.mkdir(parents=True, exist_ok=True)
-    out = demos_dir / f"{task_name}-seed{seed}-{_time.strftime('%Y%m%d-%H%M%S')}.mp4"
+    verdict = "success" if success else "failure"
+    out = demos_dir / (
+        f"{task_name}-seed{seed}-{verdict}-{_time.strftime('%Y%m%d-%H%M%S')}.mp4"
+    )
 
     if not _encode_h264(frames, out):
         _encode_mpeg4(frames, out)
 
-    for f in frames:        # transient per-tick jpgs — keep only the mp4
-        try:
-            os.remove(f)
-        except OSError:
-            pass
+    if not frozen_eval:
+        for f in frames:        # transient per-tick jpgs — keep only the mp4
+            try:
+                os.remove(f)
+            except OSError:
+                pass
     return out if out.is_file() else None
 
 
@@ -616,6 +621,7 @@ def _dispatch_with_timeout(state: DispatchContext, call: dict[str, Any],
     Also tracks repeated identical timeouts for an even louder warning.
     """
     import concurrent.futures as _cf
+    import contextvars as _contextvars
     import json as _json
 
     name = call.get("tool", "?")
@@ -623,7 +629,8 @@ def _dispatch_with_timeout(state: DispatchContext, call: dict[str, Any],
     key = name + "|" + _json.dumps(args, sort_keys=True, default=str)[:300]
 
     pool = _cf.ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(_dispatch, state, call)
+    dispatch_context = _contextvars.copy_context()
+    future = pool.submit(dispatch_context.run, _dispatch, state, call)
     try:
         result = future.result(timeout=timeout_s)
         pool.shutdown(wait=False)
@@ -676,7 +683,7 @@ def _dispatch(state: DispatchContext, call: dict[str, Any]) -> tuple[dict[str, A
     """
     name = call.get("tool")
     args = call.get("args") or {}
-    meta_result = _dispatch_meta_tool(name, args)
+    meta_result = _dispatch_meta_tool(name, args, ns=state.ns)
     if meta_result is not None:
         return (meta_result, state.env.take_snapshot())
     if state._tool_handlers is None:

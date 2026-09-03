@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS runs (
     id              TEXT PRIMARY KEY,
     task            TEXT NOT NULL,
     skill           TEXT,
+    run_mode        TEXT,
     status          TEXT,
     outcome         TEXT,
     model           TEXT,
@@ -89,6 +90,7 @@ CREATE TABLE IF NOT EXISTS benches (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     skill           TEXT,
     model           TEXT,
+    run_mode        TEXT,
     seeds_passed    INTEGER,
     seeds_total     INTEGER,
     avg_tool_calls  REAL,
@@ -155,6 +157,8 @@ def init() -> None:
             # Migrations first — add columns that older DBs may lack so
             # the indexes in SCHEMA can reference them.
             _migrate_benches_add_tag(c)
+            _migrate_benches_add_mode(c)
+            _migrate_runs_add_mode(c)
             c.executescript(SCHEMA)
         finally:
             c.close()
@@ -173,20 +177,46 @@ def _migrate_benches_add_tag(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE benches ADD COLUMN tag TEXT")
 
 
+def _migrate_benches_add_mode(c: sqlite3.Connection) -> None:
+    row = c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='benches'"
+    ).fetchone()
+    if not row:
+        return
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(benches)").fetchall()}
+    if "run_mode" not in cols:
+        c.execute("ALTER TABLE benches ADD COLUMN run_mode TEXT")
+
+
+def _migrate_runs_add_mode(c: sqlite3.Connection) -> None:
+    row = c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='runs'"
+    ).fetchone()
+    if not row:
+        return
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(runs)").fetchall()}
+    if "run_mode" not in cols:
+        c.execute("ALTER TABLE runs ADD COLUMN run_mode TEXT")
+
+
 # ── writes ────────────────────────────────────────────────────────────────
 
 def insert_run(run_id: str, task: str, skill: str | None = None,
                 model: str | None = None, seed: int | None = None,
-                chat_id: str | None = None) -> None:
+                chat_id: str | None = None,
+                run_mode: str | None = None) -> None:
     init()
+    if run_mode is None:
+        from roborsi.runtime_mode import current_mode
+        run_mode = current_mode().value
     with _LOCK:
         c = _conn()
         try:
             c.execute(
                 "INSERT OR REPLACE INTO runs "
-                "(id, task, skill, model, seed, chat_id, status, started_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (run_id, task, skill, model, seed, chat_id, "running",
+                "(id, task, skill, run_mode, model, seed, chat_id, status, started_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (run_id, task, skill, run_mode, model, seed, chat_id, "running",
                  time.strftime("%Y-%m-%d %H:%M:%S")))
         finally:
             c.close()
@@ -239,6 +269,8 @@ def record_proposal(skill: str, kind: str, diff: str | None = None,
                      rationale: str | None = None,
                      file_path: str | None = None,
                      run_id: str | None = None) -> str:
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("recording a skill proposal")
     init()
     pid = f"{int(time.time())}-{kind}-{uuid.uuid4().hex[:8]}"
     with _LOCK:
@@ -260,6 +292,8 @@ def update_proposal_status(proposal_id: str, status: str,
                             note: str | None = None) -> None:
     """Set proposals.status + applied_at + applied_by. ``note`` is
     appended to rationale for audit (preserves the original)."""
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("updating a skill proposal")
     init()
     fields = ["status = ?"]
     args: list[Any] = [status]
@@ -285,17 +319,23 @@ def update_proposal_status(proposal_id: str, status: str,
 def record_bench(skill: str, model: str, seeds_passed: int, seeds_total: int,
                   avg_tool_calls: float | None = None,
                   commit_sha: str | None = None,
-                  tag: str | None = None) -> None:
+                  tag: str | None = None,
+                  run_mode: str | None = None) -> None:
+    if run_mode is None:
+        from roborsi.runtime_mode import current_mode
+        run_mode = current_mode().value
     init()
     with _LOCK:
         c = _conn()
         try:
             c.execute(
                 "INSERT INTO benches "
-                "(skill, model, seeds_passed, seeds_total, avg_tool_calls, run_at, commit_sha, tag) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (skill, model, seeds_passed, seeds_total, avg_tool_calls,
-                 time.strftime("%Y-%m-%d %H:%M:%S"), commit_sha, tag))
+                "(skill, model, run_mode, seeds_passed, seeds_total, "
+                "avg_tool_calls, run_at, commit_sha, tag) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (skill, model, run_mode, seeds_passed, seeds_total,
+                 avg_tool_calls, time.strftime("%Y-%m-%d %H:%M:%S"),
+                 commit_sha, tag))
         finally:
             c.close()
 
@@ -304,6 +344,8 @@ def record_vla_episode(run_id: str, skill: str, success: bool,
                         frames_dir: str | None = None,
                         action_jsonl: str | None = None,
                         language: str | None = None) -> None:
+    from roborsi.runtime_mode import require_evolution
+    require_evolution("registering an episode for policy training")
     init()
     with _LOCK:
         c = _conn()
@@ -332,7 +374,8 @@ def get_run(run_id: str) -> dict[str, Any] | None:
 
 def list_runs(limit: int = 100, skill: str | None = None,
                outcome: str | None = None, chat_id: str | None = None,
-               status: str | None = None) -> list[dict[str, Any]]:
+               status: str | None = None,
+               run_mode: str | None = None) -> list[dict[str, Any]]:
     init()
     q = "SELECT * FROM runs WHERE 1=1"
     args: list[Any] = []
@@ -340,6 +383,9 @@ def list_runs(limit: int = 100, skill: str | None = None,
     if outcome: q += " AND outcome = ?"; args.append(outcome)
     if chat_id: q += " AND chat_id = ?"; args.append(chat_id)
     if status: q += " AND status = ?"; args.append(status)
+    if run_mode:
+        q += " AND COALESCE(run_mode, 'evolve') = ?"
+        args.append(run_mode)
     q += " ORDER BY started_at DESC LIMIT ?"
     args.append(limit)
     c = _conn()

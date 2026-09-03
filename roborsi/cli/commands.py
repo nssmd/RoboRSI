@@ -19,7 +19,6 @@ from rich.table import Table
 
 from roborsi import __logo__, __version__
 from roborsi.config.paths import get_workspace_path
-from roborsi.config.schema import Config
 from roborsi.utils.helpers import sync_workspace_templates
 
 app = typer.Typer(
@@ -172,6 +171,185 @@ def tui(
 ) -> None:
     """Open the RoboRSI Manager cockpit (Ink terminal UI)."""
     _launch_tui(host=host, port=port, no_bridge=no_bridge)
+
+
+@app.command("eval")
+def eval_task(
+    task: str = typer.Argument(..., help="Atomic task name."),
+    seeds: int = typer.Option(1, "--seeds", "-n", min=1),
+    seed_start: int = typer.Option(0, "--seed-start"),
+    tool_budget: int = typer.Option(40, "--tool-budget", min=1),
+    backend: str | None = typer.Option(
+        None, "--backend", help="Override the task's declared backend."
+    ),
+    sim_task: str | None = typer.Option(
+        None, "--sim-task", help="Override the simulator task identifier."
+    ),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Evaluate a frozen RoboRSI release without self-evolution."""
+    import json
+    import subprocess
+    import uuid
+    from datetime import datetime, timezone
+
+    from roborsi.channels.agent.feishu.live_trace import get_session
+    from roborsi.channels.core.agent import _run_atomic_3role
+    from roborsi.cli.bench import _git_sha
+    from roborsi.embodied.paths import evals_root
+    from roborsi.runtime_mode import RunMode, use_run_mode
+
+    started_at = datetime.now(timezone.utc)
+    campaign_id = (
+        f"{started_at.strftime('%Y%m%dT%H%M%SZ')}-"
+        f"{task.replace('/', '-')}-{uuid.uuid4().hex[:8]}"
+    )
+    results: list[dict[str, Any]] = []
+    with use_run_mode(RunMode.EVAL):
+        for offset in range(seeds):
+            seed = seed_start + offset
+            chat_id = f"eval-{task.replace('/', '-')}-{seed}-{uuid.uuid4().hex[:6]}"
+            sess = get_session(chat_id)
+            sess.set_busy(True)
+            request = (
+                f"Evaluate atomic task {task} at seed={seed} using the frozen "
+                "released capability set."
+            )
+            sess.last_user_message = request
+            if not as_json:
+                console.print(
+                    f"[dim]eval[/dim] {task} seed={seed} "
+                    f"({offset + 1}/{seeds})"
+                )
+            try:
+                details = _run_atomic_3role(
+                    text=request,
+                    atomic=task,
+                    seed=seed,
+                    sess=sess,
+                    target_chat_id=chat_id,
+                    channel=None,
+                    ctx=None,
+                    tool_budget=tool_budget,
+                    backend_name=backend,
+                    sim_task=sim_task,
+                    return_details=True,
+                )
+                assert isinstance(details, dict)
+                details["verdict"] = "success" if details["success"] else "failure"
+                results.append(details)
+                sess.append("done", final_text=details["text"], run_mode="eval")
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                results.append({
+                    "text": error,
+                    "run_id": None,
+                    "workspace": None,
+                    "task": task,
+                    "backend": backend,
+                    "sim_task": sim_task,
+                    "seed": seed,
+                    "run_mode": "eval",
+                    "success": None,
+                    "verdict": "infra",
+                    "outcome": "infra_error",
+                    "tool_calls": 0,
+                    "reviewer_verdict": None,
+                    "proposal_decision": "NO_PROPOSAL",
+                    "video_path": None,
+                    "error": error,
+                })
+                sess.append(
+                    "eval_infra_error",
+                    seed=seed,
+                    error=error,
+                    run_mode="eval",
+                )
+                sess.append("done", final_text=error, run_mode="eval")
+            finally:
+                sess.set_busy(False)
+
+    passed = sum(1 for row in results if row["verdict"] == "success")
+    failed = sum(1 for row in results if row["verdict"] == "failure")
+    infra = sum(1 for row in results if row["verdict"] == "infra")
+    verdict_count = passed + failed
+    finished_at = datetime.now(timezone.utc)
+    repo_root = Path(__file__).resolve().parents[2]
+    dirty = bool(subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip())
+    summary = {
+        "campaign_id": campaign_id,
+        "run_mode": "eval",
+        "frozen": True,
+        "status": "complete" if infra == 0 else "incomplete",
+        "task": task,
+        "backend_override": backend,
+        "sim_task_override": sim_task,
+        "tool_budget": tool_budget,
+        "seeds": seeds,
+        "seed_start": seed_start,
+        "requested_seeds": seeds,
+        "verdict_count": verdict_count,
+        "seeds_passed": passed,
+        "seeds_failed": failed,
+        "infra_count": infra,
+        "success_rate": passed / verdict_count if verdict_count else None,
+        "commit_sha": _git_sha(),
+        "git_dirty": dirty,
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "wallclock_s": (finished_at - started_at).total_seconds(),
+        "runs": results,
+    }
+    manifest_dir = evals_root() / "manifests"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_dir / f"{campaign_id}.json"
+    summary["manifest_path"] = str(manifest_path)
+    manifest_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, default=str) + "\n",
+        encoding="utf-8",
+    )
+    if as_json:
+        sys.stdout.write(json.dumps(summary, ensure_ascii=False, default=str) + "\n")
+    else:
+        table = Table(title=f"Frozen eval · {task}")
+        table.add_column("seed", justify="right")
+        table.add_column("result")
+        table.add_column("outcome")
+        table.add_column("calls", justify="right")
+        table.add_column("run_id")
+        for row in results:
+            label = {
+                "success": "[green]PASS[/green]",
+                "failure": "[red]FAIL[/red]",
+                "infra": "[yellow]INFRA[/yellow]",
+            }[row["verdict"]]
+            table.add_row(
+                str(row["seed"]),
+                label,
+                str(row["outcome"]),
+                str(row["tool_calls"]),
+                str(row["run_id"] or ""),
+            )
+        console.print(table)
+        rate = (
+            f"{summary['success_rate'] * 100:.1f}%"
+            if summary["success_rate"] is not None
+            else "n/a"
+        )
+        console.print(
+            f"[bold]Frozen result:[/bold] {passed}/{verdict_count} "
+            f"({rate}) · failures={failed} · infra={infra} · "
+            "no capability write-back"
+        )
+        console.print(f"[dim]manifest[/dim] {manifest_path}")
+    if infra:
+        raise typer.Exit(2)
 
 
 # ============================================================================

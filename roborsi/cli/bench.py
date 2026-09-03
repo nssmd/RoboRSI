@@ -42,9 +42,10 @@ def _task_from_skill(skill: str) -> str:
     return skill.rsplit(".", 1)[0] if "." in skill else skill
 
 
-def _summarize_run(run: dict[str, Any]) -> tuple[bool, int]:
-    """(success?, tool_calls) for one run row."""
-    ok = run.get("status") == "success"
+def _summarize_run(run: dict[str, Any]) -> tuple[bool | None, int]:
+    """Return (verdict, tool_calls); verdict is None for infra/error rows."""
+    status = run.get("status")
+    verdict = True if status == "success" else False if status == "failed" else None
     n_calls = 0
     blob = run.get("episode_summary_json")
     if blob:
@@ -53,7 +54,7 @@ def _summarize_run(run: dict[str, Any]) -> tuple[bool, int]:
             n_calls = int(ep.get("tool_calls") or 0)
         except (json.JSONDecodeError, ValueError):
             pass
-    return ok, n_calls
+    return verdict, n_calls
 
 
 @bench_app.command("skill")
@@ -68,12 +69,20 @@ def bench_skill(
     as_json: bool = typer.Option(False, "--json"),
     chat_id: str = typer.Option("bench", "--chat-id",
                                   help="Tag this bench's events under a chat_id."),
+    run_mode: str = typer.Option(
+        "eval", "--mode", help="Run mode: eval (frozen) or evolve."
+    ),
 ) -> None:
     """Run a skill `seeds` times, record one `benches` row, print summary."""
     from roborsi.channels.agent.feishu.task_runner import (
         run_task_sync,
     )
     task = _task_from_skill(skill)
+    from roborsi.runtime_mode import parse_mode
+    try:
+        parsed_mode = parse_mode(run_mode)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--mode") from exc
     sha = _git_sha()
     if model:
         # The rollout runtime reads DEFAULT_MODEL from env via its module
@@ -82,6 +91,9 @@ def bench_skill(
         os.environ["ROBORSI_DEFAULT_MODEL"] = model
     results: list[dict[str, Any]] = []
     n_pass = 0
+    n_fail = 0
+    n_infra = 0
+    n_verdict = 0
     total_calls = 0
     for i in range(seeds):
         seed = seed_start + i
@@ -90,24 +102,39 @@ def bench_skill(
                             f"({i+1}/{seeds})…")
         run = run_task_sync(task=task, seed=seed, episodes=1,
                               tool_budget=tool_budget, skill_name=skill,
-                              chat_id=chat_id)
-        ok, n_calls = _summarize_run(run)
-        n_pass += int(ok)
-        total_calls += n_calls
-        results.append({"seed": seed, "ok": ok, "tool_calls": n_calls,
+                              chat_id=chat_id,
+                              run_mode=parsed_mode.value)
+        verdict, n_calls = _summarize_run(run)
+        if verdict is None:
+            n_infra += 1
+            verdict_label = "infra"
+        else:
+            n_verdict += 1
+            n_pass += int(verdict)
+            n_fail += int(not verdict)
+            total_calls += n_calls
+            verdict_label = "success" if verdict else "failure"
+        results.append({"seed": seed, "ok": verdict, "verdict": verdict_label,
+                          "tool_calls": n_calls,
                           "run_id": run.get("run_id"),
                           "outcome": run.get("outcome"),
                           "status": run.get("status")})
-    avg_calls = (total_calls / seeds) if seeds else 0.0
+    avg_calls = (total_calls / n_verdict) if n_verdict else 0.0
     _td.record_bench(skill=skill, model=model or "default",
-                      seeds_passed=n_pass, seeds_total=seeds,
-                      avg_tool_calls=avg_calls, commit_sha=sha)
+                      seeds_passed=n_pass, seeds_total=n_verdict,
+                      avg_tool_calls=avg_calls, commit_sha=sha,
+                      run_mode=parsed_mode.value)
     summary = {
         "skill": skill,
         "model": model or "default",
+        "run_mode": parsed_mode.value,
         "n": seeds,
+        "requested_seeds": seeds,
+        "verdict_count": n_verdict,
         "seeds_passed": n_pass,
-        "success_rate": n_pass / seeds if seeds else 0.0,
+        "seeds_failed": n_fail,
+        "infra_count": n_infra,
+        "success_rate": n_pass / n_verdict if n_verdict else None,
         "avg_tool_calls": avg_calls,
         "commit_sha": sha,
         "runs": results,
@@ -121,22 +148,31 @@ def bench_skill(
 
 def _print_human(summary: dict[str, Any]) -> None:
     rate = summary["success_rate"]
-    bar = ("█" * int(rate * 20)).ljust(20)
+    bar = ("█" * int((rate or 0.0) * 20)).ljust(20)
     console.print()
     console.print(f"[bold]{summary['skill']}[/bold]  "
                     f"model=[cyan]{summary['model']}[/cyan]  "
                     f"sha=[dim]{summary['commit_sha']}[/dim]")
-    console.print(f"  success: [green]{summary['seeds_passed']}[/green]/"
-                    f"{summary['n']}  |{bar}|  "
-                    f"[bold]{rate*100:.0f}%[/bold]")
+    rate_text = f"{rate * 100:.0f}%" if rate is not None else "n/a"
+    console.print(
+        f"  success: [green]{summary['seeds_passed']}[/green]/"
+        f"{summary['verdict_count']}  |{bar}|  "
+        f"[bold]{rate_text}[/bold]  "
+        f"failed={summary['seeds_failed']} infra={summary['infra_count']}"
+    )
     console.print(f"  avg tool calls: {summary['avg_tool_calls']:.1f}")
     t = Table(show_header=True)
     t.add_column("seed", justify="right")
     t.add_column("ok"); t.add_column("calls", justify="right")
     t.add_column("outcome"); t.add_column("run_id")
     for r in summary["runs"]:
+        verdict = {
+            "success": "[green]✓",
+            "failure": "[red]✗",
+            "infra": "[yellow]!",
+        }[r["verdict"]]
         t.add_row(str(r["seed"]),
-                    "[green]✓" if r["ok"] else "[red]✗",
+                    verdict,
                     str(r["tool_calls"]),
                     r.get("outcome") or "",
                     r.get("run_id") or "")
@@ -207,12 +243,14 @@ def bench_history(
                                        ensure_ascii=False) + "\n")
         return
     t = Table(show_header=True, title=skill)
-    t.add_column("run_at"); t.add_column("model"); t.add_column("sha")
+    t.add_column("run_at"); t.add_column("mode"); t.add_column("model")
+    t.add_column("sha")
     t.add_column("n", justify="right"); t.add_column("rate", justify="right")
     t.add_column("avg calls", justify="right")
     for r in rows:
         rate = (r["seeds_passed"] or 0) / max(1, r["seeds_total"])
-        t.add_row(r["run_at"], r["model"] or "", r["commit_sha"] or "",
+        t.add_row(r["run_at"], r.get("run_mode") or "evolve",
+                    r["model"] or "", r["commit_sha"] or "",
                     str(r["seeds_total"]),
                     f"{rate*100:.0f}%",
                     f"{r['avg_tool_calls']:.1f}" if r["avg_tool_calls"] is not None else "")

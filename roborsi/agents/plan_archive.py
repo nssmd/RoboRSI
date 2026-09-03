@@ -39,6 +39,9 @@ def _archive_path(task: str) -> Path:
 def archive_successful_plan(task: str, plan_md: str,
                               skills_used: list[str]) -> None:
     """Append one record per successful attempt. Skipped if plan empty."""
+    from roborsi.runtime_mode import evolution_enabled
+    if not evolution_enabled():
+        return
     if not plan_md.strip():
         return
     _ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)

@@ -45,6 +45,9 @@ def _current_commit_sha(skill_name: str) -> str | None:
 
 def record_success(task: str, skills_used: list[str]) -> None:
     """Append one record per skill that fired in this success trace."""
+    from roborsi.runtime_mode import evolution_enabled
+    if not evolution_enabled():
+        return
     if not skills_used:
         return
     _HISTORY.parent.mkdir(parents=True, exist_ok=True)

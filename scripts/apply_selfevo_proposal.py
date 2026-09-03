@@ -128,6 +128,12 @@ def _apply_update(data: dict) -> tuple[list[str], str]:
 
 
 def main() -> int:
+    from roborsi.runtime_mode import EvolutionDisabledError, require_evolution
+    try:
+        require_evolution("applying or resolving a self-evolution proposal")
+    except EvolutionDisabledError as exc:
+        print(f"[apply] {exc}", file=sys.stderr)
+        return 4
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("proposal_id")
     ap.add_argument("--reject", action="store_true",

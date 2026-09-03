@@ -131,7 +131,11 @@ def run_role(role: str, task: str, user_block: str, *,
 
     Centralises the gate so Planner and Reviewer share one dispatch. The fallback
     reproduces the pre-session [system, user] → _call_vlm_tools → text path."""
-    if os.environ.get("ROBORSI_ROLE_SESSION", "1") != "0":
+    from roborsi.runtime_mode import evaluation_prompt, is_eval_mode
+    frozen_eval = is_eval_mode()
+    if frozen_eval:
+        system_prompt = system_prompt + "\n\n" + evaluation_prompt()
+    if not frozen_eval and os.environ.get("ROBORSI_ROLE_SESSION", "1") != "0":
         return run(role, task, user_block, system_prompt=system_prompt, model=model)
     from roborsi.embodied.agent_loop.vlm_io import _call_vlm_tools
     from roborsi.channels.core.agent import _extract_text_block

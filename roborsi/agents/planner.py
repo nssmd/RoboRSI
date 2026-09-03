@@ -390,14 +390,17 @@ class Planner:
         from roborsi.agents.plan_archive import (
             get_recent_plans, format_for_planner,
         )
+        from roborsi.agents.gt_firewall import redact
         recent_plans = get_recent_plans(task, n=3)
         prior_plans_block = format_for_planner(recent_plans)
+        prior_plans_block, _ = redact(task, prior_plans_block)
         # Persistent plan.md (carries improvements from prior runs). Read it
         # BEFORE the Opus call so the Planner refines it rather than starting
         # from scratch each run.
         plan_file = persistent_plan_path(task)
         persistent_plan = (
             plan_file.read_text(encoding="utf-8") if plan_file.exists() else "")
+        persistent_plan, _ = redact(task, persistent_plan)
         persistent_block = (
             "=== CURRENT PERSISTENT PLAN (refine this — it carries "
             "improvements from prior runs; keep what works, only change what "
@@ -442,7 +445,12 @@ class Planner:
         # yet, encourage the Planner to solidify the winning recipe as a compound
         # policy proposal (opt-in — empty otherwise). Manager reviews it.
         from roborsi.agents import compound_proposal
-        compound_block = compound_proposal.encourage_block(task, wiki_md)
+        from roborsi.runtime_mode import evolution_enabled
+        compound_block = (
+            compound_proposal.encourage_block(task, wiki_md)
+            if evolution_enabled()
+            else ""
+        )
         user_block = (
             f"=== ATOMIC TASK ===\n{task}\n\n"
             f"=== USER REQUEST ===\n{user_msg}\n\n"
@@ -465,7 +473,8 @@ class Planner:
             system_prompt=_SYSTEM_PROMPT, model=self.model)
         # Queue any compound-policy proposal, then strip it so it never lands in
         # plan.md (no-op unless opt-in and a valid block is present).
-        compound_proposal.capture(task, workspace.run_id, wiki_md, content)
+        if evolution_enabled():
+            compound_proposal.capture(task, workspace.run_id, wiki_md, content)
         content = compound_proposal.strip(content)
         spec, plan_md = _extract_json_and_md(content)
         # Always write plan.md even if json parse failed — Engineer can
