@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import numpy as np
+
 # LIBERO head frames render at 256px; the perception fallbacks emit the image
 # CENTRE (128,128) as a "found nothing" sentinel. Grasping there always closes
 # on empty table AND makes the VLM re-find_pixel forever (budget_exceeded), so we
@@ -114,9 +116,18 @@ def _perception_grasp(state, args):
             if grasped:
                 break
     backend = grasps[0].get("source", "graspgen+sam")
+    object_height = (
+        float(np.ptp(np.asarray(_cloud)[:, 2]))
+        if _cloud is not None and len(_cloud) >= 2
+        else 0.08
+    )
+    object_height = float(np.clip(object_height, 0.02, 0.16))
+    if grasped:
+        state._held_object_height = object_height
     return ({"ok": True, "grasped": grasped, "backend": backend,
              "grasp_point": [round(float(x), 4) for x in p],
              "grasp_pixel": [u, v], "gripper_gap": gap,
+             "object_height": round(object_height, 4),
              "ee_pos": [round(float(x), 4) for x in ee],
              "note": "perception grasp (no GT); 'grasped' is a proprioceptive finger-gap check, sim predicate is final."},
             env.take_snapshot())

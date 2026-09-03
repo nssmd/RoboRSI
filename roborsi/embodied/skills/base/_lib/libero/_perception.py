@@ -62,11 +62,31 @@ def remember_pixel(state, query: str, uv) -> tuple[int, int]:
 
 
 def recall_pixel(state, query: str) -> tuple[int, int] | None:
+    record = _recall_record(state, query)
+    return tuple(record["pixel"]) if record else None
+
+
+def remember_world(state, u: int, v: int, world) -> None:
+    cache = getattr(state, "_perception_cache", None) or {}
+    pixel = (int(u), int(v))
+    for record in reversed(list(cache.values())):
+        if tuple(record.get("pixel") or ()) == pixel:
+            record["world"] = tuple(float(value) for value in world)
+            return
+
+
+def recall_world(state, query: str) -> tuple[float, float, float] | None:
+    record = _recall_record(state, query)
+    world = record.get("world") if record else None
+    return tuple(world) if world else None
+
+
+def _recall_record(state, query: str) -> dict[str, Any] | None:
     cache = getattr(state, "_perception_cache", None) or {}
     key = _query_key(query)
     exact = cache.get(key)
     if exact:
-        return tuple(exact["pixel"])
+        return exact
 
     query_tokens = _query_tokens(query)
     if not query_tokens:
@@ -82,7 +102,7 @@ def recall_pixel(state, query: str) -> tuple[int, int] | None:
         )
         if overlap >= 0.6 and (best is None or overlap >= best[0]):
             best = (overlap, record)
-    return tuple(best[1]["pixel"]) if best else None
+    return best[1] if best else None
 
 
 def _query_key(query: str) -> str:

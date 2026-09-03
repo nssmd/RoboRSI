@@ -35,6 +35,21 @@ def _clear_localize(state, ctrl, name: str):
     return None if _bad_uv(loc) else loc
 
 
+def _drop_from_memory(state, target_name: str, z_offset: float):
+    from roborsi.embodied.skills.base._lib.libero._perception import recall_world
+
+    world = recall_world(state, target_name)
+    if world is None:
+        return None
+    object_height = float(getattr(state, "_held_object_height", 0.08))
+    object_height = float(np.clip(object_height, 0.02, 0.16))
+    return np.asarray([
+        world[0],
+        world[1],
+        world[2] + object_height / 2.0 + z_offset,
+    ], dtype=float)
+
+
 def dispatch_runtime(state, args: dict[str, Any]):
     env = state.env
     ctrl = LiberoControl(env)
@@ -51,14 +66,6 @@ def dispatch_runtime(state, args: dict[str, Any]):
 
     if isinstance(pixel, (list, tuple)) and len(pixel) == 2:
         pixel = list(remember_pixel(state, target_name, pixel))
-        if pos is None:
-            from roborsi.embodied.skills.base._lib.libero._perception import (
-                _place_fix_on,
-                retreat_from_head_view,
-            )
-
-            if _place_fix_on():
-                retreat_from_head_view(env, ctrl)
 
     # A bare object=<name> is localized from the current camera observation.
     if pixel is None and pos is None and target_name:
@@ -69,20 +76,19 @@ def dispatch_runtime(state, args: dict[str, Any]):
             retreat_from_head_view,
         )
         if _fix_on():
-            # CaP-style: the held object / arm / forearm OCCLUDES the place target
-            # in the agentview head view, so RETREAT it out of view FIRST — lift
-            # high AND slide laterally toward the robot base — THEN localize with a
-            # clear view and a self-correcting side-step. A straight-up lift alone
-            # leaves the arm hovering over the workspace (reflections still read
-            # "arm occludes the plate"). Pure-vision, relative → frame-safe.
-            if _place_fix_on():
-                retreat_from_head_view(env, ctrl)
-            else:
-                ee, _, _ = ctrl.read_pose()
-                ctrl.servo_to([float(ee[0]), float(ee[1]), float(ee[2]) + 0.18],
-                              gripper="close", max_iters=50)
             loc = recall_pixel(state, target_name)
             if loc is None:
+                # The held object / arm can occlude the target. Clear the head
+                # view only when no earlier visual target can be reused.
+                if _place_fix_on():
+                    retreat_from_head_view(env, ctrl)
+                else:
+                    ee, _, _ = ctrl.read_pose()
+                    ctrl.servo_to(
+                        [float(ee[0]), float(ee[1]), float(ee[2]) + 0.18],
+                        gripper="close",
+                        max_iters=50,
+                    )
                 loc = _clear_localize(state, ctrl, target_name)
         else:
             loc = localize_precise(state, target_name)
@@ -98,25 +104,42 @@ def dispatch_runtime(state, args: dict[str, Any]):
     if isinstance(pos, (list, tuple)) and len(pos) == 3:
         drop = np.asarray(pos, dtype=float)                 # explicit release point
     elif isinstance(pixel, (list, tuple)) and len(pixel) == 2:
-        # Camera/depth container drop: SAM cloud at the perceived pixel → robust
-        # centroid + rim height. Avoids the fragile single-pixel unproject-z
-        # for thin or low baskets.
-        from roborsi.embodied.skills.base._lib.libero._perception import object_cloud
-        cloud = object_cloud(env, int(pixel[0]), int(pixel[1]), z_band=0.18)
-        if cloud is None or len(cloud) < 20:
-            return ({"ok": False, "reason": "could not perceive the container at that pixel — re-find_pixel the container"},
-                    env.take_snapshot())
-        cx, cy = float(np.median(cloud[:, 0])), float(np.median(cloud[:, 1]))
-        rim_z = float(np.percentile(cloud[:, 2], 85))       # container rim, robust to outliers
-        drop = np.array([cx, cy, rim_z + z_offset])
+        drop = _drop_from_memory(state, target_name, z_offset)
+        if drop is None:
+            from roborsi.embodied.skills.base._lib.libero._perception import (
+                _place_fix_on,
+                object_cloud,
+                retreat_from_head_view,
+            )
+
+            if _place_fix_on():
+                retreat_from_head_view(env, ctrl)
+            cloud = object_cloud(env, int(pixel[0]), int(pixel[1]), z_band=0.18)
+            if cloud is None or len(cloud) < 20:
+                return ({"ok": False, "reason": "could not perceive the container at that pixel — re-find_pixel the container"},
+                        env.take_snapshot())
+            cx, cy = float(np.median(cloud[:, 0])), float(np.median(cloud[:, 1]))
+            rim_z = float(np.percentile(cloud[:, 2], 85))
+            drop = np.array([cx, cy, rim_z + z_offset])
     else:
         return ({"ok": False, "reason": "give pos=[x,y,z] or object=<name>"},
                 env.take_snapshot())
 
-    ctrl.servo_to([drop[0], drop[1], drop[2] + hover], gripper="close", max_iters=100)
-    ctrl.servo_to([drop[0], drop[1], drop[2]], gripper="close", max_iters=100)
+    hover_reached, _ = ctrl.servo_to(
+        [drop[0], drop[1], drop[2] + hover],
+        gripper="close",
+        max_iters=100,
+    )
+    drop_reached, _ = ctrl.servo_to(
+        [drop[0], drop[1], drop[2]],
+        gripper="close",
+        max_iters=120,
+    )
     release_ee, _, _ = ctrl.read_pose()
-    if float(np.linalg.norm(np.asarray(release_ee, dtype=float)[:2] - drop[:2])) > 0.05:
+    error = np.asarray(release_ee, dtype=float) - drop
+    horizontal_error = float(np.linalg.norm(error[:2]))
+    vertical_error = abs(float(error[2]))
+    if horizontal_error > 0.05 or vertical_error > 0.06:
         # The arm WEDGED (kinematic limit) short of the target — releasing here
         # drops the object far from the goal and falsely reports success (the
         # "released but arm never moved, dropped at the pickup spot" failure).
@@ -124,7 +147,11 @@ def dispatch_runtime(state, args: dict[str, Any]):
                  "reason": "could not servo over the drop point (arm wedged short of the target) — "
                            "retry from a clearer approach",
                  "ee_pos": [round(float(v), 4) for v in release_ee],
-                 "target_position": [round(float(v), 4) for v in drop]},
+                 "target_position": [round(float(v), 4) for v in drop],
+                 "horizontal_error": round(horizontal_error, 4),
+                 "vertical_error": round(vertical_error, 4),
+                 "hover_reached": bool(hover_reached),
+                 "drop_reached": bool(drop_reached)},
                 env.take_snapshot())
     ctrl.set_gripper(close=False)                            # release
     ctrl.servo_to([drop[0], drop[1], drop[2] + hover], gripper="open", max_iters=60)
@@ -133,5 +160,9 @@ def dispatch_runtime(state, args: dict[str, Any]):
              "target_pixel": list(pixel) if pixel is not None else None,
              "target_position": [round(float(v), 4) for v in drop],
              "release_ee_pos": [round(float(v), 4) for v in release_ee],
+             "horizontal_error": round(horizontal_error, 4),
+             "vertical_error": round(vertical_error, 4),
+             "hover_reached": bool(hover_reached),
+             "drop_reached": bool(drop_reached),
              "ee_pos": [round(float(v), 4) for v in ee]},
             env.take_snapshot())

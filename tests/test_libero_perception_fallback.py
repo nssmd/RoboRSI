@@ -8,6 +8,9 @@ from roborsi.embodied.skills.base._lib.libero import _perception
 from roborsi.embodied.skills.base._lib.libero._helpers import classify_gripper_gap
 from roborsi.embodied.skills.base.find_pixel.libero import policy as find_pixel
 from roborsi.embodied.skills.base.grasp_object.libero import policy as grasp_object
+from roborsi.embodied.skills.base.place_object_in.libero import (
+    policy as place_object_in,
+)
 
 
 def _state() -> SimpleNamespace:
@@ -59,6 +62,17 @@ def test_grasp_reuses_cached_visual_pixel(monkeypatch) -> None:
         state,
         {"object": "alphabet soup container at the right side"},
     ) == (17, 19)
+
+
+def test_unprojected_target_and_object_height_define_drop_point() -> None:
+    state = _state()
+    _perception.remember_pixel(state, "basket", (20, 21))
+    _perception.remember_world(state, 20, 21, (-0.04, 0.27, 0.09))
+    state._held_object_height = 0.12
+
+    drop = place_object_in._drop_from_memory(state, "basket", 0.03)
+
+    assert np.allclose(drop, [-0.04, 0.27, 0.18])
 
 
 def test_gripper_gap_distinguishes_open_holding_and_closed() -> None:

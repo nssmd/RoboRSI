@@ -16,5 +16,8 @@ def dispatch_runtime(state, args: dict[str, Any]):
     if world is None:
         return ({"ok": False, "reason": "depth unavailable (env built without camera_depths)"},
                 state.env.take_snapshot())
+    from roborsi.embodied.skills.base._lib.libero._perception import remember_world
+
+    remember_world(state, int(args["u"]), int(args["v"]), world)
     return ({"ok": True, "world": [round(float(x), 4) for x in world]},
             state.env.take_snapshot())
