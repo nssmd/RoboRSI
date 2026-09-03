@@ -156,9 +156,10 @@ low-precision, closes on air, and burns the step budget. move_fingertip_to /
 move_to_pose are for APPROACH, TRANSPORT, and DROP only — never for the grasp
 itself. A manual close is allowed ONLY as a fallback AFTER a grasp skill returns
 ok=False. For TRANSPORT after a grasp: never reuse the holding grasp-quat in
-move_to_pose (infeasible workspace-wide → IK thrash); plan place_obb (into a
-container) / place_object_in / place_held_at_target_servo (after perceiving the
-target) or a top-down quat [0.5,-0.5,0.5,0.5] for carry+place.
+   move_to_pose (infeasible workspace-wide → IK thrash); plan place_object_in
+   for a container/cavity, place_on_surface for a plate/stove/pad/stand/scale,
+   or place_held_at_target_servo for an exact perceived target. Use a top-down
+   quat [0.5,-0.5,0.5,0.5] only for a lower-level carry fallback.
 """
 
 
@@ -392,10 +393,11 @@ class Planner:
         """Call Opus, write plan.md, return mission_spec. `ns` = the active
         backend's skill namespace (drives which base skills the plan can name)."""
         # Lazy import — keeps agents package importable without sim deps.
-        from roborsi.agents.plan_archive import (
-            get_recent_plans, format_for_planner,
-        )
         from roborsi.agents.gt_firewall import redact
+        from roborsi.agents.plan_archive import (
+            format_for_planner,
+            get_recent_plans,
+        )
         recent_plans = get_recent_plans(task, n=3)
         prior_plans_block = format_for_planner(recent_plans)
         prior_plans_block, _ = redact(task, prior_plans_block)
@@ -512,14 +514,17 @@ class Planner:
         Same Planner class + same persistent_agent.run_role dispatch as .plan();
         only the system prompt (LH decomposition) and the block parser differ.
         There is no separate LHPlanner."""
-        from roborsi.embodied.skills import discover
-        from roborsi.agents.plan_archive import (
-            get_recent_plans, format_for_planner,
+        from roborsi.agents.atomic_bottleneck import (
+            format_for_planner as format_bottlenecks_for_planner,
         )
         from roborsi.agents.atomic_bottleneck import (
             get_bottleneck_atomics,
-            format_for_planner as format_bottlenecks_for_planner,
         )
+        from roborsi.agents.plan_archive import (
+            format_for_planner,
+            get_recent_plans,
+        )
+        from roborsi.embodied.skills import discover
         prior_block = format_for_planner(get_recent_plans(lh_task, n=3))
         bottleneck_block = format_bottlenecks_for_planner(get_bottleneck_atomics())
         # Build the canonical list of atomics the LH plan is allowed to use. If

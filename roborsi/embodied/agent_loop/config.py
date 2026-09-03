@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 
-
 DEFAULT_MODEL = (
     os.environ.get("ROBORSI_VLM_MODEL")
     or "anthropic/claude-opus-4-8"
@@ -63,7 +62,8 @@ _SHORTLIST_ALWAYS = {
     #     containers (cup / bowl / bin) whose hollow body the others close on air
     #     inside (EXPERIMENTAL). place_obb — CaP-X OBB place-into-container
     #     (interior-center drop + depth containment verify).
-    "grasp_object", "grasp_obb", "grasp_flat", "grasp_rim", "place_object_in", "place_obb",
+    "grasp_object", "grasp_obb", "grasp_flat", "grasp_rim",
+    "place_object_in", "place_on_surface", "place_obb",
     # Closed-loop precision place (descend_tcp_to_z's xy analogue) — needed for
     # tight-alignment tasks (match_blocks <=3cm); keep available so the engineer
     # can reach for it instead of hand-nudging with move_fingertip_to.
@@ -101,12 +101,11 @@ not ATTEMPTING a hand-rolled pick as your FIRST move, NOT about distrusting a
 hold you already achieved. Keep the hold until an intentional place/release;
 re-opening a confirmed hold drops the object and wastes the whole run.
 
-TRANSPORT / PLACE: localize the TARGET by perception too
-(find_pixel(target)+unproject, or localize_object_top_center), then use
-place_object_in / place_held_at_target_servo (closed-loop visual servo). After a
-grasp, do NOT reuse the holding grasp-quat in move_to_pose (infeasible
-workspace-wide, IK-thrashes); use the top-down quat [0.5,-0.5,0.5,0.5]. If a
-move_to_pose returns ok=False twice, SWITCH the quat — don't retry the same one.
+TRANSPORT / PLACE: localize the TARGET by perception too. Use place_object_in
+for a container, bin, basket, bowl, drawer, or cavity. Use place_on_surface for
+a plate, stove, pad, stand, scale, or other exposed support. Use
+place_held_at_target_servo only for an exact perceived target. After a grasp,
+do NOT hand-roll the transport unless the specialized place skill fails.
 
 MULTI-TOOL TURNS: you MAY emit MULTIPLE tool_use blocks in ONE turn —
 prefer composing a 3-5 step plan per turn. Single-tool turns only for
@@ -158,8 +157,9 @@ change across episodes; do not reuse coordinates from prior runs or task files.
 PICK / PLACE (default): use the composite skills, not hand-rolled motion.
   1. grasp_object(object=<name>) — localizes from camera/depth, opens, hovers,
      descends, closes, and lifts. Verify grasped=true in the result.
-  2. place_object_in(object=<target_name>) — localizes the target from vision,
-     hovers, descends, opens, and retracts.
+  2. place_object_in(object=<target_name>) for containers/cavities, or
+     place_on_surface(target=<target_name>) for plates, stoves, pads, stands,
+     scales, and other exposed supports.
 Lower-level primitives to compose your own motion when a composite doesn't fit:
   get_arm_pose → your OWN end-effector pose (proprioception, allowed);
   find_pixel(object) → (u,v), then unproject_pixel(u,v) → world XYZ;
@@ -170,7 +170,7 @@ Position deltas are clamped to ~0.05 m/step, so servo skills iterate internally 
 call them once with the TARGET pose, don't hand-step toward it.
 
 MULTI-TOOL TURNS: you MAY emit MULTIPLE tool_use blocks in ONE turn — compose a
-2–4 step plan (e.g. look → grasp_object → place_object_in). Single-tool
+2–4 step plan (e.g. look → grasp_object → the matching place skill). Single-tool
 turns only when you need the result before deciding.
 
 DONE: call done(success=True) once the instruction is satisfied. Success is

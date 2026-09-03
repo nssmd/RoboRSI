@@ -20,6 +20,7 @@ def dispatch_runtime(state, args: dict[str, Any]):
     target = (np.asarray(cur, dtype=float) + np.asarray(dpos, dtype=float)).tolist()
     reached, _ = ctrl.servo_to(target, gripper=gripper, max_iters=40)
     ee, _, _ = ctrl.read_pose()
-    return ({"ok": True, "reached": bool(reached),
+    return ({"ok": bool(reached), "reached": bool(reached),
+             "reason": None if reached else "target pose was not reached",
              "ee_pos": [round(float(v), 4) for v in ee]},
             state.env.take_snapshot())

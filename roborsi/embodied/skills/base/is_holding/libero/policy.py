@@ -13,20 +13,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from roborsi.embodied.skills.base._lib.libero._helpers import (
-    classify_gripper_gap,
-)
+from roborsi.embodied.skills.base._lib.libero._control import LiberoControl
+from roborsi.embodied.skills.base._lib.libero.gripper_state import GripperState
 
 
 def dispatch_runtime(state, args: dict[str, Any]):
-    obs = state.env.raw_obs()
-    gq = obs.get("robot0_gripper_qpos")
-    gap = round(float(gq[0] - gq[1]), 4) if gq is not None else None
-    gripper_state = classify_gripper_gap(gap)
-    holding = gripper_state == "holding"
+    ctrl = LiberoControl(state.env)
+    gap, gripper_state = ctrl.read_gripper_state()
+    holding = gripper_state is GripperState.HELD
     query = str(args.get("object") or "").strip()
-    return ({"ok": True, "holding": holding, "gripper_gap": gap,
-             "gripper_state": gripper_state, "object": query,
-             "note": "proprioceptive finger-gap classification: closed-empty, "
-                     "holding, or fully open."},
+    return ({"ok": True, "holding": holding,
+             "gripper_gap": round(float(gap), 4),
+             "gripper_state": gripper_state.value, "object": query,
+             "note": "Shared calibrated gripper-state check (no object ground truth)."},
             state.env.take_snapshot())

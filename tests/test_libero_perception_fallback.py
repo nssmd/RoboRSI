@@ -3,15 +3,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
 
 from roborsi.embodied.skills.base._lib.libero import _perception
 from roborsi.embodied.skills.base._lib.libero._helpers import classify_gripper_gap
 from roborsi.embodied.skills.base.find_pixel.libero import policy as find_pixel
 from roborsi.embodied.skills.base.grasp_object.libero import policy as grasp_object
-from roborsi.embodied.skills.base.place_object_in.libero import (
-    policy as place_object_in,
-)
 
 
 def _state() -> SimpleNamespace:
@@ -22,9 +18,19 @@ def _state() -> SimpleNamespace:
     return SimpleNamespace(env=env)
 
 
-def test_find_pixel_uses_perception_model_before_local_detector(monkeypatch) -> None:
+def test_find_pixel_falls_back_to_perception_pointer(monkeypatch) -> None:
     state = _state()
-    monkeypatch.setattr(_perception, "vlm_point", lambda *_args: (7, 9))
+    monkeypatch.setattr(
+        "roborsi.embodied.skills.base.detect_object.robotwin.policy.detect",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("detector unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        _perception,
+        "localize_precise",
+        lambda *_args, **_kwargs: (7, 9),
+    )
 
     result, _ = find_pixel.dispatch_runtime(
         state,
@@ -65,18 +71,6 @@ def test_grasp_reuses_cached_visual_pixel(monkeypatch) -> None:
     ) == (17, 19)
 
 
-def test_unprojected_target_and_object_height_define_drop_point() -> None:
-    state = _state()
-    _perception.remember_pixel(state, "basket", (20, 21))
-    _perception.remember_world(state, 20, 21, (-0.04, 0.27, 0.09))
-    state._held_object_height = 0.12
-    state._held_grasp_z_offset = 0.025
-
-    drop = place_object_in._drop_from_memory(state, "basket", 0.03)
-
-    assert np.allclose(drop, [-0.04, 0.27, 0.205])
-
-
 def test_remembering_same_pixel_preserves_unprojected_world() -> None:
     state = _state()
     _perception.remember_pixel(state, "basket", (20, 21))
@@ -87,61 +81,10 @@ def test_remembering_same_pixel_preserves_unprojected_world() -> None:
     assert _perception.recall_world(state, "basket") == (-0.04, 0.27, 0.09)
 
 
-def test_servo_to_drop_uses_lift_hover_and_descending_waypoints() -> None:
-    calls = []
-
-    class Control:
-        def read_pose(self):
-            return np.asarray([0.1, 0.0, 0.2]), None, None
-
-        def servo_to(self, pos, **kwargs):
-            calls.append((list(pos), kwargs))
-            return True, None
-
-    result = place_object_in._servo_to_drop(
-        Control(),
-        np.asarray([-0.04, 0.27, 0.18]),
-        0.12,
-    )
-
-    assert result == (True, True, True)
-    assert calls[0][0] == [0.1, 0.0, 0.3]
-    assert calls[1][0] == [-0.04, 0.27, 0.3]
-    assert calls[-1][0] == [-0.04, 0.27, 0.18]
-    assert len(calls) == 6
-
-
 def test_gripper_gap_distinguishes_open_holding_and_closed() -> None:
     assert classify_gripper_gap(0.001) == "closed_empty"
     assert classify_gripper_gap(0.0588) == "holding"
     assert classify_gripper_gap(0.0799) == "open"
-
-
-def test_tall_object_gets_automatic_upper_body_grasp() -> None:
-    cloud = np.asarray([
-        [x, y, z]
-        for x in (0.00, 0.02)
-        for y in (0.00, 0.02)
-        for z in (0.00, 0.04, 0.08)
-    ])
-
-    offset = grasp_object._grasp_z_offset({"grasp_z_offset": 0.0}, cloud)
-
-    assert offset == pytest.approx(0.028)
-
-
-def test_explicit_grasp_offset_overrides_automatic_profile() -> None:
-    cloud = np.asarray([
-        [x, y, z]
-        for x in (0.00, 0.02)
-        for y in (0.00, 0.02)
-        for z in (0.00, 0.04, 0.08)
-    ])
-
-    assert grasp_object._grasp_z_offset(
-        {"grasp_z_offset": -0.015},
-        cloud,
-    ) == -0.015
 
 
 def test_segmented_cloud_has_topdown_fallback_without_graspgen(

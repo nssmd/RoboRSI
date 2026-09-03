@@ -67,6 +67,13 @@ _CAMERA_ALIASES = {
     _DEFAULT_HEAD_CAMERA: "head_camera",
     _DEFAULT_WRIST_CAMERA: "wrist",
 }
+_ORBIT_VIEW_SPECS = (
+    ("orbit_front", 0.0, -30.0),
+    ("orbit_left", 90.0, -30.0),
+    ("orbit_back", 180.0, -30.0),
+    ("orbit_right", 270.0, -30.0),
+    ("orbit_top", 35.0, -75.0),
+)
 
 # Proprioceptive keys we concatenate (in order) into Observation.state.
 _PROPRIO_KEYS = ("robot0_joint_pos", "robot0_gripper_qpos")
@@ -199,6 +206,8 @@ class LiberoProEnv(Env):
         self._terminated: bool = False
         self._tick_cb = None               # rollout frame-capture callback (demo video)
         self._vframes: list = []           # buffered head frames → demo mp4 on success
+        self._orbit_frames: dict[str, Any] = {}
+        self._orbit_generation = 0
 
     def _bind_gl_context(self) -> None:
         """Make MuJoCo's offscreen GL context current on the CALLING thread.
@@ -223,12 +232,13 @@ class LiberoProEnv(Env):
         import numpy as np
         self._bind_gl_context()
         self._env.reset()
-        # Widen the JOINT_POSITION step every episode — env.reset() recreates the
-        # controller at the default 0.05 rad/step (too slow for the IK servo to
-        # reach in the callers' budgets). 0.10 matches _control.JOINT_STEP.
+        # Tune JOINT_POSITION every episode because env.reset() recreates the
+        # controller. These values match the mature whole-arm LIBERO control.
         _jp = self._env.env.robots[0].controller
-        _jp.output_max = np.full(7, 0.10)
-        _jp.output_min = np.full(7, -0.10)
+        _jp.output_max = np.full(7, 0.35)
+        _jp.output_min = np.full(7, -0.35)
+        _jp.kp = np.full(7, 300.0)
+        _jp.kd = np.full(7, 2.0 * np.sqrt(300.0))
         idx = int(seed) % len(self._init_states)
         raw = self._env.set_init_state(self._init_states[idx])
         for _ in range(self._settle_steps):
@@ -237,6 +247,8 @@ class LiberoProEnv(Env):
         self._last_obs = _to_sim_obs(self._raw, self.instruction)
         self._terminated = False
         self._vframes = []
+        self._orbit_frames = {}
+        self._orbit_generation += 1
         return self._last_obs
 
     def step(self, action, action_type: str = "ee") -> "Step":
@@ -410,6 +422,140 @@ class LiberoProEnv(Env):
             np.array([int(v), int(u)]), depth, cam2world)
         return np.asarray(pt, dtype=float)
 
+    def _vision_workspace_center(self):
+        import numpy as np
+
+        depth = self.depth_map("agentview")
+        if depth is None:
+            return np.asarray([0.0, 0.0, 0.8], dtype=np.float64)
+        depth = np.asarray(depth, dtype=np.float64)
+        if depth.ndim == 3 and depth.shape[-1] == 1:
+            depth = depth[..., 0]
+        if depth.ndim != 2:
+            return np.asarray([0.0, 0.0, 0.8], dtype=np.float64)
+        intrinsic, camera_to_world = self.camera_matrices("agentview")
+        height, width = depth.shape
+        stride = max(1, min(height, width) // 32)
+        rows, columns = np.mgrid[0:height:stride, 0:width:stride]
+        z = depth[rows, columns].reshape(-1)
+        columns = columns.reshape(-1).astype(np.float64)
+        rows = rows.reshape(-1).astype(np.float64)
+        valid = np.isfinite(z) & (z > 0.05) & (z < 3.0)
+        if int(valid.sum()) < 16:
+            return np.asarray([0.0, 0.0, 0.8], dtype=np.float64)
+        z = z[valid]
+        x = (columns[valid] - intrinsic[0, 2]) * z / intrinsic[0, 0]
+        y = (rows[valid] - intrinsic[1, 2]) * z / intrinsic[1, 1]
+        camera_points = np.column_stack([x, y, z, np.ones_like(z)])
+        world = (camera_to_world @ camera_points.T).T[:, :3]
+        finite = world[np.all(np.isfinite(world), axis=1)]
+        if len(finite) < 16:
+            return np.asarray([0.0, 0.0, 0.8], dtype=np.float64)
+        return np.median(finite, axis=0)
+
+    def capture_orbit_views(self, *, image_size: int = 512):
+        import numpy as np
+
+        from roborsi.embodied.sim.libero.orbit_geometry import OrbitFrame
+
+        size = max(64, min(512, int(image_size)))
+        self._bind_gl_context()
+        context = self._env.env.sim._render_context_offscreen
+        camera = context.cam
+        saved = {
+            "type": int(camera.type),
+            "fixedcamid": int(camera.fixedcamid),
+            "lookat": np.asarray(camera.lookat, dtype=np.float64).copy(),
+            "distance": float(camera.distance),
+            "azimuth": float(camera.azimuth),
+            "elevation": float(camera.elevation),
+        }
+        frames: dict[str, OrbitFrame] = {}
+        try:
+            camera.type = 0
+            camera.fixedcamid = -1
+            camera.lookat[:] = self._vision_workspace_center()
+            camera.distance = 1.3
+            for name, azimuth, elevation in _ORBIT_VIEW_SPECS:
+                camera.azimuth = float(azimuth)
+                camera.elevation = float(elevation)
+                context.render(size, size, camera_id=-1)
+                rgb_raw, depth_raw = context.read_pixels(
+                    size,
+                    size,
+                    depth=True,
+                )
+                rgb = np.ascontiguousarray(
+                    np.flipud(np.asarray(rgb_raw))[..., :3],
+                    dtype=np.uint8,
+                )
+                depth_buffer = np.flipud(
+                    np.asarray(depth_raw, dtype=np.float64)
+                )
+                left, right = context.scn.camera[0], context.scn.camera[1]
+                near = float(left.frustum_near)
+                far = float(left.frustum_far)
+                depth_m = near / (
+                    1.0 - depth_buffer * (1.0 - near / far)
+                )
+                position = (
+                    np.asarray(left.pos, dtype=np.float64)
+                    + np.asarray(right.pos, dtype=np.float64)
+                ) / 2.0
+                forward = (
+                    np.asarray(left.forward, dtype=np.float64)
+                    + np.asarray(right.forward, dtype=np.float64)
+                ) / 2.0
+                forward /= max(float(np.linalg.norm(forward)), 1e-12)
+                up = (
+                    np.asarray(left.up, dtype=np.float64)
+                    + np.asarray(right.up, dtype=np.float64)
+                ) / 2.0
+                up /= max(float(np.linalg.norm(up)), 1e-12)
+                right_axis = np.cross(forward, up)
+                right_axis /= max(
+                    float(np.linalg.norm(right_axis)),
+                    1e-12,
+                )
+                rotation = np.column_stack([right_axis, -up, forward])
+                focal = (size / 2.0) * near / max(
+                    float(left.frustum_top),
+                    1e-12,
+                )
+                frames[name] = OrbitFrame(
+                    name=name,
+                    rgb=rgb,
+                    depth_m=depth_m,
+                    camera_position_world=position,
+                    camera_to_world_rotation=rotation,
+                    fx=focal,
+                    fy=focal,
+                    cx=size / 2.0,
+                    cy=size / 2.0,
+                )
+        finally:
+            camera.type = saved["type"]
+            camera.fixedcamid = saved["fixedcamid"]
+            camera.lookat[:] = saved["lookat"]
+            camera.distance = saved["distance"]
+            camera.azimuth = saved["azimuth"]
+            camera.elevation = saved["elevation"]
+        self._orbit_frames = frames
+        self._orbit_generation = int(
+            getattr(self, "_orbit_generation", 0)
+        ) + 1
+        return dict(frames)
+
+    def orbit_frame(self, view: str):
+        return self._orbit_frames.get(str(view))
+
+    def orbit_generation(self) -> int:
+        return int(self._orbit_generation)
+
+    def orbit_pixel_to_world(self, view: str, u: int, v: int):
+        frame = self.orbit_frame(view)
+        return None if frame is None else frame.world_at(int(u), int(v))
+
     def hook_physics_step(self, callback):
         """Register a per-sim-step frame-capture callback for the rollout.
 
@@ -513,14 +659,13 @@ class LiberoProBackend(Backend):
             camera_depths=cfg.get("camera_depths", True),  # enables unproject/pixel skills
         )
         env.reset()
-        # Speed up the JOINT_POSITION controller: the default output range is
-        # 0.05 rad/step, too slow for the Jacobian-IK servo to reach in the
-        # callers' iteration budgets (it stalled a few cm short). 0.10 rad/step
-        # (kept in sync with _control.JOINT_STEP) reaches like CaP's blocking move.
+        # Keep construction-time controller values aligned with reset().
         import numpy as _np
         _jp = env.env.robots[0].controller
-        _jp.output_max = _np.full(7, 0.10)
-        _jp.output_min = _np.full(7, -0.10)
+        _jp.output_max = _np.full(7, 0.35)
+        _jp.output_min = _np.full(7, -0.35)
+        _jp.kp = _np.full(7, 300.0)
+        _jp.kd = _np.full(7, 2.0 * _np.sqrt(300.0))
         return LiberoProEnv(
             env=env,
             task=task,

@@ -4,7 +4,7 @@ kind: base
 robot: libero
 category: control
 version: 0.1.0
-description: Servo the end-effector to a world-frame target pose using OSC deltas (closed-loop, iterates internally). Optionally set orientation and hold the gripper open/closed during the move.
+description: Move the end-effector to a world-frame target pose through whole-arm IK and JOINT_POSITION control. Optionally set orientation and hold the gripper open/closed during the move.
 args:
   pos:     { type: list, required: true, description: "Target [x, y, z] in world meters." }
   quat:    { type: list, description: "Optional target orientation [x, y, z, w]. Omit to keep current orientation (top-down)." }
@@ -17,9 +17,9 @@ returns:
 when_to_use: |
   To move the end-effector to a computed coordinate (hover point, approach, drop)
   when the composite grasp_object / place_object_in don't fit. Call ONCE with the
-  final target — it iterates OSC steps for you; do not hand-step toward it.
+  final target; the controller solves and executes the arm motion internally.
 ---
 
 # move_to_pose
 
-Closed-loop OSC servo of the end-effector to a world pose.
+IK-backed JOINT_POSITION motion of the end-effector to a world pose.

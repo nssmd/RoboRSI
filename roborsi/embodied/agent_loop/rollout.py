@@ -438,6 +438,7 @@ def run_rollout(
             "gripper", "set_gripper", "home",
             "grasp_then_lift", "grasp_then_lift_graspgen", "grasp_object",
             "pick_actor_by_contact_point", "place_object_in",
+            "place_on_surface",
             "tap_held_on_target", "execute_with_pi05",
         }
         had_action = any(tc.function.name in ACTION_TOOLS for tc in tool_calls)
@@ -760,6 +761,7 @@ def _tool_timing_phase(tool_name: str) -> str:
         "place_held_at_target_servo",
         "place_held_in_held_container",
         "place_object_in",
+        "place_on_surface",
         "place_obb",
         "set_gripper",
         "tip_pour",

@@ -17,8 +17,9 @@ returns:
   world: list
   ee_pos: list
 when_to_use: |
-  Visual servoing to a target identified in an image. Use `grasp_object` for a
-  complete camera-grounded grasp.
+  Visual motion to a target identified in the current camera image. Use
+  grasp_object for picking and a dedicated placement skill for releasing a held
+  object.
 ---
 
 # move_to_pixel

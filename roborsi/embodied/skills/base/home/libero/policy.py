@@ -18,7 +18,13 @@ def dispatch_runtime(state, args: dict[str, Any]):
     lift = float(args.get("lift", 0.18))                 # retract UP this much (m)
     ctrl = LiberoControl(state.env)
     cur, _, _ = ctrl.read_pose()
-    ctrl.servo_to([cur[0], cur[1], float(cur[2]) + lift], gripper="keep", max_iters=60)
+    reached, _ = ctrl.servo_to(
+        [cur[0], cur[1], float(cur[2]) + lift],
+        gripper="keep",
+        max_iters=60,
+    )
     ee, _, _ = ctrl.read_pose()
-    return ({"ok": True, "ee_pos": [round(float(v), 4) for v in ee]},
+    return ({"ok": bool(reached), "reached": bool(reached),
+             "reason": None if reached else "target pose was not reached",
+             "ee_pos": [round(float(v), 4) for v in ee]},
             state.env.take_snapshot())

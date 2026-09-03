@@ -19,4 +19,4 @@ when_to_use: |
 
 # is_holding
 
-Grasp-state estimate from the gripper opening. It does not read object pose.
+Grasp-state estimate using gripper proprioception only.
