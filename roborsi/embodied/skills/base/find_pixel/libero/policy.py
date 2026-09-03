@@ -21,6 +21,62 @@ def dispatch_runtime(state, args: dict[str, Any]):
                 obs)
     obj = args.get("object", "the target")
     loc = str(args.get("location", ""))
+    from roborsi.embodied.skills.base._lib.libero import _perception
+
+    semantic_query = _perception._semantic_point_query(str(obj))
+    fine_grained = _perception._requires_semantic_pointing(str(obj))
+    if fine_grained:
+        point = _perception.localize_precise(
+            state,
+            str(obj),
+            route="vlm_sam",
+        )
+        if point is not None:
+            from roborsi.embodied.skills.base._lib.libero._perception import (
+                remember_pixel,
+            )
+            from roborsi.embodied.skills.base._lib.libero.semantic_point import (
+                record_semantic_point,
+            )
+
+            point = remember_pixel(state, str(obj), point)
+            record_semantic_point(
+                state.env,
+                object_name=str(obj),
+                pixel=point,
+                frame=head,
+                source=str(
+                    getattr(
+                        state,
+                        "_last_localization_source",
+                        "vlm->sam",
+                    )
+                ),
+            )
+            return ({
+                "ok": True,
+                "u": point[0],
+                "v": point[1],
+                "confidence": None,
+                "bbox": None,
+                "n_alternatives": 0,
+                "alternatives": [],
+                "location": loc,
+                "note": (
+                    "Fine-grained identity grounded from visible multi-view "
+                    "evidence and refined on the head image."
+                    if getattr(
+                        state,
+                        "_last_localization_source",
+                        "",
+                    )
+                    in {
+                        "orbit-consensus->head-sam",
+                        "orbit-exact-label->head-sam",
+                    }
+                    else "Fine-grained identity grounded from the visible image."
+                ),
+            }, obs)
     # Use the local detector when its assets are installed. Offline deployments
     # fall back to the perception pointer.
     try:
@@ -78,10 +134,6 @@ def dispatch_runtime(state, args: dict[str, Any]):
         }
         for det in dets
     ]
-    from roborsi.embodied.skills.base._lib.libero import _perception
-
-    semantic_query = _perception._semantic_point_query(str(obj))
-    fine_grained = _perception._requires_semantic_pointing(str(obj))
     selected = None
     if fine_grained:
         selected = _perception._choose_localization_candidate(

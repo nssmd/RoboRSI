@@ -628,7 +628,7 @@ def dispatch_runtime(state, args: dict[str, Any]):
     env = state.env
     ctrl = LiberoControl(env)
     hover = float(args.get("hover", 0.12))
-    z_offset = float(args.get("z_offset", 0.03))
+    z_offset = float(args.get("z_offset", _RELEASE_GAP))
     release_clearance = _RELEASE_GAP
 
     pos = args.get("pos")

@@ -34,7 +34,19 @@ def dispatch_runtime(state: Any, args: dict[str, Any]):
             obs,
         )
 
-    uv = localize_precise(state, obj, route="owlv2")
+    try:
+        uv = localize_precise(state, obj, route="owlv2")
+    except (ImportError, OSError, RuntimeError) as exc:
+        return (
+            {
+                "ok": False,
+                "reason": (
+                    "local detector is unavailable; use find_by_pointing or "
+                    f"find_pixel instead ({type(exc).__name__})"
+                ),
+            },
+            obs,
+        )
     if uv is None:
         return (
             {

@@ -81,7 +81,12 @@ def matching_semantic_point(
     evidence = index.get(_normalized_name(object_name))
     if not isinstance(evidence, SemanticPointEvidence):
         return None
-    if evidence.source not in {"vlm->sam", "vlm-point"}:
+    if evidence.source not in {
+        "orbit-consensus->head-sam",
+        "orbit-exact-label->head-sam",
+        "vlm->sam",
+        "vlm-point",
+    }:
         return None
     try:
         candidate = np.asarray(pixel, dtype=float)

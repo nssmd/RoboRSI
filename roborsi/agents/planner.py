@@ -68,6 +68,27 @@ def _skill_catalog(task: str, user_msg: str, ns: str = "robotwin") -> str:
     return "\n".join(lines)
 
 
+def _libero_runtime_routing_block(ns: str) -> str:
+    if ns != "libero":
+        return ""
+    return (
+        "=== CURRENT LIBERO TASK ROUTING (highest priority) ===\n"
+        "The runtime task instruction is the authority for the current scene. "
+        "This generic atomic is reused across many LIBERO tasks, so a persistent "
+        "plan, wiki lead, prior plan, or reflection may describe a different "
+        "target and must not override the current instruction.\n"
+        "- For in / inside / into a receptacle or cavity such as a basket, bin, "
+        "bowl, drawer, or container, use place_object_in with its current "
+        "0.06 m default release clearance unless the target is a named "
+        "relational subregion.\n"
+        "- For on / onto / on top of an exposed support such as a plate, stove, "
+        "pad, stand, scale, shelf, or table, use place_on_surface.\n"
+        "Never use place_object_in for an exposed support merely because an older "
+        "plan did so. Do not copy a release offset from a different target type. "
+        "Localize the current target from the visible image first.\n\n"
+    )
+
+
 _SYSTEM_PROMPT = """You are PLANNER for a robot manipulation atomic task.
 
 Your job is to produce ONE document (plan.md) that the Engineer will
@@ -427,7 +448,10 @@ class Planner:
             "EVERY approved lead as concrete, ordered sub-goals, using the EXACT "
             "skills/params it names. Do NOT substitute your own approach for an "
             "approved lead (e.g. if a lead says the fallback is grasp_by_keypoint, "
-            "the plan's fallback IS grasp_by_keypoint, not get_grasp_pose).\n"
+            "the plan's fallback IS grasp_by_keypoint, not get_grasp_pose). For a "
+            "generic atomic reused across multiple LIBERO simulator tasks, apply "
+            "a lead only when its target and relation match the CURRENT runtime "
+            "instruction; current-task routing always wins a conflict.\n"
             "2. '## Successful execution traces' / '## Key measurements' — trusted; "
             "REUSE the tool sequences / facts.\n"
             "3. '## Failed execution traces' — OBSERVED FACTS ONLY (the Reviewer's "
@@ -448,6 +472,7 @@ class Planner:
             "candidate_skills from these EXACT names; prefer a specialized skill "
             f"over hand-rolled move_to_pose) ===\n{catalog}\n\n"
             if catalog else "")
+        runtime_routing_block = _libero_runtime_routing_block(ns)
         # Self-evolution: once the task has enough Sim successes and no compound
         # yet, encourage the Planner to solidify the winning recipe as a compound
         # policy proposal (opt-in — empty otherwise). Manager reviews it.
@@ -467,6 +492,7 @@ class Planner:
             f"{wiki_block}"
             f"{compound_block}"
             f"{prior_plans_block + chr(10) + chr(10) if prior_plans_block else ''}"
+            f"{runtime_routing_block}"
             f"=== RECENT REFLECTIONS (last 5 turns, JSONL) ===\n"
             f"{recent_reflections}\n"
         )

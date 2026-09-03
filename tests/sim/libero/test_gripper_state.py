@@ -46,6 +46,12 @@ def test_mid_gap_without_close_intent_is_ambiguous() -> None:
     assert CAL.classify(0.049, last_command=None) == GripperState.AMBIGUOUS
 
 
+def test_explicit_open_accepts_near_open_release_gap() -> None:
+    assert CAL.classify(0.0716, last_command="open") == GripperState.OPEN
+    assert CAL.classify(0.0716, last_command=None) == GripperState.AMBIGUOUS
+    assert CAL.classify(0.063, last_command="open") == GripperState.AMBIGUOUS
+
+
 def test_repeated_close_hold_stays_held_for_12_keep_steps() -> None:
     clf = GripperClassifier(CAL)
     clf.confirm_close(pre_gap=0.079, post_gap=0.014)

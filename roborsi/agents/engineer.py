@@ -20,13 +20,13 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from roborsi.agents.workspace import Workspace
-from roborsi.agents.skill_selector import (
-    SkillSelector, SKILL_LIST_SOFT_CAP,
-)
-from roborsi.agents.skill_history import record_success
 from roborsi.agents.plan_archive import archive_successful_plan
-
+from roborsi.agents.skill_history import record_success
+from roborsi.agents.skill_selector import (
+    SKILL_LIST_SOFT_CAP,
+    SkillSelector,
+)
+from roborsi.agents.workspace import Workspace
 
 _ENGINEER_MODEL = (
     os.environ.get("ROBORSI_ENGINEER_MODEL")
@@ -35,13 +35,25 @@ _ENGINEER_MODEL = (
 )
 
 
+def _configure_perception_backend(ns: str, model: str | None) -> None:
+    """Keep LIBERO perception on the explicitly selected role provider."""
+    if ns != "libero" or not model:
+        return
+    os.environ.setdefault("ROBORSI_PERCEPTION_MODEL", model)
+    if model.startswith(
+        ("openai/", "azure/", "azure-openai/", "gpt-", "o3", "o4")
+    ):
+        os.environ.setdefault("ROBORSI_VLM_PROVIDER", "openai")
+
+
 def _count_active_skills(ns: str = "robotwin") -> int:
     """How many skills are callable in one backend namespace."""
-    from roborsi.embodied.skills import discover_ns
     from roborsi.embodied.agent_loop.prompt_tools import (
         _legacy_tool_names,
         _try_load_plugin_dispatcher,
     )
+    from roborsi.embodied.skills import discover_ns
+
     legacy = _legacy_tool_names(ns)
     wired = 0
     for sk in discover_ns(ns):
@@ -130,6 +142,7 @@ class Engineer:
         ns = _skill_namespace(
             getattr(env, "backend_name", None) if env is not None else backend_name
         )
+        _configure_perception_backend(ns, self.model)
 
         # ── Skill selection: top-K when registry exceeds cap ──
         restrict: set[str] | None = None

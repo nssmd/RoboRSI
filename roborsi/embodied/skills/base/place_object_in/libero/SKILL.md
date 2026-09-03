@@ -9,7 +9,7 @@ args:
   object:   { type: string, description: "Target container or cavity name (e.g. basket). Provide this OR pos." }
   pixel:    { type: list, description: "Exact target pixel [u,v] from visual localization. REQUIRED with object= for relational subregions such as back/front/left/right compartments, slots, or sections." }
   pos:      { type: list, description: "Absolute release position [x, y, z] only when object is omitted. Do not send [] or [0,0,0]; named object targets are localized by vision." }
-  z_offset: { type: float, description: "Release height above the perceived target (m). Use 0.06 or lower; higher visual drops are clamped because they bounce or miss." }
+  z_offset: { type: float, default: 0.06, description: "Release height above the perceived target (m). Use 0.06 or lower; higher visual drops are clamped because they bounce or miss." }
   hover:    { type: float, description: "Approach/retract height above the release point (m, default 0.12)." }
 returns:
   ok: bool

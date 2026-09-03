@@ -24,13 +24,13 @@ circular import (robotwin_tools imports detect from here). Only
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import torch
 from PIL import Image
-
 
 _MODELS: dict[str, Any] = {}
 _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -71,13 +71,40 @@ def clear_cache() -> None:
 def _load() -> tuple[Any, Any, Any, Any]:
     if "loaded" in _MODELS:
         return _MODELS["gdp"], _MODELS["gdm"], _MODELS["sp"], _MODELS["sm"]
-    from transformers import (AutoProcessor, AutoModelForZeroShotObjectDetection,
-                              SamProcessor, SamModel)
-    gdp = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-tiny")
+    from transformers import (
+        AutoModelForZeroShotObjectDetection,
+        AutoProcessor,
+        SamModel,
+        SamProcessor,
+    )
+    grounding_model = os.environ.get(
+        "ROBORSI_GROUNDING_DINO_MODEL",
+        "IDEA-Research/grounding-dino-tiny",
+    )
+    sam_model = os.environ.get(
+        "ROBORSI_POINT_SAM_MODEL",
+        "facebook/sam-vit-base",
+    )
+    local_only = (
+        os.environ.get("HF_HUB_OFFLINE") == "1"
+        or os.environ.get("TRANSFORMERS_OFFLINE") == "1"
+    )
+    gdp = AutoProcessor.from_pretrained(
+        grounding_model,
+        local_files_only=local_only,
+    )
     gdm = AutoModelForZeroShotObjectDetection.from_pretrained(
-        "IDEA-Research/grounding-dino-tiny").to(_DEVICE).eval()
-    sp = SamProcessor.from_pretrained("facebook/sam-vit-base")
-    sm = SamModel.from_pretrained("facebook/sam-vit-base").to(_DEVICE).eval()
+        grounding_model,
+        local_files_only=local_only,
+    ).to(_DEVICE).eval()
+    sp = SamProcessor.from_pretrained(
+        sam_model,
+        local_files_only=local_only,
+    )
+    sm = SamModel.from_pretrained(
+        sam_model,
+        local_files_only=local_only,
+    ).to(_DEVICE).eval()
     _MODELS.update({"gdp": gdp, "gdm": gdm, "sp": sp, "sm": sm, "loaded": True})
     return gdp, gdm, sp, sm
 

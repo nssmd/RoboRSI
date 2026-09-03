@@ -57,6 +57,11 @@ class GripperCalibration:
         endpoint_band = max(tol, 0.02 * span)
         if abs(gap - self.open_gap) <= endpoint_band:
             return GripperState.OPEN
+        if (
+            last_command == "open"
+            and gap >= self.closed_gap + 0.85 * span
+        ):
+            return GripperState.OPEN
         if abs(gap - self.closed_gap) <= endpoint_band:
             return GripperState.CLOSED_EMPTY
         if (

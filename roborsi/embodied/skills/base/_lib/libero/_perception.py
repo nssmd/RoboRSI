@@ -271,6 +271,461 @@ def _requires_semantic_pointing(obj: str) -> bool:
     return False
 
 
+def _requires_orbit_product_identity(obj: str) -> bool:
+    words = _query_tokens(obj)
+    if len(words) < 2:
+        return False
+    relation_words = {
+        "between",
+        "bottom",
+        "drawer",
+        "inside",
+        "layer",
+        "left",
+        "middle",
+        "next",
+        "right",
+        "top",
+    }
+    if words & relation_words:
+        return False
+    generic_classes = {
+        "basket",
+        "block",
+        "bottle",
+        "bowl",
+        "box",
+        "burner",
+        "cabinet",
+        "can",
+        "carton",
+        "container",
+        "cup",
+        "door",
+        "drawer",
+        "handle",
+        "item",
+        "lid",
+        "microwave",
+        "mug",
+        "object",
+        "package",
+        "pad",
+        "pan",
+        "plate",
+        "pot",
+        "rack",
+        "ramekin",
+        "scale",
+        "shelf",
+        "stand",
+        "stove",
+        "table",
+        "thing",
+        "tray",
+    }
+    product_shapes = {"bottle", "box", "can", "carton", "package"}
+    return bool(words & product_shapes) or not bool(words & generic_classes)
+
+
+def _select_orbit_consensus(
+    rows: list[dict[str, Any]],
+    *,
+    radius_m: float = 0.08,
+) -> np.ndarray | None:
+    valid = []
+    for row in rows:
+        try:
+            world = np.asarray(row.get("world"), dtype=float)
+            confidence = float(row.get("confidence", 0.0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if world.shape == (3,) and np.all(np.isfinite(world)):
+            valid.append((world, confidence))
+    if len(valid) < 2:
+        return None
+    required = max(2, len(valid) // 2 + 1)
+    best: list[tuple[np.ndarray, float]] = []
+    for center, _ in valid:
+        cluster = [
+            row
+            for row in valid
+            if float(np.linalg.norm(row[0] - center)) <= radius_m
+        ]
+        if (
+            len(cluster) > len(best)
+            or (
+                len(cluster) == len(best)
+                and sum(row[1] for row in cluster)
+                > sum(row[1] for row in best)
+            )
+        ):
+            best = cluster
+    if len(best) < required:
+        return None
+    return np.median(np.asarray([row[0] for row in best]), axis=0)
+
+
+def _project_world_to_head_pixel(env: Any, world: Any) -> tuple[int, int] | None:
+    try:
+        point = np.asarray(world, dtype=float)
+        intrinsic, camera_to_world = env.camera_matrices("agentview")
+        camera = np.linalg.inv(np.asarray(camera_to_world, dtype=float)) @ np.r_[
+            point,
+            1.0,
+        ]
+    except (AttributeError, TypeError, ValueError, np.linalg.LinAlgError):
+        return None
+    if (
+        point.shape != (3,)
+        or camera.shape != (4,)
+        or not np.all(np.isfinite(camera))
+        or float(camera[2]) <= 1e-8
+    ):
+        return None
+    pixel_h = np.asarray(intrinsic, dtype=float) @ camera[:3]
+    pixel = pixel_h[:2] / pixel_h[2]
+    image = env.take_snapshot().images.get("head_camera")
+    shape = getattr(image, "shape", ())
+    if len(shape) < 2 or not np.all(np.isfinite(pixel)):
+        return None
+    u, v = int(round(float(pixel[0]))), int(round(float(pixel[1])))
+    if not (0 <= u < int(shape[1]) and 0 <= v < int(shape[0])):
+        return None
+    return u, v
+
+
+def _orbit_product_identity_point(state: Any, obj: str) -> tuple[int, int] | None:
+    if os.environ.get("ROBORSI_ORBIT_PRODUCT_IDENTITY", "1") == "0":
+        return None
+    capture = getattr(state.env, "capture_orbit_views", None)
+    if not callable(capture):
+        return None
+
+    import math
+    from pathlib import Path
+
+    import cv2
+
+    from roborsi.embodied.agent_loop.vlm_io import (
+        _call_vlm_image,
+        _call_vlm_no_tools,
+        _parse_json,
+    )
+    from roborsi.embodied.skills.base.detect_object.robotwin.policy import (
+        detect,
+    )
+
+    frames = capture(image_size=512)
+    if not frames:
+        return None
+    workdir = Path(
+        getattr(state, "workdir", "/tmp/roborsi-orbit-identity")
+    )
+    workdir.mkdir(parents=True, exist_ok=True)
+    sequence = int(getattr(state, "_orbit_identity_seq", 0)) + 1
+    setattr(state, "_orbit_identity_seq", sequence)
+    model = os.environ.get(
+        "ROBORSI_PERCEPTION_MODEL",
+        "anthropic/claude-sonnet-4-6",
+    )
+    min_confidence = float(
+        os.environ.get("ROBORSI_ORBIT_IDENTITY_MIN_CONFIDENCE", "0.70")
+    )
+    exact_confidence = float(
+        os.environ.get("ROBORSI_ORBIT_EXACT_LABEL_CONFIDENCE", "0.95")
+    )
+    distinctive = _query_tokens(obj) - {
+        "bottle",
+        "box",
+        "can",
+        "carton",
+        "jar",
+        "bag",
+        "package",
+    }
+    allowed_packages = {
+        "bag",
+        "bottle",
+        "box",
+        "can",
+        "carton",
+        "jar",
+        "package",
+    }
+    explicit_package = next(
+        (word for word in allowed_packages if word in _query_tokens(obj)),
+        None,
+    )
+    package_query = explicit_package
+    if package_query is None:
+        package_reply = _call_vlm_no_tools(
+            model,
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Classify the ordinary physical retail package for a "
+                        "named grocery product. Choose exactly one of: bag, "
+                        "bottle, box, can, carton, jar, package. Return JSON only: "
+                        '{"package_type": "<choice>"}.'
+                    ),
+                },
+                {"role": "user", "content": str(obj)},
+            ],
+        )
+        package_result = _parse_json(package_reply) or {}
+        candidate_package = str(
+            package_result.get("package_type") or ""
+        ).strip().lower()
+        if candidate_package in allowed_packages:
+            package_query = candidate_package
+    package_query = package_query or "package"
+
+    rows: list[dict[str, Any]] = []
+    attempts: list[dict[str, Any]] = []
+
+    def query_view(view: str) -> None:
+        frame = frames.get(view)
+        if frame is None:
+            return
+        image = np.asarray(frame.rgb, dtype=np.uint8)
+        height, width = image.shape[:2]
+        detections = detect(
+            image,
+            package_query,
+            box_threshold=0.12,
+            text_threshold=0.15,
+            top_k=8,
+        )
+        candidates = []
+        for detection in detections:
+            u, v = int(detection.centroid[0]), int(detection.centroid[1])
+            if any(
+                float(
+                    np.linalg.norm(
+                        np.asarray([u, v], dtype=float)
+                        - np.asarray(
+                            [row["u"], row["v"]],
+                            dtype=float,
+                        )
+                    )
+                )
+                < 18.0
+                for row in candidates
+            ):
+                continue
+            x1, y1, x2, y2 = [
+                int(value)
+                for value in detection.bbox
+            ]
+            if (
+                x2 <= x1
+                or y2 <= y1
+                or (x2 - x1) * (y2 - y1) > 0.45 * width * height
+            ):
+                continue
+            candidates.append({
+                "u": u,
+                "v": v,
+                "bbox": [x1, y1, x2, y2],
+                "score": round(float(detection.score), 3),
+            })
+        attempt = {
+            "view": view,
+            "package_query": package_query,
+            "candidates": candidates,
+            "accepted": False,
+        }
+        attempts.append(attempt)
+        if not candidates:
+            attempt["rejection"] = "no_package_candidates"
+            return
+
+        tile_size = 256
+        columns = 3
+        tiles = [
+            cv2.resize(
+                image,
+                (tile_size, tile_size),
+                interpolation=cv2.INTER_AREA,
+            )
+        ]
+        cv2.putText(
+            tiles[0],
+            "SCENE",
+            (8, 26),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        for index, candidate in enumerate(candidates):
+            x1, y1, x2, y2 = candidate["bbox"]
+            padding = max(
+                8,
+                int(round(0.35 * max(x2 - x1, y2 - y1))),
+            )
+            x1, y1 = max(0, x1 - padding), max(0, y1 - padding)
+            x2, y2 = min(width, x2 + padding), min(height, y2 + padding)
+            crop = image[y1:y2, x1:x2]
+            if crop.size == 0:
+                crop = np.zeros((tile_size, tile_size, 3), dtype=np.uint8)
+            else:
+                side = max(crop.shape[:2])
+                top = (side - crop.shape[0]) // 2
+                bottom = side - crop.shape[0] - top
+                left = (side - crop.shape[1]) // 2
+                right = side - crop.shape[1] - left
+                crop = cv2.copyMakeBorder(
+                    crop,
+                    top,
+                    bottom,
+                    left,
+                    right,
+                    cv2.BORDER_REPLICATE,
+                )
+                crop = cv2.resize(
+                    crop,
+                    (tile_size, tile_size),
+                    interpolation=cv2.INTER_CUBIC,
+                )
+            cv2.putText(
+                crop,
+                str(index),
+                (8, 34),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (255, 40, 40),
+                3,
+                cv2.LINE_AA,
+            )
+            tiles.append(crop)
+        sheet_rows = int(math.ceil(len(tiles) / columns))
+        sheet = np.full(
+            (sheet_rows * tile_size, columns * tile_size, 3),
+            245,
+            dtype=np.uint8,
+        )
+        for index, tile in enumerate(tiles):
+            row, column = divmod(index, columns)
+            sheet[
+                row * tile_size:(row + 1) * tile_size,
+                column * tile_size:(column + 1) * tile_size,
+            ] = tile
+        path = workdir / f"orbit_identity_{sequence:04d}_{view}.png"
+        write_image_atomic(path, cv2.cvtColor(sheet, cv2.COLOR_RGB2BGR))
+        system = (
+            "The first tile is the complete scene; remaining tiles are enlarged "
+            "numbered candidate crops. Select the exact requested grocery "
+            "product. Require the expected package shape plus visible label or "
+            "package graphics; color or shape alone is insufficient. Return one "
+            "JSON object only: "
+            '{"index": <integer or null>, "confidence": <0-1>, '
+            '"visible_evidence": "<short visible evidence>", '
+            '"reason": "<short>"}.'
+        )
+        user = (
+            f"Target: {obj}. Expected package class: {package_query}. Inspect "
+            "every enlarged candidate and select only an exact visible match; "
+            "otherwise index must be null."
+        )
+        parsed = _parse_json(_call_vlm_image(model, system, user, path)) or {}
+        attempt["result"] = parsed
+        try:
+            confidence = float(parsed.get("confidence", 0.0))
+            index = int(parsed.get("index"))
+        except (TypeError, ValueError, OverflowError):
+            attempt["rejection"] = "no_valid_candidate_selection"
+            return
+        if not (0 <= index < len(candidates)):
+            attempt["rejection"] = "candidate_index_out_of_range"
+            return
+        selected = candidates[index]
+        evidence = " ".join(
+            str(parsed.get(key) or "")
+            for key in ("visible_evidence", "reason")
+        )
+        evidence_tokens = _query_tokens(evidence)
+        if (
+            confidence < min_confidence
+            or (distinctive and not distinctive.intersection(evidence_tokens))
+        ):
+            attempt["rejection"] = "insufficient_visible_identity_evidence"
+            return
+        world = frame.world_at(selected["u"], selected["v"])
+        if world is None:
+            attempt["rejection"] = "invalid_visible_depth"
+            return
+        row = {
+            "view": view,
+            "pixel": [selected["u"], selected["v"]],
+            "world": world,
+            "confidence": confidence,
+            "visible_evidence": parsed.get("visible_evidence"),
+            "exact_label": bool(
+                confidence >= exact_confidence
+                and distinctive
+                and distinctive.issubset(evidence_tokens)
+            ),
+        }
+        rows.append(row)
+        attempt["accepted"] = True
+        attempt["selected_index"] = index
+        attempt["world"] = world
+
+    def consensus_with_evidence() -> tuple[np.ndarray, str] | None:
+        consensus = _select_orbit_consensus(rows)
+        if consensus is not None:
+            support = [
+                row
+                for row in rows
+                if float(
+                    np.linalg.norm(
+                        np.asarray(row["world"], dtype=float) - consensus
+                    )
+                )
+                <= 0.08
+            ]
+            covered = set().union(
+                *(
+                    _query_tokens(str(row.get("visible_evidence") or ""))
+                    for row in support
+                )
+            )
+            if not distinctive or distinctive.issubset(covered):
+                return consensus, "orbit-consensus->head-sam"
+        exact_rows = [row for row in rows if row.get("exact_label") is True]
+        if len(exact_rows) == 1:
+            return (
+                np.asarray(exact_rows[0]["world"], dtype=float),
+                "orbit-exact-label->head-sam",
+            )
+        return None
+
+    for view in ("orbit_front", "orbit_left", "orbit_right"):
+        query_view(view)
+    resolved = consensus_with_evidence()
+    if resolved is None:
+        for view in ("orbit_back", "orbit_top"):
+            query_view(view)
+        resolved = consensus_with_evidence()
+    setattr(state, "_orbit_identity_evidence", rows)
+    setattr(state, "_orbit_identity_attempts", attempts)
+    if resolved is None:
+        return None
+    consensus, source = resolved
+    projected = _project_world_to_head_pixel(state.env, consensus)
+    if projected is None:
+        return None
+    refined = _sam_refine_point(state, projected)
+    if refined is None:
+        return None
+    setattr(state, "_last_localization_source", source)
+    return refined
+
+
 def local_vlm_point(state, obj: str):
     """Point at `obj` via the LOCAL VLM pointing service (ZMQ, Qwen2.5-VL). The VLM
     reads the full referring expression ("the bowl between the plate and the
@@ -868,9 +1323,22 @@ def _load_owlv2():
     import torch
     from transformers import Owlv2ForObjectDetection, Owlv2Processor
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    _OWLV2["proc"] = Owlv2Processor.from_pretrained("google/owlv2-large-patch14-ensemble")
+    model_name = os.environ.get(
+        "ROBORSI_OWLV2_MODEL",
+        "google/owlv2-large-patch14-ensemble",
+    )
+    local_only = (
+        os.environ.get("HF_HUB_OFFLINE") == "1"
+        or os.environ.get("TRANSFORMERS_OFFLINE") == "1"
+    )
+    _OWLV2["proc"] = Owlv2Processor.from_pretrained(
+        model_name,
+        local_files_only=local_only,
+    )
     _OWLV2["mod"] = Owlv2ForObjectDetection.from_pretrained(
-        "google/owlv2-large-patch14-ensemble").to(dev).eval()
+        model_name,
+        local_files_only=local_only,
+    ).to(dev).eval()
     _OWLV2["dev"] = dev
     return _OWLV2
 
@@ -1090,6 +1558,14 @@ def localize_precise(state, obj: str, route: str = "vlm_sam"):
             transport_exc = exc
 
     point_query = _semantic_point_query(obj)
+    if _requires_orbit_product_identity(obj):
+        try:
+            orbit_uv = _orbit_product_identity_point(state, obj)
+        except Exception as exc:  # noqa: BLE001
+            remember(exc)
+            orbit_uv = None
+        if orbit_uv is not None:
+            return orbit_uv
 
     # vlm_sam: first accept agreement between two independent semantic pointers.
     # Otherwise combine both with detector candidates and ask a separate
