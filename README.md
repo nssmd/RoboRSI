@@ -98,6 +98,19 @@ Run rows are marked `run_mode=eval`; evaluation datasets live separately under
 `~/.roborsi/evals/`. Each invocation also writes a campaign manifest, and
 infrastructure errors are reported separately rather than counted as failures.
 
+Run a resumable LIBERO short-suite task-level pass@5 evaluation with:
+
+```bash
+roborsi eval-suite \
+  --backend libero-pro \
+  --pass-at 5 \
+  --workers 4 \
+  --out ~/.roborsi/evals/libero-pro-pass5
+```
+
+The output directory pins the task panel, seeds, role models, tool budget, and
+retry policy in `campaign.json`; incompatible resumes are rejected.
+
 `roborsi bench skill ...` uses frozen `eval` mode by default. See
 [Frozen evaluation](./docs/EVALUATION.md) for the complete boundary.
 
@@ -108,9 +121,13 @@ infrastructure errors are reported separately rather than counted as failures.
 RoboRSI is built so the numbers can't lie to you:
 
 - **Success is judged by the simulator's own `check_success` predicate**, never the model's own "I'm done" claim.
+- **The predicate is evaluated only after the Agent tool loop**; per-action
+  rewards, success flags, object-state observations, and the final predicate are
+  not exposed through the LIBERO skill interface.
 - **No physics overrides** — no `expert_replay`, no force-attach/teleport, no hard-coded answers. The Engineer reads live coordinates from the scene every time.
 - **Demos are recorded only when the predicate genuinely passes**, so a saved demo means the task was physically completed.
-- **Human-in-the-loop review** gates every self-evolution proposal (harness gate + similarity de-dup + code review).
+- **Generated policy code is capability-limited** to literal calls into the released public skill surface; it cannot read `state.env`, simulator internals, files, processes, or networks.
+- **Proposal validation is enforced twice**: before automatic validation and again immediately before code is written.
 
 ---
 
@@ -142,6 +159,15 @@ or follow the guides:
 - [Non-Docker Installation](./docs/INSTALLATION.md)
 - [Docker Installation](./docs/DOCKERINSTALLATION.md)
 - [Architecture deep-dive](./docs/architecture.md)
+
+Start the local interfaces after installation:
+
+```bash
+roborsi web
+```
+
+The evolution dashboard is served on `http://127.0.0.1:8787` and the Manager
+session cockpit on `http://127.0.0.1:8795`.
 
 ---
 

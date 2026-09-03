@@ -56,6 +56,7 @@ from roborsi.embodied.agent_loop.env import (
     Env,
     Observation,
     Rollout,
+    Step,
 )
 
 # Camera mapping: robosuite obs key (``<cam>_image``) -> Observation.images key.
@@ -141,12 +142,33 @@ def _extract_state(obs: dict[str, Any]) -> Any:
     return np.concatenate(parts) if parts else None
 
 
-def _to_sim_obs(raw: dict[str, Any] | None, instruction: str) -> Observation:
+def _visible_raw_obs(raw: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep only camera/depth and robot-proprioception keys.
+
+    This is a defense-in-depth boundary in case an upstream LIBERO build
+    ignores ``use_object_obs=False`` or adds object observations later.
+    """
     if not isinstance(raw, dict):
+        return {}
+    camera_keys = {
+        f"{camera}_{suffix}"
+        for camera in _CAMERA_ALIASES
+        for suffix in ("image", "depth")
+    }
+    return {
+        key: value
+        for key, value in raw.items()
+        if key.startswith("robot0_") or key in camera_keys
+    }
+
+
+def _to_sim_obs(raw: dict[str, Any] | None, instruction: str) -> Observation:
+    visible = _visible_raw_obs(raw)
+    if not visible:
         return Observation()
     return Observation(
-        images=_extract_images(raw),
-        state=_extract_state(raw),
+        images=_extract_images(visible),
+        state=_extract_state(visible),
         timestamp=time.time(),
         extras={"instruction": instruction},
     )
@@ -216,8 +238,8 @@ class LiberoProEnv(Env):
         raw = self._env.set_init_state(self._init_states[idx])
         for _ in range(self._settle_steps):
             raw, _, _, _ = self._env.step(_NOOP_ACTION)
-        self._raw = raw if isinstance(raw, dict) else {}
-        self._last_obs = _to_sim_obs(raw, self.instruction)
+        self._raw = _visible_raw_obs(raw)
+        self._last_obs = _to_sim_obs(self._raw, self.instruction)
         self._terminated = False
         self._vframes = []
         return self._last_obs
@@ -227,37 +249,35 @@ class LiberoProEnv(Env):
         (dx,dy,dz,droll,dpitch,dyaw,gripper). ``action_type`` is accepted for
         interface parity; LIBERO consumes the controller-space vector directly.
 
-        Once the underlying episode has terminated (task success or horizon),
-        robosuite refuses further steps — servo loops that overshoot would then
-        crash. We short-circuit to a no-op terminal Step so they unwind cleanly;
-        callers should stop on ``Step.done``.
+        Task success is deliberately not checked here. The Harness evaluates
+        the simulator predicate once, after the Agent tool loop has ended.
         """
         import numpy as np
-        from roborsi.embodied.agent_loop.env import Step
         if self._terminated or bool(getattr(self._env.env, "done", False)):
             self._terminated = True
             return Step(obs=self._last_obs or Observation(), action=action,
                         reward=0.0, done=True,
-                        info={"success": bool(self._env.check_success()),
-                              "terminated": True})
+                        info={"terminated": True})
         self._bind_gl_context()            # render on the CALLING thread's context
-        raw, reward, done, info = self._env.step(
+        raw, _reward, done, info = self._env.step(
             np.asarray(action, dtype=np.float64).flatten()
         )
-        success = bool(self._env.check_success())
-        self._raw = raw if isinstance(raw, dict) else {}
-        self._last_obs = _to_sim_obs(raw, self.instruction)
-        info = dict(info or {})
-        info["success"] = success
-        self._terminated = bool(done) or success
+        self._raw = _visible_raw_obs(raw)
+        self._last_obs = _to_sim_obs(self._raw, self.instruction)
+        info = {
+            key: value
+            for key, value in dict(info or {}).items()
+            if key.lower() not in {"success", "is_success", "task_success"}
+        }
+        self._terminated = bool(done)
         if self._tick_cb is not None:      # feed the rollout's demo-video frame capture
             self._tick_cb()
         self._capture_frame()              # buffer head frame for the success mp4
         return Step(
             obs=self._last_obs,
             action=action,
-            reward=float(reward),
-            done=bool(done) or success,
+            reward=0.0,
+            done=bool(done),
             info=info,
         )
 
@@ -325,31 +345,12 @@ class LiberoProEnv(Env):
     # ── Data accessors for base/libero skills (encapsulate the robosuite env) ──
 
     def raw_obs(self) -> dict[str, Any]:
-        """The last robosuite obs dict — ground-truth EE/object poses,
-        joint state and depth/RGB. Base skills read poses from here rather than
-        reaching through ``env._env``. Populated on every reset/step."""
+        """Last robot-proprioception and camera/depth observation.
+
+        ``make_env`` disables LIBERO object observations, so this mapping does
+        not contain simulator object poses.
+        """
         return self._raw
-
-    def parsed_problem(self) -> dict[str, Any]:
-        """The BDDL-parsed problem: objects, obj_of_interest, goal_state,
-        regions, language_instruction. Used by describe_scene to enumerate the
-        scene's real object names."""
-        return self._env.env.parsed_problem
-
-    def region_box(self, region_name: str):
-        """World-frame acceptance box ``(center[3], half[3])`` of a named site
-        region (e.g. ``basket_1_contain_region``), or None if absent. Mirrors
-        exactly LIBERO's ``SiteObject.in_box`` extent (``|site_mat @ size|``) so a
-        placer can aim for the region the success predicate actually tests."""
-        import numpy as np
-        inner = self._env.env
-        sim = inner.sim
-        if region_name not in sim.model.site_names:
-            return None
-        pos = np.asarray(sim.data.get_site_xpos(region_name), dtype=float)
-        mat = np.asarray(sim.data.get_site_xmat(region_name), dtype=float).reshape(3, 3)
-        half = np.abs(mat @ np.asarray(inner.get_object(region_name).size, dtype=float))
-        return pos, half
 
     def robot_base_pos(self):
         """World XYZ of the Franka base. The arm has no motion planner, so a
@@ -498,6 +499,8 @@ class LiberoProBackend(Backend):
         env = OffScreenRenderEnv(
             bddl_file_name=bddl,
             controller="JOINT_POSITION",   # Jacobian-IK servo (LiberoControl); OSC wedged at joint limits
+            ignore_done=True,
+            use_object_obs=False,
             camera_heights=cam_h,
             camera_widths=cam_w,
             camera_depths=cfg.get("camera_depths", True),  # enables unproject/pixel skills

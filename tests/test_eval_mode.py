@@ -18,6 +18,35 @@ from roborsi.runtime_mode import (
 )
 
 
+def _fake_backend(instruction: str = "perform the visible task"):
+    class Env:
+        backend_name = "libero-pro"
+
+        def __init__(self):
+            self.instruction = instruction
+
+        def reset(self, _seed):
+            return SimpleNamespace(extras={"instruction": instruction})
+
+        def close(self):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    class Backend:
+        def available(self):
+            return True, ""
+
+        def make_env(self, _task, _config):
+            return Env()
+
+    return Backend()
+
+
 def test_run_mode_context_is_scoped(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ROBORSI_RUN_MODE", raising=False)
     assert current_mode() is RunMode.EVOLVE
@@ -89,6 +118,15 @@ def test_engineer_code_introspection_is_limited_to_public_base_skills() -> None:
     assert "not visible" in hidden["reason"]
     assert atomic["ok"] is False
     assert "public base skill" in atomic["reason"]
+
+
+def test_libero_detector_does_not_enumerate_simulator_object_names() -> None:
+    from roborsi.embodied.skills.base._lib.libero import _perception
+
+    source = Path(_perception.__file__).read_text(encoding="utf-8")
+    assert "scene_object_names" not in source
+    assert "scene_candidates" not in source
+    assert "env.raw_obs()" not in source
 
 
 def test_eval_outer_tool_surface_removes_unsafe_entrypoints() -> None:
@@ -250,6 +288,55 @@ def test_eval_reviewer_suppresses_proposal(
     assert not workspace.proposal_link_path.exists()
 
 
+def test_reviewer_does_not_receive_final_simulator_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from roborsi.agents import persistent_agent
+    from roborsi.agents import reviewer as reviewer_module
+
+    workspace = Workspace(task="demo", run_id="r0", root=tmp_path)
+    workspace.write_plan("# plan\n")
+    workspace.write_summary(
+        "# Engineer Summary\n\n**Agent completion claim**: `True`\n"
+    )
+    seen: dict[str, str] = {}
+
+    def fake_role(_role, _task, user_block, **_kwargs):
+        seen["prompt"] = user_block
+        return json.dumps({
+            "verdict": "done",
+            "root_cause": "",
+            "next_action": "",
+            "proposal_decision": "NO_PROPOSAL",
+            "review_md": "visible evidence only",
+        })
+
+    monkeypatch.setattr(persistent_agent, "run_role", fake_role)
+    monkeypatch.setattr(reviewer_module, "_task_history_block", lambda _task: "(none)")
+    monkeypatch.setattr(reviewer_module, "_gate_log_for_run", lambda _run: [])
+
+    reviewer_module.Reviewer(allow_evolution=False).review(
+        workspace=workspace,
+        engineer_result={
+            "success": True,
+            "outcome": "predicate_passed_without_done",
+            "tool_calls": 1,
+            "trace": [{"tool_call": {"tool": "look", "args": {}}}],
+            "rollout_meta": {
+                "vlm_declared": True,
+                "predicate_check": True,
+            },
+        },
+        run_id="r0",
+    )
+
+    assert "agent_completion_claim=True" in seen["prompt"]
+    assert "predicate_check" not in seen["prompt"]
+    assert "predicate_passed_without_done" not in seen["prompt"]
+    assert "success=True" not in seen["prompt"]
+
+
 def test_eval_uses_stateless_role_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -358,6 +445,72 @@ def test_eval_mode_propagates_into_tool_worker_thread(
     assert result["mode"] == "eval"
 
 
+def test_usage_metrics_count_each_provider_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import litellm
+
+    from roborsi.embodied.agent_loop import vlm_io
+
+    calls = 0
+
+    def fake_completion(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("transient timeout")
+        return SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=11,
+                completion_tokens=7,
+                total_tokens=18,
+            ),
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="ok"),
+                )
+            ],
+        )
+
+    def immediate_retry(fn):
+        try:
+            return fn()
+        except TimeoutError:
+            return fn()
+
+    monkeypatch.setattr(litellm, "completion", fake_completion)
+    monkeypatch.setattr(vlm_io, "_retry_litellm", immediate_retry)
+
+    with vlm_io.capture_usage() as usage:
+        assert vlm_io._call_vlm("test/model", []) == "ok"
+
+    assert usage.vlm_calls == 2
+    assert usage.metered_calls == 1
+    assert usage.unmetered_calls == 1
+    assert usage.prompt_tokens == 11
+    assert usage.completion_tokens == 7
+    assert usage.total_tokens == 18
+
+
+def test_tool_timing_is_grouped_for_efficiency_reports() -> None:
+    from roborsi.agents.engineer import _summarize_tool_timing
+
+    timing = _summarize_tool_timing([
+        {"timing_phase": "perception", "wallclock_s": 1.25},
+        {"timing_phase": "action", "wallclock_s": 2.5},
+        {"timing_phase": "recovery", "wallclock_s": 0.75},
+        {"timing_phase": "other", "wallclock_s": 0.1},
+    ])
+
+    assert timing == {
+        "perception_s": 1.25,
+        "action_s": 2.5,
+        "recovery_s": 0.75,
+        "other_s": 0.1,
+        "tool_total_s": 4.6,
+    }
+
+
 def test_atomic_eval_runner_skips_writeback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -401,6 +554,10 @@ def test_atomic_eval_runner_skips_writeback(
     monkeypatch.setattr(
         "roborsi.agents.atomic_backend.resolve",
         lambda _task: SimpleNamespace(backend_name="robotwin", sim_task="demo"),
+    )
+    monkeypatch.setattr(
+        "roborsi.embodied.agent_loop.get_backend",
+        lambda _name: _fake_backend(),
     )
     monkeypatch.setattr(trace_db, "insert_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(trace_db, "update_run", lambda *args, **kwargs: None)
@@ -464,6 +621,10 @@ def test_atomic_eval_preserves_sim_verdict_when_reviewer_is_unavailable(
     monkeypatch.setattr(
         "roborsi.agents.atomic_backend.resolve",
         lambda _task: SimpleNamespace(backend_name="robotwin", sim_task="demo"),
+    )
+    monkeypatch.setattr(
+        "roborsi.embodied.agent_loop.get_backend",
+        lambda _name: _fake_backend(),
     )
     monkeypatch.setattr(trace_db, "insert_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(trace_db, "update_run", lambda *args, **kwargs: None)
@@ -532,6 +693,13 @@ def test_eval_cli_runs_all_requested_seeds(
     assert summary["seeds_passed"] == 1
     assert seen == [(4, RunMode.EVAL), (5, RunMode.EVAL)]
     assert Path(summary["manifest_path"]).exists()
+
+
+def test_web_cli_is_exposed() -> None:
+    result = CliRunner().invoke(app, ["web", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "--evo-port" in result.output
+    assert "--cockpit-port" in result.output
 
 
 def test_eval_cli_excludes_infra_from_success_denominator(

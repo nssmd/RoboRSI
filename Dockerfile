@@ -14,27 +14,29 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-# Install Python dependencies first (cached layer)
-COPY pyproject.toml README.md LICENSE ./
-RUN mkdir -p roborsi bridge && touch roborsi/__init__.py && \
-    uv pip install --system --no-cache . && \
-    rm -rf roborsi bridge
-
-# Copy the full source and install
+# The project depends on the vendored LeRobot tree, so copy the complete source
+# before installation. Installing from a metadata-only layer would leave the
+# local path dependency unresolved in a clean Docker build.
+COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY roborsi/ roborsi/
 COPY bridge/ bridge/
-RUN uv pip install --system --no-cache .
+COPY frontend/web/ frontend/web/
+RUN uv pip install --system --no-cache ".[web]"
 
 # Build the WhatsApp bridge
 WORKDIR /app/bridge
+RUN npm install && npm run build
+
+# Build the Manager session cockpit.
+WORKDIR /app/frontend/web
 RUN npm install && npm run build
 WORKDIR /app
 
 # Create config directory
 RUN mkdir -p /root/.roborsi
 
-# Gateway default port
-EXPOSE 18790
+# Evolution dashboard and Manager session cockpit.
+EXPOSE 8787 8795
 
 ENTRYPOINT ["roborsi"]
 CMD ["status"]

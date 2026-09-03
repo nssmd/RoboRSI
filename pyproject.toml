@@ -94,6 +94,7 @@ allow-direct-references = true
 [tool.hatch.build]
 include = [
     "roborsi/**/*.py",
+    "roborsi/frontend/tui/**/*",
     "roborsi/templates/**/*.md",
     "roborsi/skills/**/*.md",
     "roborsi/skills/**/*.sh",
@@ -112,6 +113,8 @@ packages = ["roborsi"]
 include = [
     "roborsi/",
     "bridge/",
+    "frontend/web/",
+    "scripts/",
     "README.md",
     "LICENSE",
 ]
@@ -134,4 +137,6 @@ markers = [
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0,<2.0.0",
+    "ruff>=0.16.0",
 ]

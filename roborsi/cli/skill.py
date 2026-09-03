@@ -89,7 +89,10 @@ def run_cmd(
     try:
         result = run(name, **kwargs)
     except (ValueError, RuntimeError) as exc:
-        _emit({"ok": False, "error": str(exc)}, as_json, human_renderer=lambda: console.print(f"[red]✗[/] {exc}"))
+        if as_json:
+            _emit({"ok": False, "error": str(exc)}, as_json=True)
+        else:
+            console.print(f"[red]✗[/] {exc}")
         raise typer.Exit(1)
     _emit({"ok": True, "result": result}, as_json, human_renderer=lambda: console.print_json(data=result))
 

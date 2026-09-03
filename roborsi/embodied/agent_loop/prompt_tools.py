@@ -199,11 +199,11 @@ def _maybe_shortlist_skills(instruction: str, task_name: str,
         # Engineer skips among the crowd even at ~44 active (verified: it picks
         # pick_actor_by_contact_point + grasp_then_lift_graspgen for a bowl). Only
         # bypass when the registry is tiny (nothing to narrow).
-        if _count_active_skills() < 12:
+        if _count_active_skills(ns) < 12:
             return None
         picked = SkillSelector().pick(
             plan_md=instruction, recent_results=[],
-            skill_index=_build_skill_index(),
+            skill_index=_build_skill_index(ns),
             scene_hint=f"task={task_name} seed={seed}",
             success_counts=get_success_counts(task_name))
         if not picked:
@@ -364,6 +364,9 @@ def _build_tool_specs(ns: str = "robotwin", task: str = "") -> list[dict[str, An
             "name": "propose_new_skill",
             "description": ("Propose a brand-new base skill. `code` MUST be "
                              "complete valid Python (full policy.py drop-in). "
+                             "Generated code may only compose literal public "
+                             "skills through `_dispatch_tool`; it cannot read "
+                             "`state.env` or backend internals. "
                              "`skill_md` MUST include YAML frontmatter with a "
                              "`harness:` block (sim_task + args + pass_criteria). "
                              "Goes to skill_review/ for Claude 3-gate approval; "
@@ -382,7 +385,9 @@ def _build_tool_specs(ns: str = "robotwin", task: str = "") -> list[dict[str, An
             "name": "propose_skill_update",
             "description": ("Propose updating an existing skill. `new_code` "
                              "MUST be complete valid Python (full policy.py "
-                             "replacement, NOT a diff or TODO). Goes to "
+                             "replacement, NOT a diff or TODO) and may only "
+                             "compose literal public skills through "
+                             "`_dispatch_tool`; no `state.env`. Goes to "
                              "skill_review/ for Claude approval."),
             "parameters": {"type": "object",
                 "properties": {"name": {"type": "string"},

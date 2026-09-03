@@ -104,6 +104,15 @@ Decide ONE outcome and emit a single JSON object. Schema:
     auto-rejected AND flagged as a cheat attempt. Grabbing ground truth is the
     single most common way this loop fails; do not do it.
 
+(D) GENERATED POLICY CAPABILITY BOUNDARY:
+    Agent-authored policy.py code is a composition layer, not a privileged
+    backend extension. It may import only `_dispatch_tool` from
+    `roborsi.embodied.agent_loop.rollout`, call it with literal public skill
+    names, and return the Observation from the final call. It must never read
+    `state.env`, alias or reflect on `state`, import simulator/helper internals,
+    access files/processes/networks, or choose a tool name dynamically. The
+    validator and final apply path both enforce this boundary.
+
 
 Rules:
   - Default proposal_decision to NO_PROPOSAL. Only propose when you can cite a
@@ -153,7 +162,7 @@ CRITICAL — new_code / skill_md CONTENT FORMAT:
   237-line implementation gets wiped.
 
   GOOD `new_code` (acceptable):
-    "from __future__ import annotations\\n\\ndef dispatch_runtime(state, args):\\n    arm = args.get('arm')\\n    # ... full working implementation ...\\n    return ({'ok': True, ...}, obs)\\n"
+    "from roborsi.embodied.agent_loop.rollout import _dispatch_tool\\n\\ndef dispatch_runtime(state, args):\\n    result, obs = _dispatch_tool(state, 'look', {'camera': 'head_camera'})\\n    return ({'ok': bool(result.get('ok')), 'detail': result}, obs)\\n"
 
   BAD `new_code` (REJECTED on sight):
     "# Add: fallback to mesh rim sampling when contact_point is None"
@@ -608,7 +617,11 @@ def _parse_verdict(text: str) -> dict:
 class Reviewer:
     """Reads workspace + trace + gate_log; writes review.md; optional propose."""
 
-    DEFAULT_MODEL = "anthropic/claude-opus-4-8"
+    DEFAULT_MODEL = (
+        os.environ.get("ROBORSI_REVIEWER_MODEL")
+        or os.environ.get("ROBORSI_VLM_MODEL")
+        or "anthropic/claude-opus-4-8"
+    )
 
     def __init__(self, model: str | None = None,
                  filter_mode: str | None = None,
@@ -640,13 +653,13 @@ class Reviewer:
         summary_md = workspace.read_summary()
         trace = engineer_result.get("trace") or []
         gate_log = _gate_log_for_run(run_id) if run_id else []
+        rollout_meta = engineer_result.get("rollout_meta") or {}
 
         user_block = (
             f"=== plan.md ===\n{plan_md}\n\n"
             f"=== summary.md ===\n{summary_md}\n\n"
             f"=== ENGINEER RESULT ===\n"
-            f"success={engineer_result.get('success')} "
-            f"outcome={engineer_result.get('outcome')} "
+            f"agent_completion_claim={bool(rollout_meta.get('vlm_declared'))} "
             f"tool_calls={engineer_result.get('tool_calls')}\n\n"
             f"=== PRIOR HISTORY (this task, across runs — you are a SESSION) ===\n"
             f"{_task_history_block(workspace.task)}\n\n"
@@ -724,6 +737,11 @@ class Reviewer:
                     from roborsi.agents.validator import ProposalValidator
                     proposal_full = dict(payload)
                     proposal_full["id"] = pid
+                    proposal_full["category"] = (
+                        f"base/{self._active_ns}"
+                        if self._active_ns != "robotwin"
+                        else payload.get("category", "base/robotwin")
+                    )
                     rep = ProposalValidator().validate(proposal_full)
                     review["validation_report"] = rep.to_dict()
                     self._attach_validation_to_skill_review(pid, rep.to_dict())

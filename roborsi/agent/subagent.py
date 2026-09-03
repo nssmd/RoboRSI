@@ -14,7 +14,7 @@ from roborsi.agent.tools.registry import ToolRegistry
 from roborsi.agent.tools.shell import ExecTool
 from roborsi.agent.tools.web import WebFetchTool, WebSearchTool
 from roborsi.channels.base import InboundMessage
-from roborsi.config.schema import ExecToolConfig
+from roborsi.config.schema import ExecToolConfig, WebSearchConfig
 from roborsi.providers.base import LLMProvider
 from roborsi.utils.helpers import build_assistant_message
 
@@ -33,8 +33,6 @@ class SubagentManager:
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
     ):
-        from roborsi.config.schema import ExecToolConfig, WebSearchConfig
-
         self.provider = provider
         self.workspace = workspace
         self.announce = announce

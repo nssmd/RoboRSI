@@ -4,19 +4,18 @@ kind: base
 robot: libero
 category: perception
 version: 0.1.0
-description: Check whether the gripper is currently holding an object, judged by object-to-end-effector proximity (a grasped object sits at the fingertips). The gripper opening alone is unreliable on LIBERO.
+description: Estimate whether the gripper is holding an object from the Panda finger opening. Returns the raw gap because thin objects can be ambiguous.
 args:
-  object: { type: string, description: "(optional) expected held object name. If omitted, reports whether ANY object is at the fingertips." }
+  object: { type: string, description: "Optional expected-object label, retained in the result for trace readability; it does not change the proprioceptive check." }
 returns:
   ok: bool
   holding: bool
-  to_eef: float
   gripper_gap: float
 when_to_use: |
-  After a grasp to confirm success before transporting, or during recovery to
-  decide whether to re-grasp.
+After a grasp as a proprioceptive signal before transporting, or during
+recovery. For thin objects, combine the raw gap with visible scene evidence.
 ---
 
 # is_holding
 
-Grasp-state check from the gripper opening (+ optional object proximity).
+Grasp-state estimate from the gripper opening. It does not read object pose.

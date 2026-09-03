@@ -6,7 +6,6 @@ import json
 import shutil
 from pathlib import Path
 
-from fastapi import HTTPException
 from loguru import logger
 
 
@@ -25,7 +24,7 @@ def resolve_dataset_path(name: str) -> Path:
     """
     root = datasets_root()
     if not root.exists():
-        raise HTTPException(status_code=404, detail=f"Datasets root '{root}' does not exist")
+        raise FileNotFoundError(f"Datasets root '{root}' does not exist")
     resolved_root = root.resolve()
 
     def _is_safe(path: Path) -> bool:
@@ -41,7 +40,7 @@ def resolve_dataset_path(name: str) -> Path:
         if parent.is_dir() and _is_safe(candidate):
             return candidate.resolve()
 
-    raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
+    raise FileNotFoundError(f"Dataset '{name}' not found")
 
 
 # ---------------------------------------------------------------------------

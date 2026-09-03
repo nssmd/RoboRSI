@@ -1082,6 +1082,9 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
                        channel, ctx, tool_budget: int = 40,
                        backend_name: str | None = None,
                        sim_task: str | None = None,
+                       planner_model: str | None = None,
+                       engineer_model: str | None = None,
+                       reviewer_model: str | None = None,
                        return_details: bool = False) -> str | dict[str, Any]:
     """Run Planner → Engineer → Reviewer pipeline for one atomic.
     Returns the user-facing reply text."""
@@ -1110,45 +1113,86 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
     resolved_sim_task = sim_task or ab.sim_task
     ns = _skill_namespace(resolved_backend)
 
-    # 1. Planner writes plan.md
-    reflections_text = _read_recent_reflections(n=5)
-    from roborsi.agents.gt_firewall import redact as _redact_gt
-    reflections_text, _ = _redact_gt(atomic, reflections_text)
-    planner = Planner()
-    planner_model = getattr(planner, "model", None)
-    t0 = _t.time()
-    print(f"[3role] 🧠 Planner planning {atomic} (ns={ns}) ...", flush=True)
-    mission_spec = planner.plan(
-        task=atomic, user_msg=text,
-        recent_reflections=reflections_text, workspace=workspace, ns=ns,
-    )
-    print(f"[3role] 🧠 Planner goal: {str(mission_spec.get('goal',''))[:200]}",
-          flush=True)
-    for _i, _sg in enumerate(mission_spec.get("sub_goals", [])[:8]):
-        print(f"[3role]      {_i+1}. {str(_sg)[:150]}", flush=True)
-    planner_wallclock_s = _t.time() - t0
-    sess.append("3role_planned", t=planner_wallclock_s,
-                 sub_goals=mission_spec.get("sub_goals", [])[:3])
-
-    # 2. Engineer drives sim (owns env lifecycle) on the resolved backend/task.
+    # Open and reset the environment before planning. LIBERO task language is
+    # selected by the BDDL/task variant at runtime, so a Planner that runs
+    # before reset only sees the generic atomic name and plans the wrong task.
+    from roborsi.embodied.agent_loop import get_backend
+    backend = get_backend(resolved_backend)
+    backend_ok, backend_reason = backend.available()
+    if not backend_ok:
+        raise RuntimeError(
+            f"backend '{resolved_backend}' unavailable: {backend_reason}"
+        )
     print(f"[3role] 🎛️  backend={resolved_backend} sim_task={resolved_sim_task}",
           flush=True)
-    engineer = Engineer()
-    engineer_model = getattr(engineer, "model", None)
-    t0 = _t.time()
-    eng_result = engineer.execute(
-        mission_spec=mission_spec, workspace=workspace,
-        # 40 (was 24): multi-step precise atomics (adjust_bottle: place-down→
-        # regrasp-from-top→stand→verify) spend ~half the budget on perception/IK
-        # probing and never reach the action chain → budget_exceeded. Matches the
-        # LH sub-atomic budget. NOTE: raises the ceiling, doesn't cure the churn.
-        seed=seed, tool_budget=tool_budget,
-        backend_name=resolved_backend, sim_task=resolved_sim_task,
-    )
-    engineer_wallclock_s = _t.time() - t0
-    sess.append("3role_executed", t=engineer_wallclock_s,
-                 success=eng_result["success"],
-                 outcome=eng_result["outcome"])
+    with backend.make_env(
+        resolved_sim_task,
+        {"require_depth": True},
+    ) as active_env:
+        initial_obs = active_env.reset(seed)
+        task_instruction = str(
+            getattr(active_env, "instruction", "")
+            or (getattr(initial_obs, "extras", {}) or {}).get("instruction", "")
+            or ""
+        ).strip()
+        sess.append(
+            "3role_environment_ready",
+            backend=resolved_backend,
+            sim_task=resolved_sim_task,
+            has_task_instruction=bool(task_instruction),
+        )
+
+        # 1. Planner writes plan.md from the actual runtime instruction.
+        reflections_text = _read_recent_reflections(n=5)
+        from roborsi.agents.gt_firewall import redact as _redact_gt
+        from roborsi.embodied.agent_loop.vlm_io import capture_usage, merge_usage
+        reflections_text, _ = _redact_gt(atomic, reflections_text)
+        planner_request = text
+        if task_instruction:
+            planner_request += (
+                "\n\n=== RUNTIME TASK INSTRUCTION ===\n"
+                f"{task_instruction}"
+            )
+        planner = Planner(model=planner_model) if planner_model else Planner()
+        resolved_planner_model = getattr(planner, "model", None)
+        t0 = _t.time()
+        print(f"[3role] 🧠 Planner planning {atomic} (ns={ns}) ...", flush=True)
+        with capture_usage() as planner_usage:
+            mission_spec = planner.plan(
+                task=atomic,
+                user_msg=planner_request,
+                recent_reflections=reflections_text,
+                workspace=workspace,
+                ns=ns,
+            )
+        print(f"[3role] 🧠 Planner goal: {str(mission_spec.get('goal',''))[:200]}",
+              flush=True)
+        for _i, _sg in enumerate(mission_spec.get("sub_goals", [])[:8]):
+            print(f"[3role]      {_i+1}. {str(_sg)[:150]}", flush=True)
+        planner_wallclock_s = _t.time() - t0
+        sess.append("3role_planned", t=planner_wallclock_s,
+                     sub_goals=mission_spec.get("sub_goals", [])[:3])
+
+        # 2. Engineer reuses the exact reset state the Planner was told about.
+        engineer = Engineer(model=engineer_model) if engineer_model else Engineer()
+        resolved_engineer_model = getattr(engineer, "model", None)
+        t0 = _t.time()
+        with capture_usage() as engineer_usage:
+            eng_result = engineer.execute(
+                mission_spec=mission_spec,
+                workspace=workspace,
+                seed=seed,
+                tool_budget=tool_budget,
+                backend_name=resolved_backend,
+                sim_task=resolved_sim_task,
+                env=active_env,
+                task_instruction=task_instruction,
+                reset_env=False,
+            )
+        engineer_wallclock_s = _t.time() - t0
+        sess.append("3role_executed", t=engineer_wallclock_s,
+                     success=eng_result["success"],
+                     outcome=eng_result["outcome"])
 
     # 2b. Persist a trace.db run row — the 3-role atomic path previously wrote
     # NOTHING to `runs` (only the old feishu run_task_sync + LH paths did), so
@@ -1169,24 +1213,35 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
             "predicate_check": _meta.get("predicate_check"),
             "tool_calls": eng_result.get("tool_calls"),
             "run_mode": run_mode,
+            "task_instruction": task_instruction,
+            "usage": {
+                "planner": planner_usage.to_dict(),
+                "engineer": engineer_usage.to_dict(),
+            },
+            "timing": eng_result.get("timing") or {},
             "planner_wallclock_s": planner_wallclock_s,
             "engineer_wallclock_s": engineer_wallclock_s,
         },
     )
 
     # 3. Reviewer reads everything, writes review.md (+ optional proposal)
-    reviewer = Reviewer(allow_evolution=can_evolve)
-    reviewer_model = getattr(reviewer, "model", None)
+    reviewer = (
+        Reviewer(model=reviewer_model, allow_evolution=can_evolve)
+        if reviewer_model
+        else Reviewer(allow_evolution=can_evolve)
+    )
+    resolved_reviewer_model = getattr(reviewer, "model", None)
     t0 = _t.time()
     print("[3role] 🔍 Reviewer reviewing the attempt ...", flush=True)
     reviewer_error = None
     try:
-        review = reviewer.review(
-            workspace=workspace,
-            engineer_result=eng_result,
-            run_id=None,
-            ns=ns,
-        )
+        with capture_usage() as reviewer_usage:
+            review = reviewer.review(
+                workspace=workspace,
+                engineer_result=eng_result,
+                run_id=workspace.run_id,
+                ns=ns,
+            )
     except Exception as exc:
         if can_evolve:
             raise
@@ -1204,6 +1259,16 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
             "**Proposal decision**: `NO_PROPOSAL`\n"
         )
         sess.append("3role_reviewer_error", text=reviewer_error)
+    usage = {
+        "planner": planner_usage.to_dict(),
+        "engineer": engineer_usage.to_dict(),
+        "reviewer": reviewer_usage.to_dict(),
+        "total": merge_usage(
+            planner_usage,
+            engineer_usage,
+            reviewer_usage,
+        ),
+    }
     reviewer_wallclock_s = _t.time() - t0
     total_wallclock_s = _t.time() - run_started_at
     sess.append("3role_reviewed", t=reviewer_wallclock_s,
@@ -1219,14 +1284,16 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
             "tool_calls": eng_result.get("tool_calls"),
             "run_mode": run_mode,
             "models": {
-                "planner": planner_model,
-                "engineer": engineer_model,
-                "reviewer": reviewer_model,
+                "planner": resolved_planner_model,
+                "engineer": resolved_engineer_model,
+                "reviewer": resolved_reviewer_model,
             },
             "planner_wallclock_s": planner_wallclock_s,
             "engineer_wallclock_s": engineer_wallclock_s,
             "reviewer_wallclock_s": reviewer_wallclock_s,
             "reviewer_error": reviewer_error,
+            "usage": usage,
+            "timing": eng_result.get("timing") or {},
             "total_wallclock_s": total_wallclock_s,
         },
     )
@@ -1256,16 +1323,22 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
             # Propose promoting this successful run's workspace plan into the
             # persistent (read-only) seed. Manager-gated via resolve_plan_promotion;
             # a no-op when the plan is identical to the seed.
-            from roborsi.embodied.skills.base.plan.robotwin.policy import (
-                get_active_plan,
-            )
-            _ap = get_active_plan()
+            if ns == "robotwin":
+                from roborsi.embodied.skills.base.plan.robotwin.policy import (
+                    get_active_plan,
+                )
+
+                active_plan = get_active_plan()
+            else:
+                active_plan = {}
             _enqueue_plan_promotion(
                 task=atomic, run_id=workspace.run_id,
                 workspace_plan_md=workspace.read_plan(),
                 rationale=review.get("root_cause", "") or eng_result.get("outcome", ""),
-                engineer_replanned=bool(_ap.get("is_revision")),
-                reason_for_revision=_ap.get("reason_for_revision", "") or "",
+                engineer_replanned=bool(active_plan.get("is_revision")),
+                reason_for_revision=(
+                    active_plan.get("reason_for_revision", "") or ""
+                ),
             )
         else:
             append_failure_trace(
@@ -1313,15 +1386,18 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
             "reviewer_verdict": review.get("verdict"),
             "proposal_decision": review.get("proposal_decision"),
             "reviewer_error": reviewer_error,
+            "usage": usage,
+            "timing": eng_result.get("timing") or {},
             "models": {
-                "planner": planner_model,
-                "engineer": engineer_model,
-                "reviewer": reviewer_model,
+                "planner": resolved_planner_model,
+                "engineer": resolved_engineer_model,
+                "reviewer": resolved_reviewer_model,
             },
             "planner_wallclock_s": planner_wallclock_s,
             "engineer_wallclock_s": engineer_wallclock_s,
             "reviewer_wallclock_s": reviewer_wallclock_s,
             "total_wallclock_s": total_wallclock_s,
+            "task_instruction": task_instruction,
             "video_path": _meta.get("demo_video"),
         }
     return reply

@@ -9,7 +9,7 @@ If you do not want Docker, use [INSTALLATION.md](./INSTALLATION.md).
 Start from a clean clone:
 
 ```bash
-git clone https://github.com/nssmd/robo-rsi.git
+git clone https://github.com/nssmd/RoboRSI.git
 cd RoboRSI
 ```
 
@@ -41,16 +41,18 @@ Check that:
 - `Workspace` is shown as `✓`
 - the current `Model` is correct
 
-## 6. Run the Agent
+## 6. Launch the Manager
 
 ```bash
-docker run -v ~/.roborsi:/root/.roborsi --rm roborsi agent -m "hello"
+docker run -it -v ~/.roborsi:/root/.roborsi --rm roborsi manager
 ```
 
-## 7. Run the Gateway
+## 7. Run the Web Interfaces
 
 ```bash
-docker run -v ~/.roborsi:/root/.roborsi -p 18790:18790 roborsi gateway
+docker run -v ~/.roborsi:/root/.roborsi \
+  -p 8787:8787 -p 8795:8795 \
+  roborsi web --host 0.0.0.0
 ```
 
 ## 8. Docker Compose
@@ -59,7 +61,7 @@ You can also use Docker Compose:
 
 ```bash
 docker compose run --rm roborsi-cli onboard     # first-time setup
-docker compose up -d roborsi-gateway             # start gateway
-docker compose run --rm roborsi-cli agent -m "Hello!"
-docker compose logs -f roborsi-gateway           # view logs
+docker compose up -d roborsi-web                 # start both Web interfaces
+docker compose run --rm roborsi-cli manager      # launch Manager
+docker compose logs -f roborsi-web
 ```

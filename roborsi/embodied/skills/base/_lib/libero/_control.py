@@ -63,7 +63,7 @@ class LiberoControl:
         self._adim = int(rs.action_dim)            # 8 for JOINT_POSITION (7 + gripper)
         self._scratch = None                       # lazily-created MjData for IK FK
 
-    # ── ground-truth reads ───────────────────────────────────────────────
+    # ── robot proprioception ─────────────────────────────────────────────
     def read_pose(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """(eef_pos[3], eef_quat[4] xyzw, gripper_qpos[2]) from the last obs."""
         obs = self.env.raw_obs()

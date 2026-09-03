@@ -75,7 +75,7 @@ def encourage_block(task: str, wiki_md: str) -> str:
         f"This task now has >= {_MIN_SUCCESS} STABLE Sim-verified successes and no\n"
         "compound policy yet. If you can distil the winning recipe into a reusable coded macro\n"
         "the Engineer would call in ONE tool call (composing base skills via\n"
-        "roborsi.embodied.skills._lib.solidified.pipeline), emit a proposal in\n"
+        "literal `_dispatch_tool(state, \"public_skill\", args)` calls), emit a proposal in\n"
         "EXACTLY this format at the END of your reply (or omit it entirely):\n"
         f"{_BEGIN}\n"
         "name: <lower_snake_case, e.g. pick_place>\n"
@@ -85,6 +85,9 @@ def encourage_block(task: str, wiki_md: str) -> str:
         f"{_SKILL_MARK}\n"
         "<YAML frontmatter (name/description/args/when_to_use) + a short body>\n"
         f"{_END}\n"
+        "The policy may import only `_dispatch_tool` from the rollout module. It must\n"
+        "return the Observation from its final tool call and must never read state.env,\n"
+        "simulator internals, files, processes, networks, or dynamically chosen tools.\n"
         "The Manager reviews it before it goes live. This is an ADDITIONAL block —\n"
         "do NOT alter your normal plan JSON/markdown output.\n\n"
     )

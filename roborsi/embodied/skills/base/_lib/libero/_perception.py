@@ -136,41 +136,26 @@ def _load_gdino_base():
     return _GDINO_BASE
 
 
-def scene_candidates(env) -> list[str]:
-    """Natural-language names of the scene's manipulable objects (names ONLY —
-    a legitimate perception vocabulary prior, NOT ground-truth poses). e.g.
-    'alphabet_soup_1' -> 'alphabet soup'."""
-    import re
-    out: list[str] = []
-    from roborsi.embodied.skills.base._lib.libero._helpers import scene_object_names
-    for n in scene_object_names(env.raw_obs()):
-        base = re.sub(r"_\d+$", "", n).replace("_", " ").strip()
-        if base and base not in out:
-            out.append(base)
-    return out
-
-
-def locate_by_candidates(env, rgb, target: str, scale: int = 2,
+def locate_by_candidates(_env, rgb, target: str, scale: int = 2,
                          box_thresh: float = 0.18):
-    """GroundingDINO-BASE prompted with the FULL scene candidate list → labelled
-    boxes → pick the box whose phrase best matches `target`. Constraining to the
-    known candidates turns open-ended 'find X' into DISCRIMINATION ('which of
-    these look-alikes is X'), which is exactly what tiny/VLM fail at on LIBERO
-    groceries. Image is upscaled `scale`× for the small 256px objects. Returns
-    (u, v) in native pixels or None."""
+    """GroundingDINO-BASE prompted only with the public target description.
+
+    The detector must infer candidates from pixels; simulator object-name keys
+    are deliberately unavailable. Returns ``(u, v)`` in native pixels or None.
+    """
     import re
     import cv2
     import torch
     from PIL import Image
-    cands = scene_candidates(env)
-    if not cands:
+    query = target.strip().lower()
+    if not query:
         return None
     g = _load_gdino_base()
     img = np.asarray(rgb).astype(np.uint8)
     up = cv2.resize(img, (img.shape[1] * scale, img.shape[0] * scale),
                     interpolation=cv2.INTER_CUBIC)
     pil = Image.fromarray(up)
-    text = ". ".join(c.lower() for c in cands) + "."
+    text = query + "."
     inp = g["proc"](images=pil, text=text, return_tensors="pt").to(g["dev"])
     with torch.no_grad():
         out = g["mod"](**inp)
@@ -214,19 +199,17 @@ def _load_owlv2():
     return _OWLV2
 
 
-def locate_by_owlv2(env, rgb, target: str, scale: int = 3, thresh: float = 0.05):
-    """OWLv2-large prompted with the scene candidate list → the highest-score box
-    whose query matches `target`. Runs on the 256px head frame upscaled `scale`×
-    (interpolated). NOTE: a genuine 512 render (sim.render) discriminates 1 object
-    better, but rendering >native res crashes the 3-role runtime's MjrContext
-    ("framebuffer not complete") — so we stay at the stable interpolated upscale.
-    Returns (u, v) in native pixels, or None if OWLv2 didn't detect it."""
-    import re
+def locate_by_owlv2(_env, rgb, target: str, scale: int = 3, thresh: float = 0.05):
+    """OWLv2-large prompted only with the public target description.
+
+    Runs on the 256px head frame upscaled ``scale`` times and returns ``(u, v)``
+    in native pixels, or None when the target is not detected.
+    """
     import cv2
     import torch
     from PIL import Image
-    cands = scene_candidates(env)
-    if not cands:
+    query = target.strip().lower()
+    if not query:
         return None
     o = _load_owlv2()
     img = np.asarray(rgb).astype(np.uint8)
@@ -234,7 +217,7 @@ def locate_by_owlv2(env, rgb, target: str, scale: int = 3, thresh: float = 0.05)
                     interpolation=cv2.INTER_CUBIC)
     pil = Image.fromarray(up)
     sc = scale
-    texts = [[f"a photo of {c}" for c in cands]]
+    texts = [[f"a photo of {query}"]]
     inp = o["proc"](text=texts, images=pil, return_tensors="pt").to(o["dev"])
     with torch.no_grad():
         out = o["mod"](**inp)
@@ -243,9 +226,7 @@ def locate_by_owlv2(env, rgb, target: str, scale: int = 3, thresh: float = 0.05)
     boxes = res["boxes"].cpu().numpy()
     scores = res["scores"].cpu().numpy()
     labels = res["labels"].cpu().numpy()
-    tset = set(re.sub(r"[^a-z ]", "", target.lower()).split())
-    ti = max(range(len(cands)), key=lambda i: len(tset & set(cands[i].split())))
-    idxs = [i for i in range(len(labels)) if int(labels[i]) == ti]
+    idxs = [i for i in range(len(labels)) if int(labels[i]) == 0]
     if not idxs:
         return None
     bi = max(idxs, key=lambda i: scores[i])

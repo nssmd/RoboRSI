@@ -29,13 +29,27 @@ post-episode verdict remains the only success label.
 Every invocation writes a machine-readable campaign manifest under
 `~/.roborsi/evals/manifests/`. Success rate is computed only over seeds that
 received a final simulator verdict; provider, backend, transport, and other
-infrastructure errors are reported separately as `infra_count`.
+infrastructure errors are reported separately as `infra_count`. Code defects
+are reported as `implementation_error_count`, not folded into task failures.
+
+Role models can be pinned independently:
+
+```bash
+roborsi eval libero_pick_place \
+  --backend libero \
+  --sim-task libero_object/0 \
+  --planner-model anthropic/claude-opus-4-8 \
+  --engineer-model anthropic/claude-opus-4-8 \
+  --reviewer-model anthropic/claude-opus-4-8
+```
 
 ## What eval records
 
 - the per-run `plan.md`, `summary.md`, and `review.md`;
 - tool calls and visible execution trace;
 - timing and final outcome in `trace.db`;
+- prompt, completion, and total tokens; metered/unmetered VLM calls; role and
+  total VLM wall time;
 - successful and failed evaluation video evidence when frames are available;
 - `run_mode=eval` on each run row.
 
@@ -54,6 +68,41 @@ infrastructure errors are reported separately as `infra_count`.
 
 Direct skill runs that use `DataStore` are redirected to
 `~/.roborsi/evals/` while eval mode is active.
+
+## Run LIBERO short task-level pass@K
+
+```bash
+roborsi eval-suite \
+  --backend libero-pro \
+  --pass-at 5 \
+  --seed-start 0 \
+  --workers 4 \
+  --tool-budget 40 \
+  --out ~/.roborsi/evals/libero-pro-pass5
+```
+
+The suite runner:
+
+- enumerates only LIBERO short tasks and excludes long-horizon suites;
+- gives each task at most `K` seeds and stops scheduling it after its first
+  simulator-confirmed success;
+- keeps an append-only episode journal;
+- retries infrastructure interruptions without treating them as task failures;
+- reports task-level pass@K overall and by `spatial`, `object`, `goal`, `task`,
+  `swap`, and `lan` group;
+- preserves successful task/seed rows across resumes.
+
+The output directory contains:
+
+```text
+campaign.json   exact task panel, seeds, role models, budget, retries, runtime
+episodes.jsonl  append-only success, failure, infrastructure, and bug attempts
+summary.json    task-level pass@K and group breakdowns
+```
+
+Reuse the same `--out` directory to resume. RoboRSI refuses the resume if the
+task list, seed range, backend, role models, tool budget, worker count, or retry
+policy differs from `campaign.json`.
 
 ## Benchmarking
 

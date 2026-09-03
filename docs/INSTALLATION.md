@@ -9,7 +9,7 @@ This guide is the native host installation path. If you want Docker-based workfl
 Start from a clean clone:
 
 ```bash
-git clone https://github.com/nssmd/robo-rsi.git
+git clone https://github.com/nssmd/RoboRSI.git
 cd RoboRSI
 ```
 
@@ -18,7 +18,7 @@ cd RoboRSI
 Install the package in editable mode:
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,web]"
 ```
 
 After installation, the `roborsi` command should be available:
@@ -29,7 +29,7 @@ roborsi --help
 
 Expected result:
 
-- commands such as `onboard`, `status`, `agent`, and `provider` are listed
+- commands such as `manager`, `web`, `eval`, `onboard`, and `status` are listed
 
 ## 3. Initialize RoboRSI
 
@@ -73,7 +73,8 @@ Check that:
 
 ## 5. Configure the Model Provider
 
-Before testing `roborsi agent`, make sure the model provider is configured.
+Before launching a Manager or evaluation, make sure the model provider is
+configured.
 
 First run:
 
@@ -134,27 +135,24 @@ Check that:
 - the current `Model` is correct
 - the provider you want to use is no longer `not set`
 
-## 6. Verify the Basic Model Path
+## 6. Launch the Manager
 
-Run one minimal message to confirm that RoboRSI can respond:
+Start the top-level orchestration session:
 
 ```bash
-roborsi agent -m "hello"
+roborsi manager
 ```
 
-Check that:
-
-- the agent starts successfully
-- the agent returns a normal reply
-- failures point clearly to model configuration, provider setup, network, or permissions
+Use `--backend codex`, `--backend claude`, or `--backend copilot` when you need
+to select an installed coding-agent backend explicitly.
 
 ## 7. Launch the Web Dashboard
 
-The web dashboard provides a browser-based UI for chatting with RoboRSI.
+The Web command serves the evolution dashboard and the Manager session cockpit.
 
 ### Prerequisites
 
-Install the web optional dependency (if not already included in `.[dev]`):
+Install the Web optional dependency if it was not installed in step 2:
 
 ```bash
 pip install -e ".[web]"
@@ -163,7 +161,7 @@ pip install -e ".[web]"
 Install the frontend dependencies:
 
 ```bash
-cd ui
+cd frontend/web
 npm install
 ```
 
@@ -172,20 +170,23 @@ npm install
 Build the frontend and start the server:
 
 ```bash
-cd ui && npm run build && cd ..
-roborsi web start
+cd frontend/web && npm run build && cd ../..
+roborsi web
 ```
 
-Open **http://127.0.0.1:8765** in your browser.
+Open:
+
+- **http://127.0.0.1:8787** for the evolution dashboard
+- **http://127.0.0.1:8795** for the Manager session cockpit
 
 ### Development Mode (with hot reload)
 
 ```bash
-# Terminal 1: start backend
-roborsi web start
+# Terminal 1: start the APIs
+roborsi web
 
 # Terminal 2: start frontend dev server
-cd ui
+cd frontend/web
 npm run dev
 ```
 
@@ -194,12 +195,33 @@ Open **http://localhost:5173** in your browser. The Vite dev server proxies `/ap
 ### Options
 
 ```bash
-roborsi web start --host 0.0.0.0 --port 9000
+roborsi web --host 0.0.0.0 --evo-port 8787 --cockpit-port 8795
 ```
 
-| Flag          | Default       | Description                |
-|---------------|---------------|----------------------------|
-| `--host`      | `127.0.0.1`  | Bind address               |
-| `--port`      | `8765`        | Port number                |
-| `--workspace` | `~/.roborsi/workspace` | Workspace directory |
-| `--verbose`   | off           | Enable debug logging       |
+Use `--evo-only` or `--cockpit-only` to serve one interface. Set
+`ROBORSI_WEB_TOKEN` or pass `--token` to require bearer authentication.
+
+## 8. Run Frozen LIBERO Evaluation
+
+One task:
+
+```bash
+roborsi eval libero_pick_place \
+  --backend libero \
+  --sim-task libero_object/0 \
+  --seeds 5
+```
+
+Resumable short-suite task-level pass@5:
+
+```bash
+roborsi eval-suite \
+  --backend libero-pro \
+  --pass-at 5 \
+  --workers 4 \
+  --out ~/.roborsi/evals/libero-pro-pass5
+```
+
+The suite directory contains an immutable `campaign.json`, append-only
+`episodes.jsonl`, and `summary.json`. Reusing `--out` resumes only when the task
+panel, seed range, models, tool budget, and retry policy match exactly.

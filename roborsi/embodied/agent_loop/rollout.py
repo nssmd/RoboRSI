@@ -342,6 +342,9 @@ def run_rollout(
             if name == "done":
                 success = bool(args.get("success", False))
                 outcome = "vlm_declared_done"
+                trace[-1]["result"] = {"acknowledged": True}
+                trace[-1]["wallclock_s"] = 0.0
+                trace[-1]["timing_phase"] = "other"
                 convo.append({"role": "tool", "tool_call_id": tc.id, "name": name,
                               "content": json.dumps({"acknowledged": True}, ensure_ascii=False)})
                 any_done = True
@@ -396,10 +399,13 @@ def run_rollout(
                 if (isinstance(result, dict)
                         and "TIMEOUT" in str(result.get("reason", ""))[:20]):
                     state._sim_contaminated = True
+            dispatch_wallclock_s = _t.time() - _t_dispatch
             print(f"[zeroshot] step={step_idx} tool={name} "
-                  f"dispatched in {_t.time()-_t_dispatch:.1f}s ok={result.get('ok')}", flush=True)
+                  f"dispatched in {dispatch_wallclock_s:.1f}s ok={result.get('ok')}", flush=True)
             trace[-1]["result"] = result
             trace[-1]["tick_end"] = tick_counter["n"]
+            trace[-1]["wallclock_s"] = round(dispatch_wallclock_s, 6)
+            trace[-1]["timing_phase"] = _tool_timing_phase(name)
             try:
                 from roborsi.channels.agent.feishu import live_trace as _lt
                 ok = result.get("ok") if isinstance(result, dict) else None
@@ -709,6 +715,46 @@ def _dispatch_tool(state: "DispatchContext", tool_name: str,
     `press_button_at_xyz` composes `move_fingertip_to`, `gripper`,
     a simulator verdict during the episode)."""
     return _dispatch(state, {"tool": tool_name, "args": args or {}})
+
+
+def _tool_timing_phase(tool_name: str) -> str:
+    recovery = {
+        "home",
+        "park_arm",
+        "reset_failure",
+        "reset_success",
+    }
+    action = {
+        "descend_tcp_to_z",
+        "execute_previewed_move",
+        "execute_with_pi05",
+        "grasp_diverse",
+        "grasp_flat",
+        "grasp_object",
+        "grasp_obb",
+        "grasp_rim",
+        "grasp_top_down",
+        "gripper",
+        "move_dual_arm",
+        "move_ee_delta",
+        "move_fingertip_to",
+        "move_to_pixel",
+        "move_to_pose",
+        "place_beside",
+        "place_held_at_target_servo",
+        "place_held_in_held_container",
+        "place_object_in",
+        "place_obb",
+        "set_gripper",
+        "tip_pour",
+    }
+    if tool_name in recovery:
+        return "recovery"
+    if tool_name in action:
+        return "action"
+    if tool_name == "done":
+        return "other"
+    return "perception"
 
 
 # ────────────────────────────────────────────────────────────────────────

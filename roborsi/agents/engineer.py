@@ -17,6 +17,7 @@ Flow:
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from roborsi.agents.workspace import Workspace
@@ -27,27 +28,32 @@ from roborsi.agents.skill_history import record_success
 from roborsi.agents.plan_archive import archive_successful_plan
 
 
-_ENGINEER_MODEL = "anthropic/claude-opus-4-8"
+_ENGINEER_MODEL = (
+    os.environ.get("ROBORSI_ENGINEER_MODEL")
+    or os.environ.get("ROBORSI_VLM_MODEL")
+    or "anthropic/claude-opus-4-8"
+)
 
 
-def _count_active_skills() -> int:
-    """How many base/robotwin skills are currently registered + wired."""
-    from roborsi.embodied.skills import discover
-    from roborsi.embodied.agent_loop.prompt_tools import _try_load_plugin_dispatcher
+def _count_active_skills(ns: str = "robotwin") -> int:
+    """How many skills are callable in one backend namespace."""
+    from roborsi.embodied.skills import discover_ns
+    from roborsi.embodied.agent_loop.prompt_tools import (
+        _legacy_tool_names,
+        _try_load_plugin_dispatcher,
+    )
+    legacy = _legacy_tool_names(ns)
     wired = 0
-    for sk in discover():
-        parts = sk.path.parent.parts
-        if "base" in parts and "robotwin" in parts:
-            if _try_load_plugin_dispatcher(sk.name) is not None:
-                wired += 1
+    for sk in discover_ns(ns):
+        if sk.name in legacy or _try_load_plugin_dispatcher(sk.name, ns) is not None:
+            wired += 1
     return wired
 
 
-def _build_skill_index() -> str:
-    """Render the full base/robotwin skill index (no restriction).
-    Used as SkillSelector input."""
+def _build_skill_index(ns: str = "robotwin") -> str:
+    """Render the full callable skill index for one backend namespace."""
     from roborsi.embodied.agent_loop.prompt_tools import _build_tools_block
-    return _build_tools_block(restrict_to_names=None)
+    return _build_tools_block(restrict_to_names=None, ns=ns)
 
 
 def _summarize_trace(trace: list[dict[str, Any]], limit: int = 12) -> str:
@@ -67,6 +73,25 @@ def _summarize_trace(trace: list[dict[str, Any]], limit: int = 12) -> str:
     return "\n".join(out)
 
 
+def _summarize_tool_timing(
+    trace: list[dict[str, Any]],
+) -> dict[str, float]:
+    totals = {
+        "perception_s": 0.0,
+        "action_s": 0.0,
+        "recovery_s": 0.0,
+        "other_s": 0.0,
+    }
+    for step in trace:
+        phase = str(step.get("timing_phase") or "other")
+        key = f"{phase}_s" if f"{phase}_s" in totals else "other_s"
+        totals[key] += float(step.get("wallclock_s") or 0.0)
+    return {
+        **{key: round(value, 3) for key, value in totals.items()},
+        "tool_total_s": round(sum(totals.values()), 3),
+    }
+
+
 class Engineer:
     """Drives the sim tool loop as Opus. Reads plan.md, writes summary.md."""
 
@@ -79,7 +104,10 @@ class Engineer:
                  workspace: Workspace, seed: int,
                  tool_budget: int = 24,
                  backend_name: str = "robotwin",
-                 sim_task: str | None = None) -> dict[str, Any]:
+                 sim_task: str | None = None,
+                 env: Any | None = None,
+                 task_instruction: str | None = None,
+                 reset_env: bool = True) -> dict[str, Any]:
         """Run one atomic episode end-to-end. Owns env lifecycle
         (backend.make_env context manager). Returns result dict
         including success, outcome, trace, and writes summary.md.
@@ -89,6 +117,7 @@ class Engineer:
         ``libero_object/0``. Defaults to ``workspace.task`` (RoboTwin, where the
         atomic name IS the sim env name)."""
         from roborsi.embodied.agent_loop import get_backend
+        from roborsi.embodied.agent_loop.config import _skill_namespace
         from roborsi.embodied.agent_loop.rollout import run_rollout
 
         plan_md = workspace.read_plan()
@@ -98,17 +127,20 @@ class Engineer:
         from roborsi.runtime_mode import current_mode, evolution_enabled
         run_mode = current_mode().value
         can_evolve = evolution_enabled()
+        ns = _skill_namespace(
+            getattr(env, "backend_name", None) if env is not None else backend_name
+        )
 
         # ── Skill selection: top-K when registry exceeds cap ──
         restrict: set[str] | None = None
-        n_active = _count_active_skills()
-        if n_active > SKILL_LIST_SOFT_CAP:
+        n_active = _count_active_skills(ns)
+        if ns == "robotwin" and n_active > SKILL_LIST_SOFT_CAP:
             from roborsi.agents.skill_history import get_success_counts
             selector = SkillSelector()
             picked = selector.pick(
                 plan_md=plan_md,
                 recent_results=[],
-                skill_index=_build_skill_index(),
+                skill_index=_build_skill_index(ns),
                 scene_hint=f"task={workspace.task} seed={seed}",
                 success_counts=get_success_counts(workspace.task),
             )
@@ -127,7 +159,15 @@ class Engineer:
             "write code, register helpers, propose changes, or persist lessons. "
             "Use existing skills only and report an honest failure if they are insufficient."
         )
+        visible_instruction = (
+            task_instruction
+            or (getattr(env, "instruction", None) if env is not None else None)
+            or ""
+        ).strip()
         instruction = (
+            (f"TASK INSTRUCTION:\n{visible_instruction}\n\n"
+             if visible_instruction else "")
+            +
             f"GOAL: {goal}\n\n"
             f"PLAN (from Planner — follow this; amend only if scene differs):\n"
             f"{plan_md}\n\n"
@@ -136,39 +176,48 @@ class Engineer:
         )
 
         # ── Drive sim loop. Backend context-manages env lifecycle. ──
-        backend = get_backend(backend_name)
-        ok, reason = backend.available()
-        if not ok:
-            raise RuntimeError(f"backend '{backend_name}' unavailable: {reason}")
-        with backend.make_env(sim_task or workspace.task,
-                              {"require_depth": True}) as env:
-            env.reset(seed)
-            m_result = run_rollout(
-                env, seed=seed, task_name=workspace.task,
+        def _run(active_env: Any):
+            return run_rollout(
+                active_env, seed=seed, task_name=workspace.task,
                 instruction=instruction,
                 expected_on_success=success_criteria,
                 model=self.model, tool_budget=tool_budget,
                 workdir=workspace.root / "rollout",
                 restrict_to_names=restrict,
                 # Standalone atomic ⇔ one sim task: gate success on the sim's
-                # OWN check_success, not the VLM's done() self-report. Without
-                # this, the VLM overclaiming done(success=True) (e.g. lift_pot
-                # arms close on air, pot never leaves the table) is recorded as
-                # a "success" + demo. LH sub-atomics keep this False (their
-                # check_success is the FULL-task predicate, judged by progress_judge).
+                # OWN check_success, not the VLM's done() self-report.
                 use_sim_predicate=True,
             )
 
+        if env is None:
+            backend = get_backend(backend_name)
+            ok, reason = backend.available()
+            if not ok:
+                raise RuntimeError(f"backend '{backend_name}' unavailable: {reason}")
+            with backend.make_env(
+                sim_task or workspace.task,
+                {"require_depth": True},
+            ) as owned_env:
+                owned_env.reset(seed)
+                m_result = _run(owned_env)
+        else:
+            if reset_env:
+                env.reset(seed)
+            m_result = _run(env)
+
         rollout = m_result.rollout
         trace = m_result.trace
+        rollout_meta = dict(rollout.meta)
+        tool_timing = _summarize_tool_timing(trace)
         result = {
             "success": bool(rollout.success),
             "outcome": rollout.outcome,
             "tool_calls": len(trace),
             "trace": trace,
-            "rollout_meta": dict(rollout.meta),
+            "rollout_meta": rollout_meta,
             "restricted_skills": sorted(restrict) if restrict else None,
             "n_active_skills": n_active,
+            "timing": tool_timing,
         }
         result["run_mode"] = run_mode
 
@@ -192,10 +241,13 @@ class Engineer:
         summary_lines = [
             f"# Engineer Summary · {workspace.task} (seed={seed})",
             "",
-            f"**Outcome**: `{result['outcome']}` "
-            f"({'SUCCESS' if result['success'] else 'FAIL'})",
+            "**Agent completion claim**: "
+            f"`{bool(rollout_meta.get('vlm_declared'))}`",
             f"**Run mode**: `{result['run_mode']}`",
             f"**Tool calls**: {result['tool_calls']}",
+            f"**Tool time**: perception={tool_timing['perception_s']:.3f}s · "
+            f"action={tool_timing['action_s']:.3f}s · "
+            f"recovery={tool_timing['recovery_s']:.3f}s",
             f"**Skills exposed**: {n_active} active"
             + (f" · narrowed to {len(restrict)} via SkillSelector"
                if restrict else " (full list, below SKILL_LIST_SOFT_CAP)"),

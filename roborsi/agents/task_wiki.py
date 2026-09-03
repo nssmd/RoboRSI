@@ -514,6 +514,7 @@ def _enqueue_policy_proposal(*, task: str, run_id: str, compound_name: str,
     from roborsi.runtime_mode import require_evolution
     require_evolution("queueing a compound policy")
     compound_dir(task, compound_name)   # validate name early (raises if unsafe)
+    _assert_compound_policy_safe(task, compound_name, policy_code, skill_md)
     POLICY_REVIEW_ROOT.mkdir(parents=True, exist_ok=True)
     pid = f"{int(time.time())}-policy-{uuid.uuid4().hex[:6]}"
     p = POLICY_REVIEW_ROOT / f"{pid}.json"
@@ -547,6 +548,12 @@ def resolve_policy_proposal(proposal_path: Path, *, approve: bool,
     require_evolution("resolving a compound policy")
     payload = json.loads(Path(proposal_path).read_text(encoding="utf-8"))
     if approve:
+        _assert_compound_policy_safe(
+            payload["task"],
+            payload["compound_name"],
+            payload["policy_code"],
+            payload["skill_md"],
+        )
         d = compound_dir(payload["task"], payload["compound_name"])
         d.mkdir(parents=True, exist_ok=True)
         (d / "policy.py").write_text(payload["policy_code"], encoding="utf-8")
@@ -557,3 +564,25 @@ def resolve_policy_proposal(proposal_path: Path, *, approve: bool,
     Path(proposal_path).write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return Path(proposal_path)
+
+
+def _assert_compound_policy_safe(
+    task: str,
+    name: str,
+    code: str,
+    skill_md: str,
+) -> None:
+    from roborsi.agents.atomic_backend import resolve
+    from roborsi.agents.proposal_safety import (
+        assert_safe_candidate,
+        assert_safe_skill_text,
+    )
+    from roborsi.embodied.agent_loop.config import _skill_namespace
+
+    namespace = _skill_namespace(resolve(task).backend_name)
+    assert_safe_candidate(
+        code,
+        namespace=namespace,
+        candidate_name=name,
+    )
+    assert_safe_skill_text(skill_md)

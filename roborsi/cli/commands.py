@@ -173,6 +173,28 @@ def tui(
     _launch_tui(host=host, port=port, no_bridge=no_bridge)
 
 
+@app.command()
+def web(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    evo_port: int = typer.Option(8787, "--evo-port", min=1, max=65535),
+    cockpit_port: int = typer.Option(8795, "--cockpit-port", min=1, max=65535),
+    token: str | None = typer.Option(None, "--token", envvar="ROBORSI_WEB_TOKEN"),
+    evo_only: bool = typer.Option(False, "--evo-only"),
+    cockpit_only: bool = typer.Option(False, "--cockpit-only"),
+) -> None:
+    """Serve the evolution dashboard and Manager session cockpit."""
+    if evo_only and cockpit_only:
+        raise typer.BadParameter("--evo-only and --cockpit-only are exclusive")
+    from roborsi.embodied.board.web.server import serve
+
+    serve(
+        host=host,
+        evo_port=None if cockpit_only else evo_port,
+        cockpit_port=None if evo_only else cockpit_port,
+        auth_token=token,
+    )
+
+
 @app.command("eval")
 def eval_task(
     task: str = typer.Argument(..., help="Atomic task name."),
@@ -185,134 +207,33 @@ def eval_task(
     sim_task: str | None = typer.Option(
         None, "--sim-task", help="Override the simulator task identifier."
     ),
+    planner_model: str | None = typer.Option(None, "--planner-model"),
+    engineer_model: str | None = typer.Option(None, "--engineer-model"),
+    reviewer_model: str | None = typer.Option(None, "--reviewer-model"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Evaluate a frozen RoboRSI release without self-evolution."""
     import json
-    import subprocess
-    import uuid
-    from datetime import datetime, timezone
+    from roborsi.evaluation.atomic import campaign_exit_code, run_atomic_campaign
 
-    from roborsi.channels.agent.feishu.live_trace import get_session
-    from roborsi.channels.core.agent import _run_atomic_3role
-    from roborsi.cli.bench import _git_sha
-    from roborsi.embodied.paths import evals_root
-    from roborsi.runtime_mode import RunMode, use_run_mode
-
-    started_at = datetime.now(timezone.utc)
-    campaign_id = (
-        f"{started_at.strftime('%Y%m%dT%H%M%SZ')}-"
-        f"{task.replace('/', '-')}-{uuid.uuid4().hex[:8]}"
-    )
-    results: list[dict[str, Any]] = []
-    with use_run_mode(RunMode.EVAL):
-        for offset in range(seeds):
-            seed = seed_start + offset
-            chat_id = f"eval-{task.replace('/', '-')}-{seed}-{uuid.uuid4().hex[:6]}"
-            sess = get_session(chat_id)
-            sess.set_busy(True)
-            request = (
-                f"Evaluate atomic task {task} at seed={seed} using the frozen "
-                "released capability set."
+    def _progress(name: str, seed: int, index: int, total: int) -> None:
+        if not as_json:
+            console.print(
+                f"[dim]eval[/dim] {name} seed={seed} ({index}/{total})"
             )
-            sess.last_user_message = request
-            if not as_json:
-                console.print(
-                    f"[dim]eval[/dim] {task} seed={seed} "
-                    f"({offset + 1}/{seeds})"
-                )
-            try:
-                details = _run_atomic_3role(
-                    text=request,
-                    atomic=task,
-                    seed=seed,
-                    sess=sess,
-                    target_chat_id=chat_id,
-                    channel=None,
-                    ctx=None,
-                    tool_budget=tool_budget,
-                    backend_name=backend,
-                    sim_task=sim_task,
-                    return_details=True,
-                )
-                assert isinstance(details, dict)
-                details["verdict"] = "success" if details["success"] else "failure"
-                results.append(details)
-                sess.append("done", final_text=details["text"], run_mode="eval")
-            except Exception as exc:
-                error = f"{type(exc).__name__}: {exc}"
-                results.append({
-                    "text": error,
-                    "run_id": None,
-                    "workspace": None,
-                    "task": task,
-                    "backend": backend,
-                    "sim_task": sim_task,
-                    "seed": seed,
-                    "run_mode": "eval",
-                    "success": None,
-                    "verdict": "infra",
-                    "outcome": "infra_error",
-                    "tool_calls": 0,
-                    "reviewer_verdict": None,
-                    "proposal_decision": "NO_PROPOSAL",
-                    "video_path": None,
-                    "error": error,
-                })
-                sess.append(
-                    "eval_infra_error",
-                    seed=seed,
-                    error=error,
-                    run_mode="eval",
-                )
-                sess.append("done", final_text=error, run_mode="eval")
-            finally:
-                sess.set_busy(False)
 
-    passed = sum(1 for row in results if row["verdict"] == "success")
-    failed = sum(1 for row in results if row["verdict"] == "failure")
-    infra = sum(1 for row in results if row["verdict"] == "infra")
-    verdict_count = passed + failed
-    finished_at = datetime.now(timezone.utc)
-    repo_root = Path(__file__).resolve().parents[2]
-    dirty = bool(subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout.strip())
-    summary = {
-        "campaign_id": campaign_id,
-        "run_mode": "eval",
-        "frozen": True,
-        "status": "complete" if infra == 0 else "incomplete",
-        "task": task,
-        "backend_override": backend,
-        "sim_task_override": sim_task,
-        "tool_budget": tool_budget,
-        "seeds": seeds,
-        "seed_start": seed_start,
-        "requested_seeds": seeds,
-        "verdict_count": verdict_count,
-        "seeds_passed": passed,
-        "seeds_failed": failed,
-        "infra_count": infra,
-        "success_rate": passed / verdict_count if verdict_count else None,
-        "commit_sha": _git_sha(),
-        "git_dirty": dirty,
-        "started_at": started_at.isoformat(),
-        "finished_at": finished_at.isoformat(),
-        "wallclock_s": (finished_at - started_at).total_seconds(),
-        "runs": results,
-    }
-    manifest_dir = evals_root() / "manifests"
-    manifest_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = manifest_dir / f"{campaign_id}.json"
-    summary["manifest_path"] = str(manifest_path)
-    manifest_path.write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2, default=str) + "\n",
-        encoding="utf-8",
+    summary = run_atomic_campaign(
+        task=task,
+        seeds=seeds,
+        seed_start=seed_start,
+        mode="eval",
+        tool_budget=tool_budget,
+        backend=backend,
+        sim_task=sim_task,
+        planner_model=planner_model,
+        engineer_model=engineer_model,
+        reviewer_model=reviewer_model,
+        progress=_progress,
     )
     if as_json:
         sys.stdout.write(json.dumps(summary, ensure_ascii=False, default=str) + "\n")
@@ -323,11 +244,12 @@ def eval_task(
         table.add_column("outcome")
         table.add_column("calls", justify="right")
         table.add_column("run_id")
-        for row in results:
+        for row in summary["runs"]:
             label = {
                 "success": "[green]PASS[/green]",
                 "failure": "[red]FAIL[/red]",
                 "infra": "[yellow]INFRA[/yellow]",
+                "implementation_error": "[magenta]BUG[/magenta]",
             }[row["verdict"]]
             table.add_row(
                 str(row["seed"]),
@@ -343,13 +265,102 @@ def eval_task(
             else "n/a"
         )
         console.print(
-            f"[bold]Frozen result:[/bold] {passed}/{verdict_count} "
-            f"({rate}) · failures={failed} · infra={infra} · "
+            f"[bold]Frozen result:[/bold] {summary['seeds_passed']}/"
+            f"{summary['verdict_count']} "
+            f"({rate}) · failures={summary['seeds_failed']} · "
+            f"infra={summary['infra_count']} · "
+            f"bugs={summary['implementation_error_count']} · "
             "no capability write-back"
         )
-        console.print(f"[dim]manifest[/dim] {manifest_path}")
-    if infra:
-        raise typer.Exit(2)
+        console.print(f"[dim]manifest[/dim] {summary['manifest_path']}")
+    exit_code = campaign_exit_code(summary)
+    if exit_code:
+        raise typer.Exit(exit_code)
+
+
+@app.command("eval-suite")
+def eval_suite(
+    backend: str = typer.Option("libero-pro", "--backend"),
+    atomic: str = typer.Option("libero_pick_place", "--atomic"),
+    pass_at: int = typer.Option(5, "--pass-at", "--seeds", min=1),
+    seed_start: int = typer.Option(0, "--seed-start"),
+    workers: int = typer.Option(4, "--workers", "-w", min=1),
+    tool_budget: int = typer.Option(40, "--tool-budget", min=1),
+    tasks: list[str] | None = typer.Option(None, "--task"),
+    out_dir: Path | None = typer.Option(None, "--out"),
+    infra_retries: int = typer.Option(2, "--infra-retries", min=0),
+    planner_model: str | None = typer.Option(None, "--planner-model"),
+    engineer_model: str | None = typer.Option(None, "--engineer-model"),
+    reviewer_model: str | None = typer.Option(None, "--reviewer-model"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Run resumable task-level pass@K on LIBERO short tasks."""
+    import json
+
+    from roborsi.evaluation.suite import (
+        run_libero_short_suite,
+        suite_exit_code,
+    )
+
+    def _progress(
+        task_key: str,
+        seed: int,
+        completed: int,
+        pending: int,
+        row: dict[str, Any],
+        solved: int,
+        total: int,
+    ) -> None:
+        if as_json:
+            return
+        console.print(
+            f"[dim]suite[/dim] seed={seed} {completed}/{pending} "
+            f"{task_key} → {row['verdict']} · solved={solved}/{total}"
+        )
+
+    try:
+        summary = run_libero_short_suite(
+            backend=backend,
+            atomic=atomic,
+            seeds=pass_at,
+            seed_start=seed_start,
+            workers=workers,
+            tool_budget=tool_budget,
+            tasks=tasks,
+            out_dir=out_dir,
+            infra_retries=infra_retries,
+            planner_model=planner_model,
+            engineer_model=engineer_model,
+            reviewer_model=reviewer_model,
+            progress=_progress,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    if as_json:
+        sys.stdout.write(json.dumps(summary, ensure_ascii=False, default=str) + "\n")
+    else:
+        table = Table(title=f"LIBERO short · task pass@{pass_at}")
+        table.add_column("group")
+        table.add_column("solved", justify="right")
+        table.add_column("total", justify="right")
+        for label, row in summary["subset"].items():
+            table.add_row(f"subset/{label}", str(row["solved"]), str(row["total"]))
+        for label, row in summary["suite"].items():
+            table.add_row(f"suite/{label}", str(row["solved"]), str(row["total"]))
+        console.print(table)
+        console.print(
+            f"[bold]Task pass@{pass_at}:[/bold] "
+            f"{summary['tasks_solved']}/{summary['tasks_total']} "
+            f"({summary['task_success_rate'] * 100:.1f}%) · "
+            f"infra={summary['infra_count']} · "
+            f"bugs={summary['implementation_error_count']}"
+        )
+        console.print(f"[dim]journal[/dim] {summary['journal_path']}")
+        console.print(f"[dim]summary[/dim] {summary['summary_path']}")
+    exit_code = suite_exit_code(summary)
+    if exit_code:
+        raise typer.Exit(exit_code)
 
 
 # ============================================================================

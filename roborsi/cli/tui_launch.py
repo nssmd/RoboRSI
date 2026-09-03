@@ -5,8 +5,8 @@ in sub-apps that require Python 3.11 (StrEnum), but the RoboTwin runtime is 3.10
 This module imports nothing heavy, so the bare `roborsi` / `roborsi tui`
 dispatch path works on 3.10 — exactly like `roborsi chat`.
 
-It ensures the dashboard bridge (scripts/evo_dashboard.py) is up, then hands the
-terminal to the Ink UI (roborsi/frontend/tui). node (>=18) is required.
+It ensures the packaged dashboard server is up, then hands the terminal to the
+Ink UI (roborsi/frontend/tui). node (>=18) is required.
 """
 from __future__ import annotations
 
@@ -41,8 +41,21 @@ def launch(host: str = "127.0.0.1", port: int = 8791, no_bridge: bool = False) -
     if not no_bridge and not _bridge_up(host, port):
         print(f"[roborsi] 启动 Manager 桥接 :{port} …")
         bridge = subprocess.Popen(
-            [sys.executable, str(REPO / "scripts" / "evo_dashboard.py"), "--port", str(port)],
-            cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            [
+                sys.executable,
+                "-m",
+                "roborsi.embodied.board.web.server",
+                "--host",
+                host,
+                "--evo-port",
+                str(port),
+                "--cockpit-port",
+                "0",
+            ],
+            cwd=REPO,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         for _ in range(20):
             if _bridge_up(host, port):
                 break

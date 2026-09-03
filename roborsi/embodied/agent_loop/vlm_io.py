@@ -10,8 +10,78 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+
+
+@dataclass
+class UsageMetrics:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    vlm_calls: int = 0
+    metered_calls: int = 0
+    unmetered_calls: int = 0
+    vlm_wallclock_s: float = 0.0
+
+    def to_dict(self) -> dict[str, int | float]:
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "vlm_calls": self.vlm_calls,
+            "metered_calls": self.metered_calls,
+            "unmetered_calls": self.unmetered_calls,
+            "vlm_wallclock_s": round(self.vlm_wallclock_s, 3),
+        }
+
+
+_ACTIVE_USAGE: ContextVar[UsageMetrics | None] = ContextVar(
+    "roborsi_vlm_usage",
+    default=None,
+)
+
+
+@contextmanager
+def capture_usage() -> Iterator[UsageMetrics]:
+    metrics = UsageMetrics()
+    token = _ACTIVE_USAGE.set(metrics)
+    try:
+        yield metrics
+    finally:
+        _ACTIVE_USAGE.reset(token)
+
+
+def merge_usage(*items: UsageMetrics) -> dict[str, int | float]:
+    total = UsageMetrics()
+    for item in items:
+        total.prompt_tokens += item.prompt_tokens
+        total.completion_tokens += item.completion_tokens
+        total.total_tokens += item.total_tokens
+        total.vlm_calls += item.vlm_calls
+        total.metered_calls += item.metered_calls
+        total.unmetered_calls += item.unmetered_calls
+        total.vlm_wallclock_s += item.vlm_wallclock_s
+    return total.to_dict()
+
+
+@contextmanager
+def _track_vlm_call() -> Iterator[None]:
+    metrics = _ACTIVE_USAGE.get()
+    before_metered = metrics.metered_calls if metrics is not None else 0
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        if metrics is not None:
+            metrics.vlm_calls += 1
+            metrics.vlm_wallclock_s += time.monotonic() - started
+            if metrics.metered_calls == before_metered:
+                metrics.unmetered_calls += 1
 
 
 def _log_tokens(resp) -> None:
@@ -32,19 +102,33 @@ def _log_tokens(resp) -> None:
     p = _g("prompt_tokens", "input_tokens")
     c = _g("completion_tokens", "output_tokens")
     t = _g("total_tokens") or (p + c)
+    metrics = _ACTIVE_USAGE.get()
+    if metrics is not None:
+        metrics.prompt_tokens += p
+        metrics.completion_tokens += c
+        metrics.total_tokens += t
+        metrics.metered_calls += 1
     print(f"[tokens] {json.dumps({'prompt': p, 'completion': c, 'total': t})}",
           flush=True)
 
 
 def _call_vlm(model: str, messages: list[dict[str, Any]]) -> str:
     import litellm
-    return _retry_litellm(lambda: litellm.completion(
-        model=model,
-        messages=messages,
-        max_tokens=400,
-        temperature=0.0,
-        extra_body={"output_config": {"effort": "medium"}},
-    )).choices[0].message.content or ""
+
+    def request():
+        with _track_vlm_call():
+            response = litellm.completion(
+                model=model,
+                messages=messages,
+                max_tokens=400,
+                temperature=0.0,
+                extra_body={"output_config": {"effort": "medium"}},
+            )
+            _log_tokens(response)
+            return response
+
+    response = _retry_litellm(request)
+    return response.choices[0].message.content or ""
 
 
 def _call_vlm_tools(model: str, messages: list[dict[str, Any]],
@@ -63,7 +147,9 @@ def _call_vlm_tools(model: str, messages: list[dict[str, Any]],
         pre-fill with the response format prefix and the model fills
         in the rest."""
     if model.startswith(("openai/", "azure/", "azure-openai/", "gpt-", "o3", "o4")):
-        return _retry_litellm(lambda: _openai_call_with_tools(model, messages, tools))
+        return _retry_litellm(
+            lambda: _openai_call_with_tools(model, messages, tools)
+        )
     return _retry_litellm(lambda: _anthropic_call_with_tools(
         model, messages, tools, thinking_budget=thinking_budget,
         tool_choice_override=tool_choice, prefill=prefill))
@@ -115,12 +201,13 @@ def _openai_call_with_tools(model: str, messages: list[dict[str, Any]],
         api_key = _azure_bearer_token()
     client = OpenAI(api_key=api_key, base_url=base_url, default_headers=headers or None)
     sanitized_tools = [_sanitize_openai_tool(t) for t in (tools or [])] or None
-    resp = client.chat.completions.create(
-        model=model_id, messages=messages, tools=sanitized_tools,
-        tool_choice="auto" if sanitized_tools else None,
-        max_completion_tokens=2048,
-    )
-    _log_tokens(resp)
+    with _track_vlm_call():
+        resp = client.chat.completions.create(
+            model=model_id, messages=messages, tools=sanitized_tools,
+            tool_choice="auto" if sanitized_tools else None,
+            max_completion_tokens=2048,
+        )
+        _log_tokens(resp)
     return resp.choices[0].message
 
 
@@ -236,9 +323,10 @@ def _anthropic_call_with_tools(model: str, messages: list[dict[str, Any]],
         kwargs["temperature"] = 1.0   # thinking requires temp=1
     # Streaming required for high max_tokens — collect final message from
     # the stream events.
-    with client.messages.stream(**kwargs) as stream:
-        resp = stream.get_final_message()
-    return _wrap_anthropic_response(resp)
+    with _track_vlm_call():
+        with client.messages.stream(**kwargs) as stream:
+            resp = stream.get_final_message()
+        return _wrap_anthropic_response(resp)
 
 
 def _wrap_anthropic_response(resp: Any) -> Any:
@@ -379,14 +467,25 @@ def _vlm_complete_openai(model: str, system: str, convo: list[dict[str, Any]]) -
                 parts.append({"type": "image_url",
                               "image_url": blk.get("image_url", {})})
         msgs.append({"role": role, "content": parts})
-    resp = client.chat.completions.create(
-        model=model_id, messages=msgs, max_completion_tokens=16384,
-        reasoning_effort="low",
-    )
+    with _track_vlm_call():
+        resp = client.chat.completions.create(
+            model=model_id, messages=msgs, max_completion_tokens=16384,
+            reasoning_effort="low",
+        )
+        _log_tokens(resp)
     return resp.choices[0].message.content or ""
 
 
 def _call_vlm_image(model: str, system: str, user_text: str, image_path: Path) -> str:
+    return _call_vlm_image_impl(model, system, user_text, image_path)
+
+
+def _call_vlm_image_impl(
+    model: str,
+    system: str,
+    user_text: str,
+    image_path: Path,
+) -> str:
     """Single-image perception query via anthropic SDK direct (proxy needs
     extra_body which litellm strips). Returns the model's text content.
 
@@ -420,17 +519,27 @@ def _call_vlm_image(model: str, system: str, user_text: str, image_path: Path) -
     b64 = base64.b64encode(raw).decode()
     client = _anthropic_client()
     model_id = perception_model.split("/", 1)[1] if "/" in perception_model else perception_model
-    resp = _retry_litellm(lambda: client.messages.create(
-        model=model_id,
-        system=system,
-        messages=[{"role": "user", "content": [
-            {"type": "text", "text": user_text},
-            {"type": "image", "source": {"type": "base64", "media_type": f"image/{suffix}", "data": b64}},
-        ]}],
-        max_tokens=512,
-        temperature=1.0,
-        extra_body={"output_config": {"effort": "medium"}},
-    ))
+    def request():
+        with _track_vlm_call():
+            response = client.messages.create(
+                model=model_id,
+                system=system,
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": user_text},
+                    {"type": "image", "source": {
+                        "type": "base64",
+                        "media_type": f"image/{suffix}",
+                        "data": b64,
+                    }},
+                ]}],
+                max_tokens=512,
+                temperature=1.0,
+                extra_body={"output_config": {"effort": "medium"}},
+            )
+            _log_tokens(response)
+            return response
+
+    resp = _retry_litellm(request)
     text = ""
     for blk in resp.content or []:
         if getattr(blk, "type", None) == "text":

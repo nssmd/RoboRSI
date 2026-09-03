@@ -142,7 +142,13 @@ Here are the actual calls from the winning runs, with their arguments:
   that limps on is worse than one that declines.
 - Under ~150 lines, at most 3 levels of indentation, no try/except that swallows.
 - Signature: `def dispatch_runtime(state, args: dict) -> tuple[dict, object]`,
-  returning `({{"ok": bool, ...}}, _snapshot(state.env))`.
+  and import only `_dispatch_tool` from
+  `roborsi.embodied.agent_loop.rollout`.
+- Call `_dispatch_tool` with literal public base-skill names. Never read,
+  alias, return, or reflect on `state`; never use `state.env`, `_snapshot`,
+  dynamic imports, files, processes, or networks.
+- Return the Observation from the final `_dispatch_tool` call:
+  `result, obs = _dispatch_tool(state, "look", {{...}}); return result, obs`.
 
 Answer in exactly these delimited sections, nothing else — no JSON, source code
 does not survive being escaped into a JSON string.

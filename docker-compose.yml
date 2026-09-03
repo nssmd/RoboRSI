@@ -6,13 +6,14 @@ x-common-config: &common-config
     - ~/.roborsi:/root/.roborsi
 
 services:
-  roborsi-gateway:
-    container_name: roborsi-gateway
+  roborsi-web:
+    container_name: roborsi-web
     <<: *common-config
-    command: ["gateway"]
+    command: ["web", "--host", "0.0.0.0"]
     restart: unless-stopped
     ports:
-      - 18790:18790
+      - 8787:8787
+      - 8795:8795
     deploy:
       resources:
         limits:

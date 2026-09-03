@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -484,5 +485,4 @@ def _lane_of(path: str) -> str:
                 v = kv.split("=", 1)[1].upper()
                 return v if v in ("A", "B") else "A"
     return "A"
-
 

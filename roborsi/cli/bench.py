@@ -42,21 +42,6 @@ def _task_from_skill(skill: str) -> str:
     return skill.rsplit(".", 1)[0] if "." in skill else skill
 
 
-def _summarize_run(run: dict[str, Any]) -> tuple[bool | None, int]:
-    """Return (verdict, tool_calls); verdict is None for infra/error rows."""
-    status = run.get("status")
-    verdict = True if status == "success" else False if status == "failed" else None
-    n_calls = 0
-    blob = run.get("episode_summary_json")
-    if blob:
-        try:
-            ep = json.loads(blob)
-            n_calls = int(ep.get("tool_calls") or 0)
-        except (json.JSONDecodeError, ValueError):
-            pass
-    return verdict, n_calls
-
-
 @bench_app.command("skill")
 def bench_skill(
     skill: str = typer.Argument(..., help="Skill name (e.g. click_bell.zeroshot)"),
@@ -72,78 +57,80 @@ def bench_skill(
     run_mode: str = typer.Option(
         "eval", "--mode", help="Run mode: eval (frozen) or evolve."
     ),
+    backend: str | None = typer.Option(None, "--backend"),
+    sim_task: str | None = typer.Option(None, "--sim-task"),
+    planner_model: str | None = typer.Option(None, "--planner-model"),
+    reviewer_model: str | None = typer.Option(None, "--reviewer-model"),
 ) -> None:
-    """Run a skill `seeds` times, record one `benches` row, print summary."""
-    from roborsi.channels.agent.feishu.task_runner import (
-        run_task_sync,
-    )
+    """Benchmark one Atomic ``.zeroshot`` through the canonical 3-role runner."""
+    from roborsi.embodied.skills import get as get_skill
+    from roborsi.evaluation.atomic import campaign_exit_code, run_atomic_campaign
+
+    registered = get_skill(skill)
+    if (
+        registered is None
+        or not skill.endswith(".zeroshot")
+        or "atomic" not in registered.path.parts
+    ):
+        raise typer.BadParameter(
+            "bench skill only accepts a registered Atomic '*.zeroshot' skill",
+            param_hint="skill",
+        )
     task = _task_from_skill(skill)
     from roborsi.runtime_mode import parse_mode
     try:
         parsed_mode = parse_mode(run_mode)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--mode") from exc
-    sha = _git_sha()
-    if model:
-        # The rollout runtime reads DEFAULT_MODEL from env via its module
-        # constant — override before importing run paths.
-        import os
-        os.environ["ROBORSI_DEFAULT_MODEL"] = model
-    results: list[dict[str, Any]] = []
-    n_pass = 0
-    n_fail = 0
-    n_infra = 0
-    n_verdict = 0
-    total_calls = 0
-    for i in range(seeds):
-        seed = seed_start + i
+
+    def _progress(_task: str, seed: int, index: int, total: int) -> None:
         if not as_json:
-            console.print(f"[dim]bench[/dim] {skill} seed={seed} "
-                            f"({i+1}/{seeds})…")
-        run = run_task_sync(task=task, seed=seed, episodes=1,
-                              tool_budget=tool_budget, skill_name=skill,
-                              chat_id=chat_id,
-                              run_mode=parsed_mode.value)
-        verdict, n_calls = _summarize_run(run)
-        if verdict is None:
-            n_infra += 1
-            verdict_label = "infra"
-        else:
-            n_verdict += 1
-            n_pass += int(verdict)
-            n_fail += int(not verdict)
-            total_calls += n_calls
-            verdict_label = "success" if verdict else "failure"
-        results.append({"seed": seed, "ok": verdict, "verdict": verdict_label,
-                          "tool_calls": n_calls,
-                          "run_id": run.get("run_id"),
-                          "outcome": run.get("outcome"),
-                          "status": run.get("status")})
-    avg_calls = (total_calls / n_verdict) if n_verdict else 0.0
+            console.print(
+                f"[dim]bench[/dim] {skill} seed={seed} ({index}/{total})"
+            )
+
+    summary = run_atomic_campaign(
+        task=task,
+        seeds=seeds,
+        seed_start=seed_start,
+        mode=parsed_mode,
+        tool_budget=tool_budget,
+        backend=backend,
+        sim_task=sim_task,
+        planner_model=planner_model,
+        engineer_model=model or None,
+        reviewer_model=reviewer_model,
+        progress=_progress,
+    )
+    terminal_rows = [
+        row for row in summary["runs"]
+        if row["verdict"] in {"success", "failure"}
+    ]
+    avg_calls = (
+        sum(int(row.get("tool_calls") or 0) for row in terminal_rows)
+        / len(terminal_rows)
+        if terminal_rows else 0.0
+    )
     _td.record_bench(skill=skill, model=model or "default",
-                      seeds_passed=n_pass, seeds_total=n_verdict,
-                      avg_tool_calls=avg_calls, commit_sha=sha,
+                      seeds_passed=summary["seeds_passed"],
+                      seeds_total=summary["verdict_count"],
+                      avg_tool_calls=avg_calls,
+                      commit_sha=summary["commit_sha"],
                       run_mode=parsed_mode.value)
-    summary = {
+    summary.update({
         "skill": skill,
         "model": model or "default",
-        "run_mode": parsed_mode.value,
         "n": seeds,
-        "requested_seeds": seeds,
-        "verdict_count": n_verdict,
-        "seeds_passed": n_pass,
-        "seeds_failed": n_fail,
-        "infra_count": n_infra,
-        "success_rate": n_pass / n_verdict if n_verdict else None,
         "avg_tool_calls": avg_calls,
-        "commit_sha": sha,
-        "runs": results,
-    }
+    })
     if as_json:
         sys.stdout.write(json.dumps(summary, ensure_ascii=False) + "\n")
         sys.stdout.flush()
-        return
-    _print_human(summary)
+    else:
+        _print_human(summary)
+    exit_code = campaign_exit_code(summary)
+    if exit_code:
+        raise typer.Exit(exit_code)
 
 
 def _print_human(summary: dict[str, Any]) -> None:
@@ -170,6 +157,7 @@ def _print_human(summary: dict[str, Any]) -> None:
             "success": "[green]✓",
             "failure": "[red]✗",
             "infra": "[yellow]!",
+            "implementation_error": "[magenta]BUG",
         }[r["verdict"]]
         t.add_row(str(r["seed"]),
                     verdict,

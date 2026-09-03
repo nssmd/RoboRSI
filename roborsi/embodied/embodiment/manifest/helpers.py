@@ -7,10 +7,14 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from roborsi.embodied.embodiment.arm.registry import all_arm_types
 from roborsi.embodied.embodiment.hand.registry import all_hand_types, get_hand_spec
+
+if TYPE_CHECKING:
+    from roborsi.embodied.embodiment.interface.serial import SerialInterface
+    from roborsi.embodied.embodiment.manifest import Manifest
 
 # ── Constants ──────────────────────────────────────────────────────────
 

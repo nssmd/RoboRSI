@@ -1,12 +1,9 @@
-"""place_object_in — composite place of the held object (base/libero).
+"""place_object_in — camera/depth composite place for LIBERO.
 
-Two modes:
-  * container drop — ``object=<name>`` that has a ``<name>_contain_region`` site
-    (e.g. basket_1): release the held object from ABOVE the region so it falls
-    in. The gripper never enters the container — descending into a light
-    container just shoves it out of the way.
-  * surface / coordinate place — ``pos=[x,y,z]`` or an ``object`` with no contain
-    region: hover, descend to the release point, open, retract.
+The target comes from a provided pixel/position or is localized from the
+current camera frame by its public language description. The policy estimates
+the drop point and rim/surface height from the segmented depth cloud, then
+hovers, descends, releases, and retracts.
 """
 
 from __future__ import annotations

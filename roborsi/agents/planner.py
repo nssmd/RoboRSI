@@ -10,6 +10,7 @@ sub-goals get completed.
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 
@@ -376,7 +377,11 @@ def persistent_plan_path(task: str):
 class Planner:
     """Single-shot Opus call that produces a mission_spec + plan.md."""
 
-    DEFAULT_MODEL = "claude-opus-4-8"
+    DEFAULT_MODEL = (
+        os.environ.get("ROBORSI_PLANNER_MODEL")
+        or os.environ.get("ROBORSI_VLM_MODEL")
+        or "anthropic/claude-opus-4-8"
+    )
 
     def __init__(self, model: str | None = None) -> None:
         self.model = model or self.DEFAULT_MODEL

@@ -2,14 +2,14 @@
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.12+
 - Git
 
 ## Local Setup
 
 ```bash
 # Clone & install in editable mode with dev extras
-git clone https://github.com/nssmd/robo-rsi.git
+git clone https://github.com/nssmd/RoboRSI.git
 cd RoboRSI
 pip install -e ".[dev]"
 
@@ -37,8 +37,8 @@ stubs.  This allows the full embodied pipeline (scan, identify, calibrate,
 teleoperate, record) to run on a laptop without any robot arms or cameras.
 
 ```bash
-# Run the agent in stub mode
-ROBORSI_STUB=1 roborsi agent
+# Inspect deterministic fake hardware in stub mode
+ROBORSI_STUB=1 roborsi camera discover
 
 # PTY integration tests use stub mode automatically
 python -m pytest tests/integration/ -x -q -m pty
@@ -96,14 +96,6 @@ re-runs `roborsi onboard` non-interactively.
 | `ROBORSI_STUB_MOVED_PORT` | by_id of port that identify detects as moved. |
 
 ## Troubleshooting
-
-### `ModuleNotFoundError: No module named 'lerobot'`
-
-LeRobot is an optional dependency under the `research` extra:
-
-```bash
-pip install -e ".[research]"
-```
 
 ### PTY tests fail with `ModuleNotFoundError: No module named 'pexpect'`
 
