@@ -111,7 +111,12 @@ roborsi web   # 演化看板 :8787 · Manager 控制台 :8795
 
 ## 社区
 
-- 微信群:(链接即将放出)
+扫码加入微信用户交流群(二维码会定期更新,过期请在 Issues 里留言):
+
+<p align="center">
+  <img src="assets/wechat-group.jpg" alt="RoboRSI 微信用户交流群二维码" width="320">
+</p>
+
 - GitHub Issues:<https://github.com/nssmd/RoboRSI/issues>
 
 ## 引用

@@ -118,7 +118,13 @@ roborsi web   # evolution dashboard :8787 · Manager cockpit :8795
 
 ## Community
 
-- WeChat group: (link coming soon)
+Scan to join the WeChat user group (the QR code is refreshed periodically —
+open an issue if it has expired):
+
+<p align="center">
+  <img src="assets/wechat-group.jpg" alt="RoboRSI WeChat user group QR code" width="320">
+</p>
+
 - GitHub Issues: <https://github.com/nssmd/RoboRSI/issues>
 
 ## Citation
