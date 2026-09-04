@@ -20,15 +20,15 @@ trace 做诊断。自顶向下的技能细化(TSR)把所有能力组织在一棵
 在线探索寻找解法,稳定流程固化为代码,执行数据可以训练 learning-based
 policy,失败则回到最早出错的节点修订。
 
-项目主页:<https://robo-rsi.com/>
+项目主页:<https://lab.noematrix.ai/blog/2-roborsi-research-preview/>
 
 <p align="center">
   <img src="assets/real-world-demo.gif" alt="真机完整任务链 16 倍速" width="900"><br>
-  <em>真机完整任务链(16 倍速)—— <a href="https://robo-rsi.com/">完整视频与精确工具调用链见项目主页</a></em>
+  <em>真机完整任务链(16 倍速)—— <a href="https://lab.noematrix.ai/blog/2-roborsi-research-preview/">完整视频与精确工具调用链见项目主页</a></em>
 </p>
 
 <p align="center">
-  <img src="https://robo-rsi.com/assets/roborsi/figures/roborsi-self-evolution-architecture-v35-zh.svg" alt="RoboRSI 自进化闭环" width="900">
+  <img src="https://lab.noematrix.ai/assets/roborsi/figures/roborsi-self-evolution-architecture-v35-zh.svg" alt="RoboRSI 自进化闭环" width="900">
 </p>
 
 ## 实验结果
@@ -45,7 +45,7 @@ policy,失败则回到最早出错的节点修订。
 
 累计任务通过率统计的是"至少通过一次"的任务数,跨演化中的多个
 release,不是固定策略分数,也不是常规固定方法的 Pass@k。完整口径、视频与
-精确工具调用链见[项目主页](https://robo-rsi.com/)。
+精确工具调用链见[项目主页](https://lab.noematrix.ai/blog/2-roborsi-research-preview/)。
 
 ## 工作原理
 

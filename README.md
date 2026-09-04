@@ -22,15 +22,15 @@ a task–skill tree: online exploration finds a solution, stable workflows
 consolidate into code, execution data can train a learning-based policy, and
 failures return to the earliest responsible node.
 
-Project page: <https://robo-rsi.com/>
+Project page: <https://lab.noematrix.ai/blog/2-roborsi-research-preview/>
 
 <p align="center">
   <img src="assets/real-world-demo.gif" alt="Real-robot full task chain, 16x timelapse" width="900"><br>
-  <em>Real-robot full task chain (16× timelapse) — <a href="https://robo-rsi.com/">full video with exact tool traces on the project page</a></em>
+  <em>Real-robot full task chain (16× timelapse) — <a href="https://lab.noematrix.ai/blog/2-roborsi-research-preview/">full video with exact tool traces on the project page</a></em>
 </p>
 
 <p align="center">
-  <img src="https://robo-rsi.com/assets/roborsi/figures/roborsi-self-evolution-architecture-v35.svg" alt="RoboRSI self-evolution loop" width="900">
+  <img src="https://lab.noematrix.ai/assets/roborsi/figures/roborsi-self-evolution-architecture-v35.svg" alt="RoboRSI self-evolution loop" width="900">
 </p>
 
 ## Results
@@ -48,7 +48,7 @@ Project page: <https://robo-rsi.com/>
 Cumulative task pass rates count tasks passed at least once across evolving
 releases; they are not frozen-policy scores or fixed-method Pass@k. Full
 calibers, videos, and exact tool traces are on the
-[project page](https://robo-rsi.com/).
+[project page](https://lab.noematrix.ai/blog/2-roborsi-research-preview/).
 
 ## How It Works
 
