@@ -25,16 +25,13 @@ failures return to the earliest responsible node.
 Project page: <https://robo-rsi.com/blog/2-roborsi-research-preview/>
 
 <p align="center">
-  <img src="https://robo-rsi.com/assets/roborsi/figures/roborsi-self-evolution-architecture-v35.svg" alt="RoboRSI self-evolution loop" width="900">
+  <img src="assets/real-world-demo.gif" alt="Real-robot full task chain, 16x timelapse" width="900"><br>
+  <em>Real-robot full task chain (16× timelapse) — <a href="https://robo-rsi.com/blog/2-roborsi-research-preview/">full video with exact tool traces on the project page</a></em>
 </p>
 
-## Applications
-
-1. Real-world mobile manipulation (scene search, approach, grasp, place).
-2. Zero-shot task adaptation from Base Skills.
-3. Repeated-task automation through consolidated code.
-4. Data flywheel and learning-based policy training.
-5. Perturbation-robust manipulation.
+<p align="center">
+  <img src="https://robo-rsi.com/assets/roborsi/figures/roborsi-self-evolution-architecture-v35.svg" alt="RoboRSI self-evolution loop" width="900">
+</p>
 
 ## Results
 

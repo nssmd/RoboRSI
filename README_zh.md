@@ -23,16 +23,13 @@ policy,失败则回到最早出错的节点修订。
 项目主页:<https://robo-rsi.com/blog/2-roborsi-research-preview/>
 
 <p align="center">
-  <img src="https://robo-rsi.com/assets/roborsi/figures/roborsi-self-evolution-architecture-v35-zh.svg" alt="RoboRSI 自进化闭环" width="900">
+  <img src="assets/real-world-demo.gif" alt="真机完整任务链 16 倍速" width="900"><br>
+  <em>真机完整任务链(16 倍速)—— <a href="https://robo-rsi.com/blog/2-roborsi-research-preview/">完整视频与精确工具调用链见项目主页</a></em>
 </p>
 
-## 应用
-
-1. 真机移动操作(场景搜索、移动接近、抓取、放置)。
-2. 零样本任务适配(从基础技能出发探索可行解法)。
-3. 通过固化代码实现重复任务自动化。
-4. 数据飞轮与 learning-based policy 训练。
-5. 扰动下的鲁棒操作。
+<p align="center">
+  <img src="https://robo-rsi.com/assets/roborsi/figures/roborsi-self-evolution-architecture-v35-zh.svg" alt="RoboRSI 自进化闭环" width="900">
+</p>
 
 ## 实验结果
 
