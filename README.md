@@ -19,7 +19,7 @@ a task–skill tree with clear ownership: online exploration finds a solution,
 stable workflows consolidate into code, execution data can train a
 learning-based policy, and failures return to the earliest responsible node.
 
-Project page: <https://robo-rsi.com/>
+Project page: <https://robo-rsi.com/blog/2-roborsi-research-preview/>
 
 ## Three Core Features
 
