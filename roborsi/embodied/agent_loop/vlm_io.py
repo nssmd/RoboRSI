@@ -76,6 +76,17 @@ def merge_usage(*items: UsageMetrics) -> dict[str, int | float]:
     return total.to_dict()
 
 
+def record_remote_usage(usage: dict[str, Any]) -> None:
+    """Add simulator-side model calls to the caller's active role capture."""
+    metrics = _ACTIVE_USAGE.get()
+    if metrics is not None:
+        for field in metrics.to_dict():
+            value = usage.get(field, 0)
+            if not isinstance(value, (int, float)) or value < 0:
+                raise ValueError(f"invalid remote usage field: {field}")
+            setattr(metrics, field, getattr(metrics, field) + value)
+
+
 @contextmanager
 def _track_vlm_call() -> Iterator[None]:
     metrics = _ACTIVE_USAGE.get()

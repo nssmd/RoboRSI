@@ -572,8 +572,35 @@ class LiberoControl:
         post_gap = self._gripper_gap()
         if close:
             self._gripper_classifier().confirm_close(pre_gap=pre_gap, post_gap=post_gap)
+            try:
+                position, quaternion, _ = self.read_pose()
+                generation = self.env.sensor_generation()
+                attempt_token = getattr(
+                    self.env,
+                    "_libero_grasp_attempt_token",
+                    None,
+                )
+                self.env._libero_grasp_closure_pose = {
+                    "generation": generation,
+                    "reset_generation": (
+                        int(generation[0])
+                        if isinstance(generation, (tuple, list))
+                        and len(generation) == 2
+                        else None
+                    ),
+                    "attempt_token": (
+                        attempt_token
+                        if isinstance(attempt_token, str) and attempt_token
+                        else None
+                    ),
+                    "position": np.asarray(position, dtype=float).copy(),
+                    "quaternion_xyzw": np.asarray(quaternion, dtype=float).copy(),
+                }
+            except (AttributeError, TypeError, ValueError):
+                self.env._libero_grasp_closure_pose = None
         else:
             self._gripper_classifier().confirm_open(gap=post_gap)
+            self.env._libero_grasp_closure_pose = None
         return last
 
     def servo_to(self, pos, quat=None, gripper: str = "keep",

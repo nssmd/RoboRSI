@@ -57,21 +57,42 @@ def _do_find_pixel(state: _State, args: dict[str, Any]) -> tuple[dict[str, Any],
                      "Confidence is detector score, not a VLM self-report."}, obs)
 
 
+def _pose_components(args: dict[str, Any]) -> tuple[list[float], list[float]]:
+    """Validate model-supplied pose values before accessing a motion backend."""
+    def numbers(values: Any, length: int, name: str) -> list[float]:
+        if not isinstance(values, (list, tuple)) or len(values) != length:
+            raise ValueError(f"{name} must be a numeric list of length {length}")
+        if any(isinstance(value, bool) for value in values):
+            raise ValueError(f"{name} must contain finite numbers, not booleans")
+        try:
+            result = [float(value) for value in values]
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{name} must contain finite numbers") from exc
+        if not all(np.isfinite(value) for value in result):
+            raise ValueError(f"{name} must contain finite numbers")
+        return result
+
+    xyz = numbers([args.get(key) for key in ("x", "y", "z")], 3, "x, y, z")
+    raw_quat = args.get("quat")
+    quat = numbers([0.5, -0.5, 0.5, 0.5] if raw_quat is None else raw_quat, 4, "quat")
+    if not any(quat):
+        raise ValueError("quat must be nonzero")
+    return xyz, quat
+
+
 def _do_move_to_pose(state: _State, args: dict[str, Any]) -> tuple[dict[str, Any], Observation]:
     """Direct EE-pose command. Default top-down quat. Lets the VLM choose
     descent depth, lift height, etc., escaping the canned grasp sequence."""
     from roborsi.embodied.agent_loop.rollout import _snapshot
-    from roborsi.embodied.sim.robotwin.robotwin_agent import _write_jpg
-    from envs.utils.action import Action, ArmTag
     arm = args.get("arm", "right")
     if arm not in {"left", "right"}:
         return ({"ok": False, "reason": f"arm must be left/right, got {arm!r}"}, _snapshot(state.env))
-    x = args.get("x"); y = args.get("y"); z = args.get("z")
-    if x is None or y is None or z is None:
-        return ({"ok": False, "reason": "x, y, z required"}, _snapshot(state.env))
-    quat = args.get("quat") or [0.5, -0.5, 0.5, 0.5]
-    if len(quat) != 4:
-        return ({"ok": False, "reason": "quat must be length 4"}, _snapshot(state.env))
+    try:
+        (x, y, z), quat = _pose_components(args)
+    except ValueError as exc:
+        return ({"ok": False, "reason": str(exc)}, _snapshot(state.env))
+    from roborsi.embodied.sim.robotwin.robotwin_agent import _write_jpg
+    from envs.utils.action import Action, ArmTag
     impl = state.env._impl
     impl.plan_success = True
     # Capture EE pose before move so we can report whether the plan actually executed.
@@ -110,12 +131,10 @@ def _do_move_fingertip_to(state: _State, args: dict[str, Any]) -> tuple[dict[str
     arm = args.get("arm", "right")
     if arm not in {"left", "right"}:
         return ({"ok": False, "reason": f"arm must be left/right, got {arm!r}"}, _snapshot(state.env))
-    fx = args.get("x"); fy = args.get("y"); fz = args.get("z")
-    if fx is None or fy is None or fz is None:
-        return ({"ok": False, "reason": "x, y, z (fingertip target) required"}, _snapshot(state.env))
-    quat = args.get("quat") or [0.5, -0.5, 0.5, 0.5]
-    if len(quat) != 4:
-        return ({"ok": False, "reason": "quat must be length 4"}, _snapshot(state.env))
+    try:
+        (fx, fy, fz), quat = _pose_components(args)
+    except ValueError as exc:
+        return ({"ok": False, "reason": str(exc)}, _snapshot(state.env))
 
     impl = state.env._impl
     from roborsi.embodied.sim.robotwin.gripper_geom import flange_from_tcp
@@ -321,54 +340,6 @@ def _do_get_grasp_pose(state: _State, args: dict[str, Any]) -> tuple[dict[str, A
              "note": "Pass grasp_pose into move_to_pose; or just call "
                      "move_to_pixel(action='grasp') for the same effect "
                      "with the auto open/descend/close/lift sequence."}, obs)
-
-
-def _do_execute_with_pi05(state: _State, args: dict[str, Any]) -> tuple[dict[str, Any], Observation]:
-    """Rollout's execute_with_pi05 tool: delegate a sub-task to a pi0.5 VLA.
-
-    Loads a pi0.5 checkpoint via lerobot's pi05 implementation and rolls it out
-    on the live env for K steps. Returns the final image + a closed-loop trace.
-
-    Setup: set env var ROBORSI_PI05_CKPT to a directory containing a pi0.5
-    pretrained_model (lerobot format with train_config.json sidecar).
-
-    NB: pi0.5 is a generalist VLA — it expects natural language instructions
-    and produces actions in EE-pose space. Use this for sub-tasks the canned
-    grasp/release sequences can't handle (e.g., 'rotate the cube purple side up').
-    """
-    from roborsi.embodied.agent_loop.rollout import _snapshot
-    from roborsi.embodied.sim.robotwin.robotwin_agent import _write_jpg
-    import os as _os
-    ckpt = _os.environ.get("ROBORSI_PI05_CKPT", "")
-    instr = args.get("instruction", "")
-    max_steps = int(args.get("max_steps", 200))
-    if not ckpt:
-        return ({"ok": False, "reason": "ROBORSI_PI05_CKPT not set. Download a pi0.5 "
-                 "checkpoint (e.g. physical-intelligence/pi05-droid from HF) and point "
-                 "the env var at the checkpoints/<step>/pretrained_model dir."},
-                _snapshot(state.env))
-    if not instr:
-        return ({"ok": False, "reason": "instruction is required"}, _snapshot(state.env))
-    if not Path(ckpt).exists():
-        return ({"ok": False, "reason": f"checkpoint not found: {ckpt}"}, _snapshot(state.env))
-
-    # Reuse our policy_runner — it already loads any lerobot-format ckpt (pi0,
-    # ACT, pi05) and rolls out via env.step.
-    from roborsi.embodied.skills._lib.orchestrate.policy_runner.policy import (
-        load_policy, rollout_one,
-    )
-    policy = load_policy(ckpt)
-    result = rollout_one(policy, state.env, seed=None, max_steps=max_steps,
-                        action_type="qpos", reset_first=False)
-    obs = _snapshot(state.env)
-    head = obs.images.get("head_camera")
-    if head is not None:
-        path = state.workdir / f"after_pi05_{len(list(state.workdir.glob('after_pi05_*.jpg'))):03d}.jpg"
-        _write_jpg(path, head)
-        # NO auto-attach (execution wrapper, pull-on-demand)
-    return ({"ok": bool(result.get("success") or result.get("done")),
-             "instruction": instr, "checkpoint": ckpt,
-             "steps": result.get("steps"), "outcome": result.get("outcome")}, obs)
 
 
 def _gripper_finger_opening(impl, arm: str) -> float:

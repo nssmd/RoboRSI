@@ -162,10 +162,10 @@ class Engineer:
 
         # ── Compose engineer instruction ──
         discipline = (
-            "DISCIPLINE: any throwaway debug/probe/calibration script you write goes "
-            "in THIS skill's own folder (embodied/skills/<tier>/<name>/scripts/), never "
-            "the repo-root scripts/. When done, bake the result into policy.py/plan.md "
-            "(cite it in a comment) and DELETE the script."
+            "EVOLUTION DISCIPLINE: use code composition through public tools; "
+            "propose reusable base skills and concrete repairs through the review "
+            "queue. The Manager alone may validate and publish shared capabilities. "
+            "Preserve all scripts, observations and diagnostic evidence. "
             if can_evolve
             else
             "EVALUATION DISCIPLINE: the released capability set is frozen. Do not "
@@ -177,13 +177,44 @@ class Engineer:
             or (getattr(env, "instruction", None) if env is not None else None)
             or ""
         ).strip()
+        # Task wiki: the Planner already reads it; give the Engineer the same
+        # accumulated knowledge so known-good tool sequences get REUSED at
+        # execution time and known dead ends are not re-walked.
+        wiki_block = ""
+        try:
+            from roborsi.agents.task_wiki import read_wiki
+            _wiki_md = read_wiki(workspace.task)
+            if _wiki_md and _wiki_md.strip():
+                wiki_block = (
+                    "TASK WIKI (accumulated task knowledge — reuse the "
+                    "successful tool sequences below when they fit the current "
+                    "scene; do not repeat sequences recorded as failures):\n"
+                    + _wiki_md[-6000:]
+                    + "\n\n"
+                )
+        except Exception:  # noqa: BLE001
+            wiki_block = ""
         instruction = (
             (f"TASK INSTRUCTION:\n{visible_instruction}\n\n"
              if visible_instruction else "")
+            + wiki_block
             +
             f"GOAL: {goal}\n\n"
-            f"PLAN (from Planner — follow this; amend only if scene differs):\n"
+            f"PLAN (from the Planner — a REFERENCE strategy, not a mandate):\n"
             f"{plan_md}\n\n"
+            "EXECUTION DOCTRINE — evidence over plan:\n"
+            "- The plan is your prior; what you OBSERVE always outranks it. "
+            "When the scene disagrees with the plan, follow the scene.\n"
+            "- Never grind: if the same sub-step fails twice (same tool, "
+            "similar args), you MUST change something material on the next "
+            "try — a different pixel/grasp point, a different skill, a "
+            "different ordering — or drop that sub-step and pursue the goal "
+            "another way.\n"
+            "- Sub-goals are disposable; only the task goal and the final "
+            "simulator check matter. Skipping a step that turns out "
+            "unnecessary is success, not deviation.\n"
+            "- Watch your remaining tool budget: prefer the simplest action "
+            "that could complete the task NOW over completing the plan.\n\n"
             f"SUCCESS CRITERIA: {success_criteria}\n\n"
             f"{discipline}"
         )

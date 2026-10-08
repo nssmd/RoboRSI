@@ -282,6 +282,18 @@ def eval_task(
         raise typer.Exit(exit_code)
 
 
+from enum import Enum
+
+
+class AgentMode(str, Enum):
+    """Agent orchestration for eval campaigns (roborsi = full triangle)."""
+
+    roborsi = "roborsi"
+    maestro = "maestro"
+    openeta = "openeta"
+    capx = "capx"
+
+
 @app.command("eval-suite")
 def eval_suite(
     backend: str = typer.Option("libero-pro", "--backend"),
@@ -293,6 +305,7 @@ def eval_suite(
     tasks: list[str] | None = typer.Option(None, "--task"),
     out_dir: Path | None = typer.Option(None, "--out"),
     infra_retries: int = typer.Option(2, "--infra-retries", min=0),
+    run_mode: str = typer.Option("eval", "--run-mode", help="eval (frozen) or evolve (TSR write-back on)"),
     planner_model: str | None = typer.Option(None, "--planner-model"),
     engineer_model: str | None = typer.Option(None, "--engineer-model"),
     reviewer_model: str | None = typer.Option(None, "--reviewer-model"),
@@ -301,6 +314,17 @@ def eval_suite(
         True,
         "--code-on/--code-off",
         help="Expose released code-backed compound skills during frozen eval.",
+    ),
+    agent_mode: AgentMode = typer.Option(
+        AgentMode.roborsi,
+        "--agent-mode",
+        help=(
+            "Agent orchestration: roborsi (full Planner→Engineer→Reviewer "
+            "triangle) or an ablation baseline — maestro (single "
+            "orchestrator VLM), openeta (forced observe→think→act loop), "
+            "capx (one-shot code-as-policy). All modes share the same tool "
+            "surface, budget, and final simulator verdict."
+        ),
     ),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
@@ -339,11 +363,13 @@ def eval_suite(
             tasks=tasks,
             out_dir=out_dir,
             infra_retries=infra_retries,
+        run_mode=run_mode,
             planner_model=planner_model,
             engineer_model=engineer_model,
             reviewer_model=reviewer_model,
             reasoning_effort=reasoning_effort,
             atomic_compound_enabled=code_on,
+            agent_mode=agent_mode.value,
             progress=_progress,
         )
     except (RuntimeError, ValueError) as exc:

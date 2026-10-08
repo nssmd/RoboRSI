@@ -137,6 +137,15 @@ def run_rollout(
     LLM's context across atomics + retries. The final messages list is
     returned in RolloutResult.messages for the caller to feed into the
     next call."""
+    remote_loop = getattr(env, "run_tool_loop", None)
+    if callable(remote_loop):
+        return remote_loop(
+            seed=seed, task_name=task_name, instruction=instruction,
+            expected_on_success=expected_on_success, model=model,
+            tool_budget=tool_budget, workdir=workdir,
+            use_sim_predicate=use_sim_predicate,
+            restrict_to_names=restrict_to_names, prior_messages=prior_messages,
+        )
     workdir = (workdir or Path("/tmp/roborsi-zeroshot")) / f"{task_name}-{seed}"
     workdir.mkdir(parents=True, exist_ok=True)
     rollout = Rollout(task=task_name, seed=seed)
@@ -453,6 +462,11 @@ def run_rollout(
     except Exception as exc:
         (workdir / "trace_error.txt").write_text(f"{type(exc).__name__}: {exc}")
 
+    if state._sim_contaminated:
+        # Trace is already preserved. A leaked worker can still mutate state,
+        # so never call the final adjudicator or record a task failure here.
+        raise TimeoutError(f"Tool timeout left simulator contaminated; trace preserved at {workdir / 'trace.json'}")
+
     vlm_declared = success
     real_success = env.check_success() if use_sim_predicate else None
     if use_sim_predicate:
@@ -706,8 +720,13 @@ def _dispatch(state: DispatchContext, call: dict[str, Any]) -> tuple[dict[str, A
     policy.py) without touching this file.
     """
     name = call.get("tool")
+    from roborsi.agents.flat_refinement import flat_enabled
+    if flat_enabled() and name == 'plan':
+        return ({'ok': False, 'reason': 'Hierarchical planning unavailable in flat-development condition'}, state.env.take_snapshot())
+    if name == "execute_with_pi05":
+        return ({"ok": False, "reason": "Tool removed from this runtime"}, state.env.take_snapshot())
     args = call.get("args") or {}
-    meta_result = _dispatch_meta_tool(name, args, ns=state.ns)
+    meta_result = _dispatch_meta_tool(name, args, ns=state.ns, source_workdir=state.workdir)
     if meta_result is not None:
         return (meta_result, state.env.take_snapshot())
     if state._tool_handlers is None:

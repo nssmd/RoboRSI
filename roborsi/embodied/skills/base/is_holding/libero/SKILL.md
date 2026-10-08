@@ -9,9 +9,12 @@ args:
   object: { type: string, description: "Optional expected-object label, retained in the result for trace readability; it does not change the proprioceptive check." }
 returns:
   ok: bool
-  holding: bool
+  holding: {type: bool, description: "True only for gripper_state=held. False also covers ambiguous and is not by itself proof of an empty gripper."}
   gripper_gap: float
-  gripper_state: string
+  gripper_state:
+    type: string
+    enum: [open, closed_empty, held, ambiguous]
+    description: "Exact LIBERO literals are open, closed_empty, held, ambiguous. The calibrated open endpoint is serialized as open, NOT fully_open. Ambiguous must not be treated as empty or a verified release; this proprioceptive signal does not prove object identity or containment."
 when_to_use: |
   After a grasp as a proprioceptive signal before transporting, or during
   recovery. For thin objects, combine the raw gap with visible scene evidence.

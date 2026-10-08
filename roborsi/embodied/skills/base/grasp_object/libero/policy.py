@@ -10,6 +10,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import numpy as np
 
@@ -264,28 +265,38 @@ def _verify_object_pixel(
     )
 
 
-def _clear_source_view(env, ctrl) -> tuple[bool, np.ndarray | None]:
+def _clear_source_view(
+    env,
+    ctrl,
+) -> tuple[bool, bool, np.ndarray | None]:
+    """Request one reduced collision-aware retreat and report hold separately.
+
+    ``motion_reached`` is only the retreat helper's measured completion result.
+    ``holding_after`` is independently derived from calibrated proprioception.
+    The helper remains responsible for collision-aware execution; this function
+    makes no claim about its internal waypoint slew.
+    """
     from roborsi.embodied.skills.base._lib.libero._perception import (
         retreat_from_head_view,
     )
 
-    reached = False
-    for lift, back in ((0.04, 0.10), (0.02, 0.06)):
-        reached = retreat_from_head_view(
+    motion_reached = bool(
+        retreat_from_head_view(
             env,
             ctrl,
-            lift=lift,
-            back=back,
-            clear_z=0.42,
+            lift=0.025,
+            back=0.035,
+            clear_z=0.36,
             z_ceiling=1.15,
         )
-        if reached:
-            break
+    )
+    _, grip_state = ctrl.read_gripper_state()
+    holding_after = grip_state is GripperState.HELD
     ee, _, _ = ctrl.read_pose()
     point = np.asarray(ee, dtype=float)
     if point.shape != (3,) or not np.all(np.isfinite(point)):
         point = None
-    return bool(reached), point
+    return motion_reached, holding_after, point
 
 
 # ── perception mode ──────────────────────────────────────────────────────
@@ -381,6 +392,16 @@ def _perception_grasp(state, args):
                     and identity_verified
                     and requested_matches_held
                 ),
+                "success": bool(
+                    visual.ok
+                    and identity_verified
+                    and requested_matches_held
+                ),
+                "holding_visual": bool(
+                    visual.ok
+                    and identity_verified
+                    and requested_matches_held
+                ),
                 "holding": True,
                 "visual_verified": visual.ok,
                 "identity_verified": identity_verified,
@@ -417,13 +438,15 @@ def _perception_grasp(state, args):
     loc = _locate_pixel(state, args)
     if loc is None:
         return ({"ok": False, "grasped": False,
+                 "success": False, "holding_visual": False,
                  "reason": "could not locate the object by vision — call find_pixel(object) and pass pixel=[u, v]"},
                 env.take_snapshot())
     if _is_sentinel(loc):
         # Perception returned the image-centre sentinel: NOT a real detection.
         # Refuse the grasp so the VLM re-perceives instead of grasping empty
         # table and looping until budget_exceeded.
-        return ({"ok": False, "grasped": False, "sentinel": True,
+        return ({"ok": False, "grasped": False, "success": False,
+                 "holding_visual": False, "sentinel": True,
                  "reason": "perception returned the (128,128) centre sentinel (nothing found) — "
                            "re-find_pixel with a more specific query, look() closer, or zoom_in "
                            "before retrying grasp_object with an explicit pixel=[u, v]"},
@@ -432,8 +455,16 @@ def _perception_grasp(state, args):
     use_hollow_base_grip = _uses_hollow_base_grip(
         args.get("object")
     )
+    try:
+        pickup_frame = env.coherent_sensor_frame("agentview")
+    except Exception:  # noqa: BLE001
+        pickup_frame = None
     before_obs = env.take_snapshot()
-    before_rgb = before_obs.images.get("head_camera")
+    before_rgb = (
+        pickup_frame.rgb
+        if pickup_frame is not None and pickup_frame.valid
+        else before_obs.images.get("head_camera")
+    )
     requested_object = str(args.get("object") or "").strip()
     cabinet_exit_distance = (
         _CABINET_EXIT_DISTANCE
@@ -463,7 +494,11 @@ def _perception_grasp(state, args):
                     )
                 except Exception:  # noqa: BLE001
                     identity_verified = False
-    before_depth = capture_depth_frame(env)
+    before_depth = (
+        pickup_frame.depth_m
+        if pickup_frame is not None and pickup_frame.valid
+        else capture_depth_frame(env)
+    )
     grasps, _cloud = grasps_at_pixel(env, u, v, top_k=3)
 
     def _rim_plan_for(cloud):
@@ -493,45 +528,138 @@ def _perception_grasp(state, args):
             loc2 = localize_precise(state, name)
             if loc2 and not _is_sentinel(loc2):
                 candidate = int(loc2[0]), int(loc2[1])
-                if _requires_semantic_pointing(name):
-                    current_rgb = env.take_snapshot().images.get(
-                        "head_camera"
+                # A detector re-localization is a new perception claim for every
+                # object phrase. Never repeat the pixel that already produced no
+                # candidates, and require both bounded spatial consistency and
+                # fresh public-image identity verification before requesting new
+                # grasp geometry.
+                candidate_verified = bool(
+                    candidate != (int(u), int(v))
+                    and _semantic_relocalization_consistent(
+                        (int(u), int(v)),
+                        candidate,
                     )
-                    if (
-                        not _semantic_relocalization_consistent(
-                            (u, v),
-                            candidate,
-                        )
-                        or current_rgb is None
-                        or not _verify_object_pixel(
+                )
+                current_rgb = env.take_snapshot().images.get("head_camera")
+                if candidate_verified and current_rgb is not None:
+                    try:
+                        candidate_verified = _verify_object_pixel(
                             state,
                             name,
                             current_rgb,
                             candidate,
                         )
-                    ):
-                        candidate = None
-                if candidate is None:
-                    g2, c2 = [], None
+                    except Exception:  # noqa: BLE001
+                        candidate_verified = False
                 else:
+                    candidate_verified = False
+                if candidate_verified:
                     g2, c2 = grasps_at_pixel(
                         env,
                         candidate[0],
                         candidate[1],
                         top_k=3,
                     )
-                if c2 is not None:
-                    grasps, _cloud, u, v = (
-                        g2,
-                        c2,
-                        candidate[0],
-                        candidate[1],
+                    try:
+                        c2_array = np.asarray(c2, dtype=float)
+                        cloud_valid = bool(
+                            c2_array.ndim == 2
+                            and c2_array.shape[0] > 0
+                            and c2_array.shape[1] >= 3
+                            and np.all(np.isfinite(c2_array[:, :3]))
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        cloud_valid = False
+                    if g2 and cloud_valid:
+                        grasps, _cloud, u, v = (
+                            g2,
+                            c2,
+                            candidate[0],
+                            candidate[1],
+                        )
+                        rim_plan = (
+                            _rim_plan_for(_cloud)
+                            if use_hollow_base_grip
+                            else None
+                        )
+    # Rebind the finally accepted pixel, RGB-D, calibration, identity evidence,
+    # and accepted cloud immediately before physical execution. This is required
+    # even when the initial pixel was retained, and is especially important when
+    # the recovery localization above selected a different candidate. Bracketing
+    # grasps_at_pixel with coherent-frame captures proves that no simulator step
+    # changed the observation generation while its cloud was produced.
+    try:
+        rebound_frame = env.coherent_sensor_frame("agentview")
+    except Exception:  # noqa: BLE001
+        rebound_frame = None
+    if rebound_frame is None or not rebound_frame.valid:
+        return (
+            {
+                "ok": False,
+                "grasped": False,
+                "success": False,
+                "holding_visual": False,
+                "reason": "coherent pickup RGB-D frame was unavailable",
+            },
+            env.take_snapshot(),
+        )
+    rebound_rgb = rebound_frame.rgb
+    rebound_identity_verified = True
+    if requested_object:
+        from roborsi.embodied.skills.base._lib.libero._perception import (
+            _requires_semantic_pointing,
+        )
+
+        if _requires_semantic_pointing(requested_object):
+            point_evidence = matching_semantic_point(
+                env,
+                object_name=requested_object,
+                pixel=(int(u), int(v)),
+                current_frame=rebound_rgb,
+            )
+            if point_evidence is None:
+                try:
+                    rebound_identity_verified = _verify_object_pixel(
+                        state,
+                        requested_object,
+                        rebound_rgb,
+                        (int(u), int(v)),
                     )
-                    rim_plan = (
-                        _rim_plan_for(_cloud)
-                        if use_hollow_base_grip
-                        else None
-                    )
+                except Exception:  # noqa: BLE001
+                    rebound_identity_verified = False
+    rebound_grasps, rebound_cloud = grasps_at_pixel(
+        env,
+        int(u),
+        int(v),
+        top_k=3,
+    )
+    try:
+        rebound_after = env.coherent_sensor_frame("agentview")
+    except Exception:  # noqa: BLE001
+        rebound_after = None
+    if (
+        rebound_after is None
+        or not rebound_after.valid
+        or rebound_after.frame_token != rebound_frame.frame_token
+    ):
+        return (
+            {
+                "ok": False,
+                "grasped": False,
+                "success": False,
+                "holding_visual": False,
+                "reason": "pickup observation changed while constructing grasp geometry",
+            },
+            env.take_snapshot(),
+        )
+    pickup_frame = rebound_frame
+    before_rgb = rebound_frame.rgb
+    before_depth = rebound_frame.depth_m
+    identity_verified = rebound_identity_verified
+    grasps = rebound_grasps
+    _cloud = rebound_cloud
+    rim_plan = _rim_plan_for(_cloud) if use_hollow_base_grip else None
+
     if not grasps and not (
         _fix_on()
         and use_hollow_base_grip
@@ -539,12 +667,19 @@ def _perception_grasp(state, args):
         and len(_cloud) >= 30
     ):
         return ({"ok": False, "grasped": False,
-                 "reason": "GraspGen found no grasp for that pixel — re-find_pixel or look() closer"},
+                 "success": False, "holding_visual": False,
+                 "reason": "GraspGen found no grasp for the grounded pixel; no accepted same-instance mask is available for safe prompt retries — re-find_pixel or look() closer"},
                 env.take_snapshot())
     # A measured wide rim is the strongest geometry available: pinch the rim
     # first, then fall back to the solid base and finally GraspGen.
     p = ee = gap = None
     grasped = False
+    # Every close performed by this grasp invocation records this token with its
+    # post-close/pre-lift proprioceptive pose. A closure record from an earlier
+    # invocation can therefore never authenticate the current pickup.
+    grasp_attempt_token = uuid4().hex
+    env._libero_grasp_attempt_token = grasp_attempt_token
+    env._libero_grasp_closure_pose = None
     grip_state = GripperState.OPEN
     floor_package_grip_attempted = False
     floor_package_grip_attempts = 0
@@ -677,90 +812,48 @@ def _perception_grasp(state, args):
             grasped = grip_state is GripperState.HELD
             if grasped:
                 break
+    grasp_pose_pos = None
     grasp_quat = None
-    if grip_state is GripperState.HELD:
-        try:
-            _, grasp_quat, _ = ctrl.read_pose()
-        except (AttributeError, TypeError, ValueError):
-            grasp_quat = None
+    closure = getattr(env, "_libero_grasp_closure_pose", None)
+    if grip_state is GripperState.HELD and isinstance(closure, dict) and pickup_frame is not None:
+        generation = closure.get("generation")
+        if (
+            isinstance(generation, (tuple, list))
+            and len(generation) == 2
+            and closure.get("reset_generation") == pickup_frame.reset_generation
+            and generation[0] == pickup_frame.reset_generation
+            and closure.get("attempt_token") == grasp_attempt_token
+        ):
+            grasp_pose_pos = np.asarray(closure.get("position"), dtype=float)
+            grasp_quat = np.asarray(closure.get("quaternion_xyzw"), dtype=float)
+            if (grasp_pose_pos.shape != (3,) or grasp_quat.shape != (4,)
+                    or not np.all(np.isfinite(grasp_pose_pos))
+                    or not np.all(np.isfinite(grasp_quat))):
+                grasp_pose_pos = None
+                grasp_quat = None
+    env._libero_grasp_attempt_token = None
     visual_clear_reached = None
     visual_clear_failed = False
     hold_lost_during_clear = False
     if grasped:
-        visual_clear_reached, cleared_ee = _clear_source_view(env, ctrl)
+        (
+            visual_clear_reached,
+            holding_after_clear,
+            cleared_ee,
+        ) = _clear_source_view(env, ctrl)
         if cleared_ee is not None:
             ee = cleared_ee
         gap_raw, grip_state = ctrl.read_gripper_state()
         gap = round(float(gap_raw), 4)
-        if not visual_clear_reached:
-            visual_clear_failed = True
-            grasped = False
-        elif grip_state is not GripperState.HELD:
+        if not holding_after_clear or grip_state is not GripperState.HELD:
             hold_lost_during_clear = True
             grasped = False
-    if (
-        not grasped
-        and hold_lost_during_clear
-        and _fix_on()
-        and _uses_side_entry_package_grip(
-            requested_object,
-            getattr(state, "_last_identity_package", None),
-        )
-    ):
-        from roborsi.embodied.skills.base._lib.libero._perception import (
-            localize_precise,
-        )
-
-        side_entry_attempted = True
-        recovery_loc = localize_precise(state, requested_object)
-        if recovery_loc is not None and not _is_sentinel(recovery_loc):
-            recovery_grasps, recovery_cloud = grasps_at_pixel(
-                env,
-                int(recovery_loc[0]),
-                int(recovery_loc[1]),
-                top_k=3,
-            )
-            if recovery_grasps and recovery_cloud is not None:
-                p, ee, gq, side_evidence = execute_package_side_entry(
-                    env,
-                    recovery_grasps[0],
-                    recovery_cloud,
-                    hover=hover,
-                )
-                side_candidates_attempted += int(
-                    side_evidence.get("side_candidates_attempted") or 0
-                )
-                side_candidate_index = side_evidence.get(
-                    "side_candidate_index"
-                )
-                gap_raw, grip_state = ctrl.read_gripper_state()
-                gap = round(float(gap_raw), 4)
-                if (
-                    side_evidence.get("side_entry_succeeded")
-                    and grip_state is GripperState.HELD
-                ):
-                    u, v = int(recovery_loc[0]), int(recovery_loc[1])
-                    _cloud = recovery_cloud
-                    try:
-                        _, grasp_quat, _ = ctrl.read_pose()
-                    except (AttributeError, TypeError, ValueError):
-                        grasp_quat = None
-                    visual_clear_reached, cleared_ee = _clear_source_view(
-                        env,
-                        ctrl,
-                    )
-                    if cleared_ee is not None:
-                        ee = cleared_ee
-                    gap_raw, grip_state = ctrl.read_gripper_state()
-                    gap = round(float(gap_raw), 4)
-                    grasped = bool(
-                        visual_clear_reached
-                        and grip_state is GripperState.HELD
-                    )
-                    side_entry_succeeded = grasped
-                    if grasped:
-                        hold_lost_during_clear = False
-                        visual_clear_failed = False
+        elif not visual_clear_reached:
+            visual_clear_failed = True
+            grasped = False
+    # A dropped object may have moved or become occluded, and the arm may no
+    # longer be in a verified collision-safe approach posture. Fail closed;
+    # there is deliberately no automatic re-localize/re-grasp recovery here.
     if side_entry_attempted and not grasped:
         side_entry_succeeded = False
     after_obs = env.take_snapshot()
@@ -796,9 +889,14 @@ def _perception_grasp(state, args):
                 np.asarray(_cloud, dtype=float)[:, :3],
                 axis=0,
             )
-        candidate_offset_world = (
-            object_center - np.asarray(p, dtype=float)[:3]
+        grasp_origin = (
+            grasp_pose_pos
+            if grasp_pose_pos is not None
+            and grasp_pose_pos.shape == (3,)
+            and np.all(np.isfinite(grasp_pose_pos))
+            else np.asarray(p, dtype=float)[:3]
         )
+        candidate_offset_world = object_center - grasp_origin
         if (
             candidate_offset_world.shape == (3,)
             and np.all(np.isfinite(candidate_offset_world))
@@ -815,6 +913,45 @@ def _perception_grasp(state, args):
                     object_offset_local = tuple(
                         float(value) for value in local_offset
                     )
+    pickup_reference = None
+    if (
+        grasped
+        and identity_verified
+        and pickup_frame is not None
+        and pickup_frame.valid
+        and object_offset_local is not None
+        and grasp_pose_pos is not None
+        and grasp_quat is not None
+        and _cloud is not None
+    ):
+        try:
+            from roborsi.embodied.skills.base._lib.libero.instance_hold import (
+                build_pickup_reference,
+            )
+
+            pickup_reference = build_pickup_reference(
+                env,
+                frame=pickup_frame,
+                object_name=requested_object,
+                source_pixel=(int(u), int(v)),
+                accepted_cloud=_cloud,
+                grasp_position=grasp_pose_pos,
+                grasp_quaternion=grasp_quat,
+                object_offset_local=object_offset_local,
+                identity_verified=True,
+            )
+        except Exception:  # noqa: BLE001
+            pickup_reference = None
+    if pickup_reference is None:
+        identity_verified = False
+    else:
+        # Use the centroid of the authenticated, robot-excluded pickup mask in
+        # the recorded post-close/pre-lift TCP frame. This keeps transport-time
+        # prediction and release geometry tied to the same public RGB-D evidence
+        # rather than the potentially broader GraspGen cloud centroid.
+        object_offset_local = tuple(
+            float(value) for value in pickup_reference.object_offset_local
+        )
     if grasped:
         source_patch_mad = _source_patch_motion(
             before_rgb,
@@ -838,6 +975,7 @@ def _perception_grasp(state, args):
                 identity_verified=identity_verified,
                 object_offset_local=object_offset_local,
                 release_clearance_hint=release_clearance_hint,
+                pickup_reference=pickup_reference,
             )
             visual_hold_recorded = evidence is not None
             held_object = evidence.object_name if evidence is not None else None
@@ -853,13 +991,31 @@ def _perception_grasp(state, args):
             identity_verified=identity_verified,
             object_offset_local=object_offset_local,
             release_clearance_hint=release_clearance_hint,
+            pickup_reference=pickup_reference,
         )
         visual_hold_pending = pending is not None
     holding = grip_state is GripperState.HELD
     visual_verified = bool(grasped and visual_hold_recorded)
+    # Native grasp_holds_actor accepts success or holding_visual.  Expose both
+    # only from the same strict conjunction used by grasped: calibrated HELD at
+    # the post-clear observation plus successfully recorded visual hold evidence.
+    harness_hold = bool(
+        holding
+        and grasped
+        and visual_verified
+        and visual_hold_recorded
+        and identity_verified
+    )
     do_not_regrasp = bool(holding)
-    return ({"ok": True, "grasped": grasped, "backend": "graspgen+sam",
-             "grasp_point": [round(float(x), 4) for x in p],
+    return ({"ok": True, "grasped": grasped,
+             "success": harness_hold,
+             "holding_visual": harness_hold,
+             "backend": "graspgen+sam",
+             "grasp_point": (
+                 [round(float(x), 4) for x in np.asarray(p).reshape(-1)]
+                 if p is not None
+                 else []
+             ),
              "grasp_pixel": [u, v], "gripper_gap": gap,
              "gripper_state": grip_state.value,
              "holding": holding,
@@ -920,7 +1076,11 @@ def _perception_grasp(state, args):
                  if not grasped and source_patch_mad is not None
                  else None
              ),
-             "ee_pos": [round(float(x), 4) for x in ee],
+             "ee_pos": (
+                 [round(float(x), 4) for x in np.asarray(ee).reshape(-1)]
+                 if ee is not None
+                 else []
+             ),
              "note": "perception grasp (no GT). grasped=True means the object is pinched "
                      "AND the source patch changed after lift. Use place_on_surface for "
                      "an exposed support or place_object_in for a container. A SMALL "

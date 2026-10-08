@@ -1,48 +1,56 @@
-# Plan: libero_pick_place
+# Initial plan: LIBERO task execution
+
+## Scope and source
+This is generic cold-start guidance, derived from the shipped
+`libero_pick_place` plan. It is not an execution trace, a verified solution to
+the current task, or evidence that any step has already succeeded. The current
+runtime instruction and the available public skill contracts are authoritative.
+Use a task-specific Manager-approved plan when one exists. Do not import another
+task's object identities, coordinates, placement relation, or completion claims.
 
 ## Goal
-Pick the named source object and place it into the requested receptacle or onto
-the requested exposed support, then release it.
+Satisfy every relation in the current instruction using current observations.
+First identify whether the task requires transport, drawer manipulation, another
+articulated action, or several of these. A pick-and-place recipe is applicable
+only to the transport portion of the task.
 
-## Sub-goals
-1. `look` from head camera; identify the SOURCE object and the TARGET
-   zone/container from the image.
-2. `find_pixel(object=<source>)` and `find_pixel(object=<target>)`; retain the
-   visible source and target pixels for this episode.
-3. `grasp_object(object=<source>, pixel=[u, v])` — end-to-end vision grasp.
-4. `verify_pick_complete(object=<source>)` — confirm real lift; if ok=False, retry
-   `grasp_object` once, then re-verify.
-5. Refresh the target with `find_pixel` after the grasp.
-6. Follow the current instruction's relation:
-   - `place_object_in(object=<target>, z_offset=0.06)` for in/inside/into a
-     receptacle. For an ordinary target, pass its name without a stale
-     pre-grasp pixel so the skill can clear the view and re-localize before
-     transport.
-   - `place_on_surface(target=<target>)` for on/onto/on top of a plate, stove,
-     pad, stand, scale, shelf, table, or other exposed support.
+## Planning and execution
+1. Observe the scene using the available public perception tools. Identify the
+   requested objects, target and relation from the instruction and observation.
+   Resolve ambiguity before acting; do not infer a destination from a task ID.
+2. Write an ordered plan for the current task. Name only skills present in the
+   current catalog, and use their documented arguments and preconditions.
+   Drawer or articulated actions need their own observed-state subgoals; do not
+   replace them with grasp-and-place merely because of the atomic task name.
+3. For a transport subgoal, localize the source in the current view and use the
+   available grasp skill. Check the returned physical and visual hold evidence
+   before transport. A tool's top-level `ok=True` alone does not prove a hold.
+4. Refresh target localization after motion. For an inside relation use the
+   available container-placement skill; for an exposed support use the available
+   surface-placement skill. Read that skill's contract for required evidence,
+   coordinate frame and parameters. Do not reuse a stale pre-motion pixel.
+5. After each action, record what its public return and current observation
+   actually establish. If the grasp, motion, release or relation is unconfirmed,
+   keep that subgoal unresolved. An Engineer summary or `done` call is not an
+   observation and does not establish completion.
+6. On failure, inspect the reported cause and current scene. Replan from the
+   failed subgoal with a specific change supported by this evidence. Avoid
+   repeating an unchanged failed action or spending rounds only declaring done.
+   Preserve already-established state only when the evidence still applies.
+7. Check all requested relations using available public observations and checks.
+   For transport, verify release and supported placement, not merely a lifted
+   object or an empty gripper. Declare completion only when evidence supports
+   the current task's full instruction.
 
-## Success criteria
-- Source object no longer at its original table location.
-- Source object now resting inside/on the target zone or container.
-- Gripper open after the relation-appropriate placement skill releases.
+## Refinement and persistence
+Keep this seed read-only during execution. Write the concrete per-episode plan
+and revisions in the episode workspace. Reviewer diagnoses can propose plan or
+skill changes; Manager reviews them and may revise them. A persistent task plan
+is promoted through the existing Manager process. Skill-code publication keeps
+its review and simulation gate. Failed public observations remain available for
+repair; no private simulator predicates are planning inputs.
 
-## Candidate skills
-- `look` — capture scene to identify source object and target visually.
-- `find_pixel` — source and target localization from the current camera image.
-- `grasp_object` — the dedicated vision grasp primitive (only grasp allowed).
-- `verify_pick_complete` — visible hold gate before transport.
-- `place_object_in` — carry and release into a receptacle or cavity.
-- `place_on_surface` — carry and release onto an exposed support.
-
-## Expected n_steps
-8
-
-## Risks
-- Mis-identifying source vs target — confirm both from the `look` image first.
-- `grasp_object` closing on air — gate with `verify_holding_visual`, retry once.
-- A tool-level `ok=True` is not enough; require its explicit hold evidence.
-- Never transport with the holding grasp-quat via move_to_pose (IK thrash);
-  use the relation-appropriate placement skill.
-- Do not carry a plate-specific or basket-specific route over from another
-  LIBERO task; the current runtime instruction is authoritative.
-- Avoid repeated find_pixel/zoom loops that burn the step budget.
+## Budget
+Use the run's existing tool and round budgets. Reserve enough budget for final
+relation checks. Do not add a new fixed retry count or assume a universal action
+count for different LIBERO tasks.

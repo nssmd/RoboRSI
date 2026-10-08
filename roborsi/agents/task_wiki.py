@@ -35,17 +35,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-WIKI_REVIEW_ROOT = Path.home() / ".roborsi" / "wiki_review"
+WIKI_REVIEW_ROOT = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "wiki_review"
 # Plan-promotion queue: a Sim-SUCCESS run's workspace plan proposed for
 # promotion into the task's persistent (read-only) seed plan.md. Manager
 # approval via resolve_plan_promotion is the ONLY path that overwrites the
 # seed — mirrors the wiki_review gate (nothing unverified persists).
-PLAN_REVIEW_ROOT = Path.home() / ".roborsi" / "plan_review"
+PLAN_REVIEW_ROOT = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "plan_review"
 # Policy-proposal queue: on a task with several Sim successes, the Planner may
 # author a solidified compound (policy.py + SKILL.md) that codifies the winning
 # recipe as one Engineer-callable tool. It is queued here; a Manager approves via
 # resolve_policy_proposal — the ONLY path that writes a compound into the repo.
-POLICY_REVIEW_ROOT = Path.home() / ".roborsi" / "policy_review"
+POLICY_REVIEW_ROOT = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "policy_review"
 
 # Caps per section so the wiki stays Engineer-friendly (~1.5k tokens
 # total). Per 2026-06-15 user request "Wiki 强读加 Cap". Older entries
@@ -121,12 +121,14 @@ def _task_skill_dir(task: str) -> Path:
         f"cannot resolve persistent doc dir for task '{task}'")
 
 
-def wiki_path(task: str) -> Path:
-    return _task_skill_dir(task) / "wiki.md"
+def wiki_path(task: str, task_key=None) -> Path:
+    from roborsi.agents.task_memory_identity import directory
+    scoped=directory(task,task_key)
+    return (scoped if scoped is not None else _task_skill_dir(task)) / "wiki.md"
 
 
-def _ensure_wiki(task: str) -> Path:
-    p = wiki_path(task)
+def _ensure_wiki(task: str, task_key=None) -> Path:
+    p = wiki_path(task,task_key)
     if not p.exists():
         p.write_text(_TEMPLATE.format(task=task), encoding="utf-8")
     return p
@@ -230,7 +232,7 @@ def _trim_section_to_cap(wiki_md: str, section_title: str,
     # Archive everything from keep_end to end_idx.
     archived_block = "\n".join(lines[keep_end:end_idx])
     if archived_block.strip():
-        ar = _task_skill_dir(task) / "wiki_archive.md"
+        ar = wiki_path(task).parent / "wiki_archive.md"
         ar_existing = ar.read_text(encoding="utf-8") if ar.exists() else ""
         ar.write_text(
             ar_existing
@@ -254,7 +256,7 @@ def append_success_trace(*, task: str, atomic: str, seed: int,
     block = (
         f"### {atomic} · seed={seed} · run={run_id} · {_now_iso()}\n"
         f"- tool_calls: {tool_calls_total}\n"
-        f"- outcome: ✓ success\n"
+        f"- execution trace retained\n"
         f"- sequence:\n{seq_md}\n"
     )
     new_md = _insert_under_section(md, "Successful execution traces", block)
@@ -292,7 +294,7 @@ def append_failure_trace(*, task: str, atomic: str, seed: int,
     block = (
         f"### {atomic} · seed={seed} · run={run_id} · {_now_iso()}\n"
         f"- tool_calls: {tool_calls_total}\n"
-        f"- outcome: ✗ failure\n"
+        f"- execution trace retained\n"
         f"- reviewer diagnosis: [PENDING REVIEW — root_cause + next_action are "
         f"queued to wiki_review/{pid}; NOT shown as a lead until a Manager "
         f"approves them, so an unverified guess can't steer the next plan]\n"
@@ -319,6 +321,7 @@ def _enqueue_hypothesis_review(*, task: str, run_id: str,
         "id": pid,
         "kind": "failure_hypothesis",
         "task": task,
+        "task_key": __import__("roborsi.agents.task_memory_identity",fromlist=["key"]).key(task),
         "source_run_id": run_id,
         "root_cause": root_cause,
         "next_action": next_action,
@@ -342,7 +345,7 @@ def resolve_wiki_hypothesis(proposal_path: Path, *, approve: bool,
     require_evolution("resolving a wiki hypothesis")
     payload = json.loads(Path(proposal_path).read_text(encoding="utf-8"))
     task = payload["task"]
-    p = _ensure_wiki(task)
+    p = _ensure_wiki(task, payload.get("task_key"))
     if approve:
         md = p.read_text(encoding="utf-8")
         block = (
@@ -386,6 +389,7 @@ def _enqueue_plan_promotion(*, task: str, run_id: str, workspace_plan_md: str,
         "id": pid,
         "kind": "plan_promotion",
         "task": task,
+        "task_key": __import__("roborsi.agents.task_memory_identity",fromlist=["key"]).key(task),
         "source_run_id": run_id,
         "workspace_plan_md": workspace_plan_md,
         "prior_persistent_md": prior,
@@ -413,7 +417,7 @@ def resolve_plan_promotion(proposal_path: Path, *, approve: bool,
     from roborsi.agents.planner import persistent_plan_path
     payload = json.loads(Path(proposal_path).read_text(encoding="utf-8"))
     if approve:
-        persistent_plan_path(payload["task"]).write_text(
+        persistent_plan_path(payload["task"], task_key=payload.get("task_key")).write_text(
             payload["workspace_plan_md"], encoding="utf-8")
     payload["status"] = "approved" if approve else "rejected"
     payload["manager_note"] = manager_note
@@ -437,6 +441,7 @@ def propose_measurement(*, task: str, measurement_md: str, rationale: str,
     payload = {
         "id": pid,
         "task": task,
+        "task_key": __import__("roborsi.agents.task_memory_identity",fromlist=["key"]).key(task),
         "measurement_md": measurement_md,
         "rationale": rationale,
         "source_run_id": source_run_id,
@@ -454,7 +459,7 @@ def apply_measurement_proposal(proposal_path: Path) -> Path:
     require_evolution("applying a wiki measurement")
     payload = json.loads(proposal_path.read_text(encoding="utf-8"))
     task = payload["task"]
-    p = _ensure_wiki(task)
+    p = _ensure_wiki(task, payload.get("task_key"))
     md = p.read_text(encoding="utf-8")
     block = (
         f"- {payload['measurement_md'].strip()}\n"
@@ -487,6 +492,18 @@ def read_wiki(task: str) -> str:
     raw = p.read_text(encoding="utf-8")
     from roborsi.agents.gt_firewall import redact
     clean, _dropped = redact(task, raw)
+    from roborsi.embodied.paths import home
+    shared = home() / "cross_task_approved.json"
+    if shared.exists():
+        import json as _json
+        rows = _json.loads(shared.read_text())
+        entries = [str(r["lesson"]) for r in rows if r.get("status") == "approved"]
+        shared_text, _ = redact(task, "\n".join("- " + e for e in entries[-12:]))
+        clean += "\n\n## Manager-approved cross-task lessons\n" + shared_text
+        with (home() / "cross_task_consumption.jsonl").open("a") as record:
+            record.write(_json.dumps({"utc": time.time(), "consumer_task": __import__("os").environ.get("ROBORSI_CURRENT_SIM_TASK", task), "atomic": task,
+                "source_proposals": [r.get("source_proposal") for r in rows if r.get("status") == "approved"],
+                "source_tasks": [r.get("source_task") for r in rows if r.get("status") == "approved"]}) + "\n")
     return clean
 
 
@@ -522,6 +539,7 @@ def _enqueue_policy_proposal(*, task: str, run_id: str, compound_name: str,
         "id": pid,
         "kind": "compound_policy",
         "task": task,
+        "task_key": __import__("roborsi.agents.task_memory_identity",fromlist=["key"]).key(task),
         "compound_name": compound_name,
         "source_run_id": run_id,
         "policy_code": policy_code,

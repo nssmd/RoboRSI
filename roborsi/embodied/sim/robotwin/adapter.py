@@ -199,6 +199,8 @@ class RoboTwinEnv(Env):
         self._task_cls = _lazy_import_task(root, task)
         self._impl: Any = None    # instance of RoboTwin task class
         self._last_obs: Observation | None = None
+        self._event_unhook = None
+        self._event_record = {"success": False, "ticks": 0}
 
     def _init_impl(self, seed: int) -> Any:
         impl = self._task_cls()
@@ -233,6 +235,7 @@ class RoboTwinEnv(Env):
         return impl
 
     def reset(self, seed: int) -> Observation:
+        self._clear_event_adjudication()
         # RoboTwin's setup_demo raises UnStableError when actors spawn
         # interpenetrating/unstable (e.g. two bottles in pick_diverse_bottles,
         # shoes in place_dual_shoes). This is a SCENE-INIT physics failure — the
@@ -252,6 +255,7 @@ class RoboTwinEnv(Env):
                 self._snapshot_predicate_refs()
                 obs = self._impl.get_obs()
                 self._last_obs = _to_sim_obs(obs)
+                self._install_event_adjudication()
                 return self._last_obs
             except Exception as e:
                 is_unstable = (UnStableError and isinstance(e, UnStableError)) \
@@ -357,6 +361,7 @@ class RoboTwinEnv(Env):
         return rollout
 
     def close(self) -> None:
+        self._clear_event_adjudication()
         if self._impl is None:
             return
         closer = getattr(self._impl, "close_env", None) or getattr(
@@ -372,9 +377,46 @@ class RoboTwinEnv(Env):
         """Fresh obs from the RoboTwin impl (valid pre/post step)."""
         return _to_sim_obs(self._impl.get_obs())
 
+    def _clear_event_adjudication(self) -> None:
+        unhook = getattr(self, "_event_unhook", None)
+        if unhook is not None:
+            unhook()
+        self._event_unhook = None
+        self._event_record = {"success": False, "ticks": 0}
+
+    def _install_event_adjudication(self) -> None:
+        """Keep contact-event evidence private until final harness adjudication.
+
+        RoboTwin's take_action checks its predicate after each physics tick;
+        the compound move path does not. Sample the SAME official predicates
+        for contact-based tasks so a later retreat cannot erase the event.
+        No reward, success bit, or predicate value is added to observations.
+        """
+        contact_tasks = {
+            "beat_block_hammer", "click_alarmclock", "click_bell",
+            "handover_mic", "place_can_basket", "place_object_basket",
+            "press_stapler",
+        }
+        if (os.environ.get("ROBORSI_ROBOTWIN_EVENT_ADJUDICATION") != "1"
+                or self.task not in contact_tasks):
+            return
+        checker = getattr(self._impl, "check_success", None)
+        if checker is None:
+            return
+        record = self._event_record
+
+        def sample_private_event():
+            record["ticks"] += 1
+            if not record["success"]:
+                record["success"] = bool(checker())
+
+        self._event_unhook = self.hook_physics_step(sample_private_event)
+
     def check_success(self) -> bool | None:
         """RoboTwin's ground-truth predicate. None if the task exposes none.
         Lets exceptions propagate (repo rule: no silent swallow)."""
+        if getattr(self, "_event_record", {}).get("success", False):
+            return True
         fn = getattr(self._impl, "check_success", None) or getattr(
             self._impl, "_check_success", None
         )

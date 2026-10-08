@@ -4,7 +4,7 @@ kind: base
 robot: robotwin
 category: control
 version: 0.1.0
-description: CaP-X-style OBB top-down grasp for REGULAR objects (boxes / cubes / cylinders / short poles). Segments the object (Grounded-SAM), builds its world point cloud from the mask + depth, DBSCAN-denoises, fits an oriented bounding box (OBB), and grasps TOP-DOWN with the fingers closing across the OBB's SHORTEST horizontal extent, descending to the OBB body-center height. For regular shapes this OBB-aligned grasp is more reliable than a learned grasp net (validated: ~1.1cm localize, 2/3 grasp on cubes). Enabled by default; set ROBORSI_OBB_GRASP=0 to disable.
+description: "CaP-X-style OBB top-down grasp for REGULAR objects (boxes / cubes / cylinders / short poles). Segments the object (Grounded-SAM), builds its world point cloud from the mask + depth, DBSCAN-denoises, fits an oriented bounding box (OBB), and grasps TOP-DOWN with the fingers closing across the OBB's SHORTEST horizontal extent, descending to the OBB body-center height. For regular shapes this OBB-aligned grasp is more reliable than a learned grasp net (validated: ~1.1cm localize, 2/3 grasp on cubes). Enabled by default; set ROBORSI_OBB_GRASP=0 to disable."
 args:
   arm:    { type: string, required: true, enum: [left, right], description: "arm to grasp with. Pick the arm on the object's side (object x>0 -> right, x<0 -> left)." }
   object: { type: string, required: true, description: "natural-language name of the object to grasp (a concrete noun phrase: 'red block', not 'the thing')." }

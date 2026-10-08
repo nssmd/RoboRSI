@@ -27,6 +27,7 @@ same data via approval UI.
 from __future__ import annotations
 
 import sys
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -34,6 +35,13 @@ from typing import Any
 
 
 _REPO = Path(__file__).resolve().parents[2]
+
+def _harness_timeout_s(namespace: str) -> int:
+    value = int(os.environ.get("ROBORSI_NATIVE_HARNESS_TIMEOUT_S", "300")) if namespace == "libero" else 300
+    if value <= 0:
+        raise ValueError("Native harness timeout must be positive")
+    return value
+
 
 
 @dataclass
@@ -95,7 +103,7 @@ def _stage_and_gate(
             backups[path] = path.read_bytes() if path.exists() else None
             path.write_text(content, encoding="utf-8")
 
-        gate = run_gate_for(name, timeout_s=300)
+        gate = run_gate_for(name, timeout_s=_harness_timeout_s(namespace))
         return CheckOutcome(
             name="harness",
             passed=(gate.verdict == "PASS"),
@@ -153,18 +161,25 @@ class ProposalValidator:
             public_tool_names,
         )
 
-        findings = inspect_candidate(
-            new_code,
-            allowed_tools=public_tool_names(namespace),
-            candidate_name=name,
-        )
-        if skill_md:
-            findings.extend(inspect_skill_text(skill_md))
+        if proposal.get('development_mode') == 'native':
+            from manager_native import assert_native_candidate
+            assert_native_candidate(new_code)
+            if proposal.get('manager_decision') != 'approve' or not proposal.get('manager_reviewed_at'):
+                raise ValueError('Actual Manager approval is required before a native harness')
+            findings = []
+        else:
+            findings = inspect_candidate(
+                new_code,
+                allowed_tools=public_tool_names(namespace),
+                candidate_name=name,
+            )
+            if skill_md:
+                findings.extend(inspect_skill_text(skill_md))
         rep.capability = CheckOutcome(
             name="capability",
             passed=not findings,
             detail=(
-                "Agent-authored policy uses only literal public _dispatch_tool calls"
+                ("Native implementation reviewed by Manager" if proposal.get("development_mode") == "native" else "Agent-authored policy uses only literal public _dispatch_tool calls")
                 if not findings
                 else "; ".join(
                     f"L{item.line} {item.code}: {item.detail}"
@@ -180,7 +195,7 @@ class ProposalValidator:
             )
             return rep
 
-        if namespace != "robotwin" or not _is_base_proposal(proposal):
+        if (namespace != "robotwin" and not (namespace == "libero" and os.environ.get("ROBORSI_HARNESS_NAMESPACE") == "libero")) or not _is_base_proposal(proposal):
             rep.harness = CheckOutcome(
                 name="harness",
                 passed=False,
@@ -206,6 +221,9 @@ class ProposalValidator:
         if rep.overall_pass:
             rep.note = ("HARNESS PASSED — proposal eligible for Claude "
                          "similarity review + apply.")
+        elif rep.harness.extras.get("verdict") == "ERROR":
+            rep.note = ("INCOMPLETE at harness execution — no valid functional "
+                        "verdict. Preserve infrastructure evidence before recovery.")
         else:
             rep.note = ("BLOCKED at harness check — proposal failed real-sim "
                          "validation. Claude should reject or ask Reviewer to "

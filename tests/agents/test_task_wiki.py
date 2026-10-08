@@ -13,6 +13,8 @@ from roborsi.agents import task_wiki
 def tmp_wiki(monkeypatch, tmp_path):
     # Wiki + archive now live in the task's skill dir; point that at a temp
     # dir per task so tests stay hermetic without touching real skills.
+    monkeypatch.setenv("ROBORSI_RUN_MODE", "evolve")
+    monkeypatch.delenv("ROBORSI_EVIDENCE_EPISODE_KEY", raising=False)
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(task_wiki, "_task_skill_dir", lambda task: skill_dir)
@@ -40,7 +42,8 @@ def test_append_success_replaces_placeholder(tmp_wiki):
     )
     md = task_wiki.read_wiki("t")
     assert "pick_block · seed=11 · run=r1" in md
-    assert "outcome: ✓ success" in md
+    assert "execution trace retained" in md
+    assert "outcome: ✓ success" not in md
     assert "1. `describe_scene_actors`" in md
     assert "2. `grasp_then_lift` (arm=left)" in md
     # Placeholder for this section should be gone.
@@ -59,7 +62,9 @@ def test_append_failure_queues_diagnosis_for_manager_review(tmp_wiki):
         reviewer_next_action="use smoother single-shot move_to_pose; do not chain manual fingertip steps",
     )
     md = task_wiki.read_wiki("t")
-    assert "outcome: ✗ failure" in md
+    assert "place · seed=11 · run=r2" in md
+    assert "execution trace retained" in md
+    assert "outcome: ✗ failure" not in md
     assert "PENDING REVIEW" in md
     assert "block fell out of left gripper" not in md
 

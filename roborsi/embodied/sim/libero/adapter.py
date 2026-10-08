@@ -209,6 +209,16 @@ class LiberoProEnv(Env):
         self._orbit_frames: dict[str, Any] = {}
         self._orbit_generation = 0
 
+        # Sensor frames are copied while holding this lock. reset() and step()
+        # hold the same lock while advancing MuJoCo and publishing their cached
+        # observation, so RGB, depth, calibration, and measured robot state
+        # cannot be mixed across adapter observations.
+        import threading
+
+        self._sensor_lock = threading.RLock()
+        self._reset_generation = 0
+        self._observation_generation = 0
+
     def _bind_gl_context(self) -> None:
         """Make MuJoCo's offscreen GL context current on the CALLING thread.
 
@@ -227,29 +237,35 @@ class LiberoProEnv(Env):
 
         LIBERO ``pruned_init`` states are valid MuJoCo sim states, so no
         settling is needed by default; ``settle_steps`` no-op steps are taken
-        only if configured.
+        only if configured. Reset and cache publication are serialized against
+        coherent_sensor_frame(), and reset invalidates all skill-side evidence.
         """
         import numpy as np
-        self._bind_gl_context()
-        self._env.reset()
-        # Tune JOINT_POSITION every episode because env.reset() recreates the
-        # controller. These values match the mature whole-arm LIBERO control.
-        _jp = self._env.env.robots[0].controller
-        _jp.output_max = np.full(7, 0.35)
-        _jp.output_min = np.full(7, -0.35)
-        _jp.kp = np.full(7, 300.0)
-        _jp.kd = np.full(7, 2.0 * np.sqrt(300.0))
-        idx = int(seed) % len(self._init_states)
-        raw = self._env.set_init_state(self._init_states[idx])
-        for _ in range(self._settle_steps):
-            raw, _, _, _ = self._env.step(_NOOP_ACTION)
-        self._raw = _visible_raw_obs(raw)
-        self._last_obs = _to_sim_obs(self._raw, self.instruction)
-        self._terminated = False
-        self._vframes = []
-        self._orbit_frames = {}
-        self._orbit_generation += 1
-        return self._last_obs
+
+        with self._sensor_lock:
+            self._bind_gl_context()
+            self._env.reset()
+            # Tune JOINT_POSITION every episode because env.reset() recreates the
+            # controller. These values match the mature whole-arm LIBERO control.
+            _jp = self._env.env.robots[0].controller
+            _jp.output_max = np.full(7, 0.35)
+            _jp.output_min = np.full(7, -0.35)
+            _jp.kp = np.full(7, 300.0)
+            _jp.kd = np.full(7, 2.0 * np.sqrt(300.0))
+            idx = int(seed) % len(self._init_states)
+            raw = self._env.set_init_state(self._init_states[idx])
+            for _ in range(self._settle_steps):
+                raw, _, _, _ = self._env.step(_NOOP_ACTION)
+            self._raw = _visible_raw_obs(raw)
+            self._last_obs = _to_sim_obs(self._raw, self.instruction)
+            self._reset_generation += 1
+            self._observation_generation += 1
+            self._invalidate_sensor_consumers()
+            self._terminated = False
+            self._vframes = []
+            self._orbit_frames = {}
+            self._orbit_generation += 1
+            return self._last_obs
 
     def step(self, action, action_type: str = "ee") -> "Step":
         """Advance one robosuite step with the 7-D OSC_POSE action
@@ -265,18 +281,20 @@ class LiberoProEnv(Env):
             return Step(obs=self._last_obs or Observation(), action=action,
                         reward=0.0, done=True,
                         info={"terminated": True})
-        self._bind_gl_context()            # render on the CALLING thread's context
-        raw, _reward, done, info = self._env.step(
-            np.asarray(action, dtype=np.float64).flatten()
-        )
-        self._raw = _visible_raw_obs(raw)
-        self._last_obs = _to_sim_obs(self._raw, self.instruction)
+        with self._sensor_lock:
+            self._bind_gl_context()        # render on the CALLING thread's context
+            raw, _reward, _task_success, info = self._env.step(
+                np.asarray(action, dtype=np.float64).flatten()
+            )
+            self._raw = _visible_raw_obs(raw)
+            self._last_obs = _to_sim_obs(self._raw, self.instruction)
+            self._observation_generation += 1
         info = {
             key: value
             for key, value in dict(info or {}).items()
             if key.lower() not in {"success", "is_success", "task_success"}
         }
-        self._terminated = bool(done)
+        self._terminated = bool(getattr(self._env.env, "done", False))
         if self._tick_cb is not None:      # feed the rollout's demo-video frame capture
             self._tick_cb()
         self._capture_frame()              # buffer head frame for the success mp4
@@ -284,7 +302,7 @@ class LiberoProEnv(Env):
             obs=self._last_obs,
             action=action,
             reward=0.0,
-            done=bool(done),
+            done=self._terminated,
             info=info,
         )
 
@@ -345,6 +363,241 @@ class LiberoProEnv(Env):
     def take_snapshot(self) -> Observation:
         """Latest cached obs (robosuite has no cheap re-poll without a step)."""
         return self._last_obs or Observation()
+
+    def sensor_generation(self) -> tuple[int, int]:
+        """Return ``(reset_generation, observation_generation)``.
+
+        Reset generation changes exactly once after each completed reset.
+        Observation generation is monotonic for the adapter lifetime and changes
+        after every reset publication and every successful physics step.
+        """
+        with self._sensor_lock:
+            return self._reset_generation, self._observation_generation
+
+    def _invalidate_sensor_consumers(self) -> None:
+        """Remove episode-local skill evidence after a completed reset.
+
+        These attributes contain only skill caches. Deleting them does not alter
+        MuJoCo state, the task definition, or the saved LIBERO initialization.
+        """
+        for name in (
+            "_libero_visual_hold_evidence",
+            "_libero_pending_visual_hold_evidence",
+            "_libero_visual_hold_association_cache",
+            "_libero_robot_render_cache",
+            "_roborsi_surface_target_cache",
+        ):
+            if hasattr(self, name):
+                delattr(self, name)
+
+    @staticmethod
+    def _model_names(model: Any, attribute: str) -> tuple[str, ...]:
+        try:
+            values = getattr(model, attribute)
+        except Exception:  # noqa: BLE001
+            return ()
+        if values is None:
+            return ()
+        return tuple(str(value) for value in values if value is not None)
+
+    def _robot_contract_parts(self):
+        """Return the live robot, model, and attached gripper models."""
+        robots = tuple(self._env.env.robots)
+        if len(robots) != 1:
+            raise RuntimeError(
+                "LIBERO sensor contract requires exactly one robot"
+            )
+        robot = robots[0]
+        robot_model = robot.robot_model
+        gripper_value = getattr(robot, "gripper", None)
+        if isinstance(gripper_value, dict):
+            grippers = tuple(gripper_value.values())
+        elif isinstance(gripper_value, (list, tuple)):
+            grippers = tuple(gripper_value)
+        elif gripper_value is None:
+            grippers = ()
+        else:
+            grippers = (gripper_value,)
+        return robot, robot_model, grippers
+
+    def known_robot_geometry(self):
+        """Return immutable exact robot-only MJCF metadata for this reset.
+
+        The XML comes from the live robosuite ``robot_model.get_xml()`` API after
+        robosuite has configured the Panda, mount, and attached gripper. It does
+        not serialize the task arena or task objects. Names are supplied so a
+        renderer can validate its compiled robot-only model before use.
+        """
+        from roborsi.embodied.skills.base._lib.libero.robot_frame import (
+            make_known_robot_geometry,
+        )
+
+        with self._sensor_lock:
+            _, robot_model, grippers = self._robot_contract_parts()
+            arm_joints = self._model_names(robot_model, "joints")
+            gripper_joints = tuple(
+                name
+                for gripper in grippers
+                for name in self._model_names(gripper, "joints")
+            )
+            # robot_model.get_xml() includes the exact mount merged by
+            # RobotModel.add_mount(). The parent model's geom lists do not
+            # include that component, so extend the trusted manifest from the
+            # attached mount itself rather than accepting names from the XML.
+            mount = getattr(robot_model, "mount", None)
+            visual_geoms = (
+                self._model_names(robot_model, "visual_geoms")
+                + self._model_names(mount, "visual_geoms")
+                + tuple(
+                    name
+                    for gripper in grippers
+                    for name in self._model_names(gripper, "visual_geoms")
+                )
+            )
+            contact_geoms = (
+                self._model_names(robot_model, "contact_geoms")
+                + self._model_names(mount, "contact_geoms")
+                + tuple(
+                    name
+                    for gripper in grippers
+                    for name in self._model_names(gripper, "contact_geoms")
+                )
+            )
+            return make_known_robot_geometry(
+                reset_generation=self._reset_generation,
+                model_identity=(
+                    f"{type(robot_model).__module__}."
+                    f"{type(robot_model).__qualname__}:"
+                    f"{getattr(robot_model, 'name', '')}"
+                ),
+                robot_model_xml=str(robot_model.get_xml()),
+                root_body=str(robot_model.root_body),
+                arm_joint_names=arm_joints,
+                gripper_joint_names=gripper_joints,
+                visual_geom_names=visual_geoms,
+                contact_geom_names=contact_geoms,
+            )
+
+    def _measured_robot_state(self, generation: int):
+        from roborsi.embodied.skills.base._lib.libero.robot_frame import (
+            make_robot_joint_state,
+        )
+
+        import numpy as np
+
+        _, robot_model, grippers = self._robot_contract_parts()
+        arm_names = self._model_names(robot_model, "joints")
+        gripper_names = tuple(
+            name
+            for gripper in grippers
+            for name in self._model_names(gripper, "joints")
+        )
+        sim = self._env.env.sim
+
+        def scalar_qpos(name: str) -> float:
+            value = np.asarray(
+                sim.data.get_joint_qpos(name),
+                dtype=float,
+            ).reshape(-1)
+            if value.size != 1 or not np.isfinite(value[0]):
+                raise RuntimeError(
+                    f"robot joint {name!r} did not provide one finite qpos"
+                )
+            return float(value[0])
+
+        # Use the robot observables cached with the RGB-D, rather than
+        # reading qpos again after the simulator's observation refresh.
+        arm_qpos = tuple(float(x) for x in np.asarray(
+            self._raw["robot0_joint_pos"], dtype=float).reshape(-1))
+        gripper_qpos = tuple(float(x) for x in np.asarray(
+            self._raw["robot0_gripper_qpos"], dtype=float).reshape(-1))
+        if len(arm_qpos) != len(arm_names) or len(gripper_qpos) != len(gripper_names):
+            raise RuntimeError("Cached robot joint values do not match verified joint names")
+        base_pos = np.asarray(
+            sim.data.get_body_xpos(robot_model.root_body),
+            dtype=float,
+        )
+        base_quat_wxyz = np.asarray(
+            sim.data.get_body_xquat(robot_model.root_body),
+            dtype=float,
+        )
+        return make_robot_joint_state(
+            observation_generation=generation,
+            arm_joint_names=arm_names,
+            arm_qpos=arm_qpos,
+            gripper_joint_names=gripper_names,
+            gripper_qpos=gripper_qpos,
+            base_position_world=base_pos,
+            base_quaternion_wxyz=base_quat_wxyz,
+        )
+
+    def coherent_sensor_frame(self, camera: str = "agentview"):
+        """Copy one coherent cached RGB-D/calibration/proprioception frame.
+
+        This method does not call ``step`` or otherwise advance physics. The
+        sensor lock prevents reset or step from running while the cached RGB,
+        cached normalized depth, camera calibration, and measured robot state
+        are copied. RGB and metric depth use top-down image rows. Intrinsics use
+        pixel coordinates ``(u=column, v=row)``. ``camera_to_world`` maps camera
+        coordinates to world coordinates. MuJoCo near/far values are reported in
+        meters, and the depth array is metric camera depth in meters.
+        """
+        import time
+
+        import numpy as np
+        from robosuite.utils import camera_utils as cu
+
+        from roborsi.embodied.skills.base._lib.libero.robot_frame import (
+            make_camera_calibration,
+            make_coherent_sensor_frame,
+        )
+
+        with self._sensor_lock:
+            generation = self._observation_generation
+            reset_generation = self._reset_generation
+            alias = _CAMERA_ALIASES.get(camera, camera)
+            image = None
+            if self._last_obs is not None:
+                image = self._last_obs.images.get(alias)
+            rgb = None if image is None else np.asarray(image, dtype=np.uint8)
+            depth = self.depth_map(camera)
+            intrinsic, camera_to_world = self.camera_matrices(camera)
+            sim = self._env.env.sim
+            extent = float(sim.model.stat.extent)
+            near_m = float(sim.model.vis.map.znear) * extent
+            far_m = float(sim.model.vis.map.zfar) * extent
+            calibration = make_camera_calibration(
+                camera_name=camera,
+                image_height=int(self._camera_hw[0]),
+                image_width=int(self._camera_hw[1]),
+                intrinsic=intrinsic,
+                camera_to_world=camera_to_world,
+                near_m=near_m,
+                far_m=far_m,
+                row_order="top_down",
+                pixel_order="uv_col_row",
+                depth_convention="metric_camera_depth_m",
+            )
+            robot_state = self._measured_robot_state(generation)
+            frame_token = (
+                f"libero:{reset_generation}:{generation}:{camera}"
+            )
+            return make_coherent_sensor_frame(
+                frame_token=frame_token,
+                reset_generation=reset_generation,
+                observation_generation=generation,
+                observation_timestamp=(
+                    float(self._last_obs.timestamp)
+                    if self._last_obs is not None
+                    and self._last_obs.timestamp is not None
+                    else None
+                ),
+                captured_at=float(time.time()),
+                rgb=rgb,
+                depth_m=depth,
+                calibration=calibration,
+                robot_state=robot_state,
+            )
 
     def check_success(self) -> bool | None:
         """LIBERO's ground-truth predicate over the (perturbed) goal state."""

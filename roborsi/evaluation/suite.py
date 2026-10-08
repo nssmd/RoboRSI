@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures as cf
+from concurrent.futures.process import BrokenProcessPool
 import importlib.util
 import json
 import multiprocessing as mp
@@ -18,14 +19,16 @@ from typing import Any
 
 from roborsi.embodied.paths import evals_root
 from roborsi.evaluation.atomic import (
+    AGENT_MODES,
     classify_attempt_exception,
     run_atomic_attempt,
 )
 
 _SHORT_TASK = re.compile(
-    r"^libero_(spatial|object|goal)(?:_(task|object|swap|lan))?/(\d+)$"
+    r"^libero_(spatial|object|goal|10)(?:_(task|object|swap|lan))?/(\d+)$"
 )
 _TASKS_PER_PROCESS = 4
+_MAX_POOL_REBUILDS = 3
 
 
 def select_libero_short_tasks(
@@ -39,7 +42,11 @@ def select_libero_short_tasks(
     ok, reason = backend.available()
     if not ok:
         raise RuntimeError(f"backend '{backend_name}' unavailable: {reason}")
-    available = sorted(task for task in backend.list_tasks() if _SHORT_TASK.match(task))
+    all_tasks = backend.list_tasks()
+    if backend_name.startswith("libero"):
+        available = sorted(task for task in all_tasks if _SHORT_TASK.match(task))
+    else:
+        available = sorted(all_tasks)
     if requested:
         requested_clean = [str(task).strip() for task in requested if str(task).strip()]
         unknown = [task for task in requested_clean if task not in available]
@@ -60,11 +67,13 @@ def run_libero_short_suite(
     tasks: list[str] | None = None,
     out_dir: Path | None = None,
     infra_retries: int = 2,
+    run_mode: str = "eval",
     planner_model: str | None = None,
     engineer_model: str | None = None,
     reviewer_model: str | None = None,
     reasoning_effort: str | None = None,
     atomic_compound_enabled: bool = True,
+    agent_mode: str = "roborsi",
     progress=None,
 ) -> dict[str, Any]:
     """Run task-level pass@K with exact journal resume and success protection."""
@@ -74,6 +83,10 @@ def run_libero_short_suite(
         raise ValueError("workers must be >= 1")
     if infra_retries < 0:
         raise ValueError("infra_retries must be >= 0")
+    if agent_mode not in AGENT_MODES:
+        raise ValueError(
+            f"unknown agent_mode {agent_mode!r}; expected one of {AGENT_MODES}"
+        )
 
     task_keys = select_libero_short_tasks(backend, tasks)
     if not task_keys:
@@ -84,7 +97,9 @@ def run_libero_short_suite(
         reviewer_model,
     )
     runtime = _runtime_fingerprint(backend)
-    if runtime.get("roborsi_dirty"):
+    # Evolution campaigns mutate the skill library in-tree by design; the
+    # journal + campaign_id remain the integrity anchor across restarts.
+    if runtime.get("roborsi_dirty") and run_mode != "evolve":
         raise RuntimeError(
             "eval-suite requires a clean RoboRSI worktree so one campaign "
             "cannot mix different source revisions"
@@ -112,11 +127,13 @@ def run_libero_short_suite(
         workers=workers,
         tool_budget=tool_budget,
         infra_retries=infra_retries,
+        run_mode=run_mode,
         planner_model=planner_model,
         engineer_model=engineer_model,
         reviewer_model=reviewer_model,
         reasoning_effort=reasoning_effort,
         atomic_compound_enabled=atomic_compound_enabled,
+        agent_mode=agent_mode,
         journal=journal,
         created_at=started_at,
         runtime=runtime,
@@ -162,12 +179,14 @@ def run_libero_short_suite(
                     "seed": seed,
                     "tool_budget": tool_budget,
                     "infra_retries": infra_retries,
+                    "run_mode": run_mode,
                     "attempt_start": attempts_by_key.get(key, 0) + 1,
                     "planner_model": planner_model,
                     "engineer_model": engineer_model,
                     "reviewer_model": reviewer_model,
                     "reasoning_effort": reasoning_effort,
                     "atomic_compound_enabled": atomic_compound_enabled,
+                    "agent_mode": agent_mode,
                 })
 
             for payload, attempt_rows in _run_payload_batch(payloads, workers):
@@ -238,7 +257,7 @@ def _run_suite_attempt(payload: dict[str, Any]) -> list[dict[str, Any]]:
             row = run_atomic_attempt(
                 task=payload["atomic"],
                 seed=int(payload["seed"]),
-                mode="eval",
+                mode=str(payload.get("run_mode") or "eval"),
                 tool_budget=int(payload["tool_budget"]),
                 backend=payload["backend"],
                 sim_task=payload["task_key"],
@@ -246,6 +265,7 @@ def _run_suite_attempt(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 engineer_model=payload.get("engineer_model"),
                 reviewer_model=payload.get("reviewer_model"),
                 reasoning_effort=payload.get("reasoning_effort"),
+                agent_mode=str(payload.get("agent_mode") or "roborsi"),
             )
             row["task_key"] = payload["task_key"]
             row["attempt"] = attempt
@@ -280,30 +300,57 @@ def _run_payload_batch(
             results.append((payload, rows))
         return results
 
-    executor = cf.ProcessPoolExecutor(
-        max_workers=min(workers, len(payloads)),
-        mp_context=mp.get_context("spawn"),
-        max_tasks_per_child=_TASKS_PER_PROCESS,
-    )
-    futures: dict[cf.Future, dict[str, Any]] = {}
+    # One child segfault (mujoco/EGL) breaks the whole pool and would fail
+    # every in-flight payload of the batch; rebuild the pool and re-run the
+    # affected payloads (bounded) so one crash costs one episode, not a batch.
     results: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
-    try:
-        for payload in payloads:
-            try:
-                future = executor.submit(_run_suite_attempt, payload)
-            except Exception as exc:
-                results.append((payload, [_parent_worker_error(payload, exc)]))
-            else:
-                futures[future] = payload
-        for future in cf.as_completed(futures):
-            payload = futures[future]
-            try:
-                rows = future.result()
-            except Exception as exc:
-                rows = [_parent_worker_error(payload, exc)]
-            results.append((payload, rows))
-    finally:
-        executor.shutdown(wait=True, cancel_futures=True)
+    pending = list(payloads)
+    rebuilds = 0
+    while pending:
+        executor = cf.ProcessPoolExecutor(
+            max_workers=min(workers, len(pending)),
+            mp_context=mp.get_context("spawn"),
+            max_tasks_per_child=_TASKS_PER_PROCESS,
+        )
+        futures: dict[cf.Future, dict[str, Any]] = {}
+        requeue: list[dict[str, Any]] = []
+        try:
+            for payload in pending:
+                try:
+                    future = executor.submit(_run_suite_attempt, payload)
+                except Exception as exc:
+                    results.append(
+                        (payload, [_parent_worker_error(payload, exc)])
+                    )
+                else:
+                    futures[future] = payload
+            for future in cf.as_completed(futures):
+                payload = futures[future]
+                try:
+                    rows = future.result()
+                except BrokenProcessPool as exc:
+                    if rebuilds < _MAX_POOL_REBUILDS:
+                        requeue.append(payload)
+                    else:
+                        results.append(
+                            (payload, [_parent_worker_error(payload, exc)])
+                        )
+                except Exception as exc:
+                    results.append(
+                        (payload, [_parent_worker_error(payload, exc)])
+                    )
+                else:
+                    results.append((payload, rows))
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+        if requeue:
+            rebuilds += 1
+            print(
+                f"[suite] process pool broke; rebuild #{rebuilds}, "
+                f"retrying {len(requeue)} payloads",
+                flush=True,
+            )
+        pending = requeue
     return results
 
 
@@ -316,7 +363,8 @@ def _parent_worker_error(payload: dict[str, Any], exc: Exception) -> dict[str, A
         "backend": payload.get("backend"),
         "seed": int(payload["seed"]),
         "attempt": int(payload.get("attempt_start", 1)),
-        "run_mode": "eval",
+        "run_mode": str(payload.get("run_mode") or "eval"),
+        "agent_mode": str(payload.get("agent_mode") or "roborsi"),
         "success": None,
         "verdict": verdict,
         "status": "incomplete",
@@ -356,11 +404,13 @@ def _load_or_create_campaign(
     workers: int,
     tool_budget: int,
     infra_retries: int,
+    run_mode: str,
     planner_model: str | None,
     engineer_model: str | None,
     reviewer_model: str | None,
     reasoning_effort: str | None,
     atomic_compound_enabled: bool,
+    agent_mode: str,
     journal: Path,
     created_at: datetime,
     runtime: dict[str, Any],
@@ -382,6 +432,8 @@ def _load_or_create_campaign(
         },
         "reasoning_effort": reasoning_effort,
         "atomic_compound_enabled": atomic_compound_enabled,
+        "agent_mode": agent_mode,
+        "run_mode": run_mode,
         "runtime": runtime,
     }
     if path.exists():
@@ -389,11 +441,24 @@ def _load_or_create_campaign(
             existing = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise ValueError(f"campaign manifest is not valid JSON: {path}") from exc
+        # Manifests written before agent_mode existed are roborsi campaigns.
+        existing.setdefault("agent_mode", "roborsi")
+        existing.setdefault("run_mode", "eval")
+        # Runtime fingerprint drift (source revision, env dirs) is recorded
+        # rather than fatal: journals are append-only and rows carry their own
+        # provenance, so a bugfix commit must not strand a campaign.
         mismatches = [
             key
             for key, value in requested.items()
-            if existing.get(key) != value
+            if key != "runtime" and existing.get(key) != value
         ]
+        if existing.get("runtime") != requested.get("runtime"):
+            print(
+                "[suite] runtime fingerprint drift on resume "
+                f"(manifest {str((existing.get('runtime') or {}).get('roborsi_commit'))[:9]} "
+                f"-> current {str(requested['runtime'].get('roborsi_commit'))[:9]}); recorded, not fatal",
+                flush=True,
+            )
         if mismatches:
             raise ValueError(
                 "resume configuration differs from campaign manifest: "
@@ -507,8 +572,8 @@ def _summarize_suite(
         "schema": "roborsi.libero_short_eval.v1",
         "campaign_id": campaign_id,
         "status": "complete" if incomplete_tasks == 0 else "incomplete",
-        "run_mode": "eval",
-        "frozen": True,
+        "run_mode": str(campaign.get("run_mode") or "eval"),
+        "frozen": str(campaign.get("run_mode") or "eval") == "eval",
         "backend": backend,
         "atomic": atomic,
         "pass_at": seeds,
@@ -519,6 +584,7 @@ def _summarize_suite(
         "atomic_compound_enabled": bool(
             campaign.get("atomic_compound_enabled", True)
         ),
+        "agent_mode": str(campaign.get("agent_mode") or "roborsi"),
         "tasks_total": len(task_keys),
         "tasks_solved": solved_tasks,
         "task_success_rate": solved_tasks / len(task_keys),

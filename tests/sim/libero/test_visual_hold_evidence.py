@@ -37,7 +37,7 @@ def test_unchanged_source_does_not_record_visual_hold() -> None:
     assert get_visual_hold(env) is None
 
 
-def test_changed_source_records_and_verifies_visual_hold() -> None:
+def test_changed_source_records_and_verifies_visual_hold(authenticated_pickup) -> None:
     env = SimpleNamespace()
     before, after = _frames()
 
@@ -47,8 +47,10 @@ def test_changed_source_records_and_verifies_visual_hold() -> None:
         source_pixel=(16, 16),
         before_rgb=before,
         after_rgb=after,
+        identity_verified=True,
+        pickup_reference=authenticated_pickup(env),
     )
-    verified = verify_visual_hold(env, after.copy())
+    verified = verify_visual_hold(env, after.copy(), holding=True)
 
     assert evidence is not None
     assert evidence.object_name == "white mug"
@@ -76,7 +78,7 @@ def test_visual_hold_records_object_center_offset() -> None:
     assert evidence.release_clearance_hint == 0.04
 
 
-def test_visual_hold_identity_requires_independent_verification() -> None:
+def test_visual_hold_identity_requires_independent_verification(authenticated_pickup) -> None:
     env = SimpleNamespace()
     before, after = _frames()
 
@@ -94,6 +96,7 @@ def test_visual_hold_identity_requires_independent_verification() -> None:
         before_rgb=before,
         after_rgb=after,
         identity_verified=True,
+        pickup_reference=authenticated_pickup(env, object_name="alphabet soup can"),
     )
 
     assert unverified is not None
@@ -102,7 +105,7 @@ def test_visual_hold_identity_requires_independent_verification() -> None:
     assert verified.identity_verified is True
 
 
-def test_source_reoccupied_invalidates_visual_hold() -> None:
+def test_old_source_reoccupation_preserves_current_authenticated_hold(authenticated_pickup) -> None:
     env = SimpleNamespace()
     before, after = _frames()
     record_visual_hold(
@@ -111,15 +114,17 @@ def test_source_reoccupied_invalidates_visual_hold() -> None:
         source_pixel=(16, 16),
         before_rgb=before,
         after_rgb=after,
+        identity_verified=True,
+        pickup_reference=authenticated_pickup(env),
     )
 
-    verified = verify_visual_hold(env, before.copy())
+    verified = verify_visual_hold(env, before.copy(), holding=True)
 
-    assert verified.ok is False
-    assert verified.reason == "source_patch_reoccupied"
+    assert verified.ok is True
+    assert verified.reason == "historical_source_cleared_and_instance_associated"
 
 
-def test_source_changed_but_still_closer_to_occupied_state_is_rejected() -> None:
+def test_old_source_similarity_is_not_current_instance_evidence(authenticated_pickup) -> None:
     env = SimpleNamespace()
     before, after = _frames()
     record_visual_hold(
@@ -128,16 +133,18 @@ def test_source_changed_but_still_closer_to_occupied_state_is_rejected() -> None
         source_pixel=(16, 16),
         before_rgb=before,
         after_rgb=after,
+        identity_verified=True,
+        pickup_reference=authenticated_pickup(env),
     )
     shifted = before.copy()
     shifted[8:24, 8:24] = 10
 
-    verified = verify_visual_hold(env, shifted)
+    verified = verify_visual_hold(env, shifted, holding=True)
 
     assert verified.current_source_mad > 3.0
-    assert verified.current_to_after_mad > verified.current_source_mad
-    assert verified.ok is False
-    assert verified.reason == "source_patch_reoccupied"
+    assert verified.current_to_after_mad == 0.0
+    assert verified.ok is True
+    assert verified.reason == "historical_source_cleared_and_instance_associated"
 
 
 def test_clear_visual_hold_removes_evidence() -> None:
@@ -159,7 +166,7 @@ def test_clear_visual_hold_removes_evidence() -> None:
     assert verified.reason == "missing_visual_hold_evidence"
 
 
-def test_edge_pending_hold_promotes_when_rgb_changes_and_depth_recedes() -> None:
+def test_edge_pending_hold_promotes_when_rgb_changes_and_depth_recedes(authenticated_pickup) -> None:
     before = np.zeros((32, 32, 3), dtype=np.uint8)
     current = before.copy()
     current[4:24, :20] = 180
@@ -178,12 +185,14 @@ def test_edge_pending_hold_promotes_when_rgb_changes_and_depth_recedes() -> None
         source_pixel=(9, 16),
         before_rgb=before,
         before_depth=before_depth,
+        identity_verified=True,
+        pickup_reference=authenticated_pickup(env, object_name="akita black bowl"),
     )
     verified = verify_visual_hold(env, current, holding=True)
 
     assert pending is not None
     assert verified.ok is True
-    assert verified.reason == "pending_visual_hold_promoted"
+    assert verified.reason == "pending_visual_hold_promoted_and_associated"
     assert get_pending_visual_hold(env) is None
     assert get_visual_hold(env) is not None
 

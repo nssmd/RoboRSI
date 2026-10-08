@@ -605,7 +605,7 @@ def _enqueue_proposal(kind: str, **fields) -> str:
     import time as _t
     import uuid as _u
     from pathlib import Path as _P
-    queue = _P.home() / ".roborsi" / "skill_review"
+    queue = __import__("roborsi.embodied.paths",fromlist=["home"]).home() / "skill_review"
     queue.mkdir(parents=True, exist_ok=True)
     pid = f"{int(_t.time())}-{kind}-{(fields.get('name') or 'unnamed')}-{_u.uuid4().hex[:6]}"
     data = {
@@ -636,7 +636,7 @@ def _enqueue_proposal(kind: str, **fields) -> str:
         "review_url": (f"{os.environ.get('ROBORSI_MONITOR_URL', 'http://localhost:8770')}"
                         f"/skills"),
         "note": ("Proposal queued. NOT applied yet — a human must approve "
-                  "via the HTML review UI or /approve command."),
+                  "through the Manager validation and publication gate."),
     }, ensure_ascii=False)
 
 
@@ -772,7 +772,7 @@ _FS_ALLOWED_ROOTS = (
     "/tmp/agent_loop",
     "/tmp/roborsi-zeroshot",
     "/tmp/roborsi-long-horizon",
-    str(__import__("pathlib").Path.home() / ".roborsi"),
+    str(__import__("roborsi.embodied.paths", fromlist=["home"]).home()),
 )
 
 
@@ -1112,6 +1112,12 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
     resolved_backend = backend_name or ab.backend_name
     resolved_sim_task = sim_task or ab.sim_task
     ns = _skill_namespace(resolved_backend)
+    os.environ["ROBORSI_CURRENT_SIM_TASK"] = str(resolved_sim_task)
+    # Preserve simulator identity separately from the shared atomic entrypoint.
+    (workspace.root / "episode_identity.json").write_text(json.dumps({
+        "task_key": resolved_sim_task, "atomic": atomic, "seed": seed,
+        "backend": resolved_backend, "run_mode": run_mode,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # Open and reset the environment before planning. LIBERO task language is
     # selected by the BDDL/task variant at runtime, so a Planner that runs
@@ -1142,57 +1148,134 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
             has_task_instruction=bool(task_instruction),
         )
 
-        # 1. Planner writes plan.md from the actual runtime instruction.
+        # 1+2. Planner -> Engineer, iterated within the episode while budget
+        # remains (ROBORSI_EVAL_MAX_ROUNDS, default 1 = single-shot legacy).
+        # The env is NOT reset between rounds: each re-plan continues from the
+        # scene state the previous attempt left behind, so the total tool
+        # budget matches the baselines' single reactive loop exactly.
         reflections_text = _read_recent_reflections(n=5)
         from roborsi.agents.gt_firewall import redact as _redact_gt
         from roborsi.embodied.agent_loop.vlm_io import capture_usage, merge_usage
         reflections_text, _ = _redact_gt(atomic, reflections_text)
-        planner_request = text
+        base_planner_request = text
         if task_instruction:
-            planner_request += (
+            base_planner_request += (
                 "\n\n=== RUNTIME TASK INSTRUCTION ===\n"
                 f"{task_instruction}"
             )
         planner = Planner(model=planner_model) if planner_model else Planner()
         resolved_planner_model = getattr(planner, "model", None)
-        t0 = _t.time()
-        print(f"[3role] 🧠 Planner planning {atomic} (ns={ns}) ...", flush=True)
-        with capture_usage() as planner_usage:
-            mission_spec = planner.plan(
-                task=atomic,
-                user_msg=planner_request,
-                recent_reflections=reflections_text,
-                workspace=workspace,
-                ns=ns,
-            )
-        print(f"[3role] 🧠 Planner goal: {str(mission_spec.get('goal',''))[:200]}",
-              flush=True)
-        for _i, _sg in enumerate(mission_spec.get("sub_goals", [])[:8]):
-            print(f"[3role]      {_i+1}. {str(_sg)[:150]}", flush=True)
-        planner_wallclock_s = _t.time() - t0
-        sess.append("3role_planned", t=planner_wallclock_s,
-                     sub_goals=mission_spec.get("sub_goals", [])[:3])
-
-        # 2. Engineer reuses the exact reset state the Planner was told about.
         engineer = Engineer(model=engineer_model) if engineer_model else Engineer()
         resolved_engineer_model = getattr(engineer, "model", None)
-        t0 = _t.time()
-        with capture_usage() as engineer_usage:
-            eng_result = engineer.execute(
-                mission_spec=mission_spec,
-                workspace=workspace,
-                seed=seed,
-                tool_budget=tool_budget,
-                backend_name=resolved_backend,
-                sim_task=resolved_sim_task,
-                env=active_env,
-                task_instruction=task_instruction,
-                reset_env=False,
+
+        max_rounds = max(1, int(os.environ.get("ROBORSI_EVAL_MAX_ROUNDS", "1")))
+        budget_left = int(tool_budget)
+        attempt_feedback = ""
+        from roborsi.agents.episode_evidence import HISTORY_RULES, EMPTY_HISTORY, public_round_history
+        episode_history: list[str] = []
+        episode_tool_trace = []
+        planner_usage_list = []
+        engineer_usage_list = []
+        planner_wallclock_s = 0.0
+        engineer_wallclock_s = 0.0
+        total_tool_calls = 0
+        eval_rounds = 0
+        for _round in range(1, max_rounds + 1):
+            eval_rounds = _round
+            planner_request = base_planner_request + attempt_feedback
+            t0 = _t.time()
+            print(f"[3role] 🧠 Planner planning {atomic} (ns={ns}, "
+                  f"round={_round}/{max_rounds}, budget_left={budget_left}) ...",
+                  flush=True)
+            with capture_usage() as planner_usage:
+                mission_spec = planner.plan(
+                    task=atomic,
+                    user_msg=planner_request,
+                    recent_reflections=reflections_text,
+                    workspace=workspace,
+                    ns=ns,
+                )
+            planner_usage_list.append(planner_usage)
+            if episode_history and os.environ.get(
+                    "ROBORSI_EPISODE_HISTORY", "1") != "0":
+                try:
+                    workspace.write_plan(
+                        workspace.read_plan()
+                        + "\n\n## EPISODE HISTORY (earlier rounds of THIS episode; "
+                        + "the scene is NOT reset)\n"
+                        + "\n".join(episode_history[-3:])
+                        + "\n" + HISTORY_RULES + "\n"
+                    )
+                except Exception as _hist_exc:  # noqa: BLE001
+                    print(f"[3role] history append failed: {_hist_exc}", flush=True)
+            print(f"[3role] 🧠 Planner goal: {str(mission_spec.get('goal',''))[:200]}",
+                  flush=True)
+            for _i, _sg in enumerate(mission_spec.get("sub_goals", [])[:8]):
+                print(f"[3role]      {_i+1}. {str(_sg)[:150]}", flush=True)
+            planner_wallclock_s += _t.time() - t0
+            sess.append("3role_planned", t=_t.time() - t0, round=_round,
+                         sub_goals=mission_spec.get("sub_goals", [])[:3])
+
+            t0 = _t.time()
+            with capture_usage() as engineer_usage:
+                eng_result = engineer.execute(
+                    mission_spec=mission_spec,
+                    workspace=workspace,
+                    seed=seed,
+                    tool_budget=budget_left,
+                    backend_name=resolved_backend,
+                    sim_task=resolved_sim_task,
+                    env=active_env,
+                    task_instruction=task_instruction,
+                    reset_env=False,
+                )
+            round_trace = [{**entry, "episode_round": _round}
+                           for entry in (eng_result.get("trace") or [])]
+            trace_dir = workspace.root / "round_traces"
+            trace_dir.mkdir(exist_ok=True)
+            with (trace_dir / f"round_{_round:02d}.json").open("x") as trace_file:
+                json.dump(round_trace, trace_file, ensure_ascii=False, default=str)
+            episode_tool_trace.extend(round_trace)
+            engineer_usage_list.append(engineer_usage)
+            engineer_wallclock_s += _t.time() - t0
+            round_tool_calls = int(eng_result.get("tool_calls") or 0)
+            total_tool_calls += round_tool_calls
+            budget_left -= max(1, round_tool_calls)
+            sess.append("3role_executed", t=_t.time() - t0, round=_round,
+                         success=eng_result["success"],
+                         outcome=eng_result["outcome"],
+                         budget_left=budget_left)
+            if eng_result["success"] or budget_left < 10:
+                break
+            try:
+                public_history = public_round_history(round_trace, _round)
+            except Exception:
+                public_history = EMPTY_HISTORY
+            # Retain the exact public history supplied to the next Planner.
+            # Observability only: filesystem failure must not change execution.
+            try:
+                (workspace.root / f"history-transfer-{_round:02d}.json").write_text(
+                    json.dumps({"round": _round, "public_history": public_history,
+                                "capture": "online_before_next_planner"}),
+                    encoding="utf-8")
+            except OSError as capture_error:
+                print("[history-capture] " + type(capture_error).__name__)
+            episode_history.append(public_history)
+            attempt_feedback = (
+                f"\n\n=== PREVIOUS PUBLIC EXECUTION (round {_round}) ===\n"
+                + public_history + "\n" + HISTORY_RULES
+                + "\nThe scene was NOT reset. Plan only remaining work grounded "
+                  "in current observations; do not promote an earlier declaration "
+                  "or narrative summary into verified completion."
             )
-        engineer_wallclock_s = _t.time() - t0
-        sess.append("3role_executed", t=engineer_wallclock_s,
-                     success=eng_result["success"],
-                     outcome=eng_result["outcome"])
+            print(f"[3role] 🔁 round {_round} failed "
+                  f"({eng_result.get('outcome')}), replanning with "
+                  f"budget_left={budget_left}", flush=True)
+        eng_result["trace"] = episode_tool_trace
+        from roborsi.agents.engineer import _summarize_tool_timing
+        eng_result["timing"] = _summarize_tool_timing(episode_tool_trace)
+        planner_usage_merged = merge_usage(*planner_usage_list)
+        engineer_usage_merged = merge_usage(*engineer_usage_list)
 
     # 2b. Persist a trace.db run row — the 3-role atomic path previously wrote
     # NOTHING to `runs` (only the old feishu run_task_sync + LH paths did), so
@@ -1211,12 +1294,13 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
         episode_summary={
             "vlm_declared": _meta.get("vlm_declared"),
             "predicate_check": _meta.get("predicate_check"),
-            "tool_calls": eng_result.get("tool_calls"),
+            "tool_calls": total_tool_calls,
             "run_mode": run_mode,
             "task_instruction": task_instruction,
+            "sim_task": resolved_sim_task,
             "usage": {
-                "planner": planner_usage.to_dict(),
-                "engineer": engineer_usage.to_dict(),
+                "planner": planner_usage_merged,
+                "engineer": engineer_usage_merged,
             },
             "timing": eng_result.get("timing") or {},
             "planner_wallclock_s": planner_wallclock_s,
@@ -1260,12 +1344,12 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
         )
         sess.append("3role_reviewer_error", text=reviewer_error)
     usage = {
-        "planner": planner_usage.to_dict(),
-        "engineer": engineer_usage.to_dict(),
+        "planner": planner_usage_merged,
+        "engineer": engineer_usage_merged,
         "reviewer": reviewer_usage.to_dict(),
         "total": merge_usage(
-            planner_usage,
-            engineer_usage,
+            *planner_usage_list,
+            *engineer_usage_list,
             reviewer_usage,
         ),
     }
@@ -1281,7 +1365,7 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
         episode_summary={
             "vlm_declared": _meta.get("vlm_declared"),
             "predicate_check": _meta.get("predicate_check"),
-            "tool_calls": eng_result.get("tool_calls"),
+            "tool_calls": total_tool_calls,
             "run_mode": run_mode,
             "models": {
                 "planner": resolved_planner_model,
@@ -1382,7 +1466,8 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
             "run_mode": run_mode,
             "success": bool(eng_result["success"]),
             "outcome": eng_result["outcome"],
-            "tool_calls": eng_result["tool_calls"],
+            "tool_calls": total_tool_calls,
+            "eval_rounds": eval_rounds,
             "reviewer_verdict": review.get("verdict"),
             "proposal_decision": review.get("proposal_decision"),
             "reviewer_error": reviewer_error,
@@ -1398,6 +1483,7 @@ def _run_atomic_3role(*, text: str, atomic: str, seed: int,
             "reviewer_wallclock_s": reviewer_wallclock_s,
             "total_wallclock_s": total_wallclock_s,
             "task_instruction": task_instruction,
+            "sim_task": resolved_sim_task,
             "video_path": _meta.get("demo_video"),
         }
     return reply

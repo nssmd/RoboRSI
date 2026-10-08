@@ -29,7 +29,7 @@ from roborsi.store import trace_db as _td
 
 
 REPO = Path(__file__).resolve().parents[1]
-QUEUE = Path.home() / ".roborsi" / "skill_review"
+QUEUE = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "skill_review"
 _SKILL_SEGMENT = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _BASE_NAMESPACES = {"libero", "robotwin"}
 
@@ -97,7 +97,12 @@ def _assert_candidate_safe(data: dict) -> None:
         assert_safe_skill_text,
     )
 
-    if code:
+    if code and data.get('development_mode') == 'native':
+        from manager_native import assert_native_candidate
+        assert_native_candidate(code)
+        if data.get('manager_decision') != 'approve' or not data.get('manager_reviewed_at'):
+            raise ValueError('Actual Manager approval required for native update')
+    elif code:
         assert_safe_candidate(
             code,
             namespace=namespace,
@@ -196,7 +201,12 @@ def _apply_update(data: dict) -> tuple[list[str], str]:
     target.write_text(new_code, encoding="utf-8")
     msg = (f"selfevo: update {name} (proposal {data['id']})\n\n"
             f"{(data.get('rationale') or '')[:300]}")
-    return [str(target.relative_to(REPO))], msg
+    changed = [str(target.relative_to(REPO))]
+    if data.get('development_mode') == 'native' and data.get('skill_md') and target.name == 'policy.py':
+        _backup(sk.path)
+        sk.path.write_text(data['skill_md'], encoding='utf-8')
+        changed.append(str(sk.path.relative_to(REPO)))
+    return changed, msg
 
 
 def main() -> int:

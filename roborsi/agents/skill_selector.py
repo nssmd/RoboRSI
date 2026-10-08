@@ -42,7 +42,8 @@ class SkillSelector:
     DEFAULT_MODEL = "claude-sonnet-4-6"
 
     def __init__(self, model: str | None = None, top_k: int = TOP_K_DEFAULT) -> None:
-        self.model = model or self.DEFAULT_MODEL
+        import os
+        self.model = model or os.environ.get("ROBORSI_SKILL_SELECTOR_MODEL") or self.DEFAULT_MODEL
         self.top_k = top_k
         self._cache: dict[tuple[int, int], list[str]] = {}
 

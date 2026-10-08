@@ -47,16 +47,23 @@ def _stable_success(task: str) -> bool:
     固化 gate: solidify a compound only for a recipe that STABLY works, never for
     a single or flaky success (place_a2b_left passing seed=1 but failing seed=0 is
     exactly the "not stable yet" case this rejects)."""
+    if task == 'libero_pick_place':
+        from roborsi.agents.compound_source import stable
+        return stable(os.environ.get('ROBORSI_CURRENT_SIM_TASK'))
     from roborsi.store import trace_db
     trace_db.init()
-    row = trace_db._conn().execute(
-        "SELECT SUM(CASE WHEN status='success' AND episode_summary_json LIKE ? "
-        "THEN 1 ELSE 0 END) AS ok, COUNT(*) AS total FROM runs WHERE task = ? "
-        "AND COALESCE(run_mode, 'evolve') = 'evolve'",
-        (_SUCCESS_PREDICATE, task),
-    ).fetchone()
-    ok = (row["ok"] or 0) if row else 0
-    total = (row["total"] or 0) if row else 0
+    rows = trace_db._conn().execute(
+        "SELECT status, episode_summary_json FROM runs WHERE task=? "
+        "AND COALESCE(run_mode,'evolve')='evolve'", (task,)).fetchall()
+    import json
+    task_key=os.environ.get("ROBORSI_CURRENT_SIM_TASK") if task=="libero_pick_place" else None
+    statuses=[]
+    for row in rows:
+        try:summary=json.loads(row["episode_summary_json"] or "{}")
+        except (ValueError,TypeError):continue
+        if task_key and summary.get("sim_task")!=task_key:continue
+        statuses.append(row["status"]=="success" and summary.get("predicate_check") is True)
+    ok=sum(statuses);total=len(statuses)
     return ok >= _MIN_SUCCESS and total > 0 and (ok / total) >= _MIN_RATE
 
 
@@ -68,12 +75,28 @@ def encourage_block(task: str, wiki_md: str) -> str:
     if not _enabled() or not _stable_success(task):
         return ""
     from roborsi.embodied.skills import discover_compounds
-    if discover_compounds(task):
+    existing = [s.name for s in discover_compounds(task)]
+    if task != 'libero_pick_place' and existing:
         return ""
-    return (
+    if task == 'libero_pick_place':
+        from roborsi.embodied.paths import home
+        import json
+        for p in (home()/'policy_review').glob('*.json'):
+            q=json.loads(p.read_text())
+            if q.get('task')==task and q.get('status')=='pending':return ""
+    gate = ""
+    if task == 'libero_pick_place':
+        gate = ("Declare metadata.compound: true and metadata.harness with sim_task="+
+                os.environ['ROBORSI_CURRENT_SIM_TASK']+", seeds: [21, 22], exactly one args mapping, "
+                "and pass_criteria: {kind: simulator_task_success, min_seeds_passing: 2}. "
+                "No setup or skip_harness. Use fresh public perception, not fixed fixture coordinates. "
+                "The Manager independently reviews, tests and publishes; never claim validation already ran. "
+                "Existing compounds: "+', '.join(existing)+".\n")
+    return (gate+
         "=== OPTIONAL: PROPOSE A COMPOUND POLICY ===\n"
-        f"This task now has >= {_MIN_SUCCESS} STABLE Sim-verified successes and no\n"
-        "compound policy yet. If you can distil the winning recipe into a reusable coded macro\n"
+        f"This task now has >= {_MIN_SUCCESS} STABLE Sim-verified successes and\n"
+        "a stable recipe. Existing code may be refined under a NEW unused name; never overwrite it.\n"
+        "Distil a materially useful parameterized multi-step policy, not a one-call alias.\n"
         "the Engineer would call in ONE tool call (composing base skills via\n"
         "literal `_dispatch_tool(state, \"public_skill\", args)` calls), emit a proposal in\n"
         "EXACTLY this format at the END of your reply (or omit it entirely):\n"
@@ -85,8 +108,10 @@ def encourage_block(task: str, wiki_md: str) -> str:
         f"{_SKILL_MARK}\n"
         "<YAML frontmatter (name/description/args/when_to_use) + a short body>\n"
         f"{_END}\n"
-        "The policy may import only `_dispatch_tool` from the rollout module. It must\n"
-        "return the Observation from its final tool call and must never read state.env,\n"
+        "The exact permitted import is `from roborsi.embodied.agent_loop.rollout import _dispatch_tool`.\n"
+        "No bare rollout import. metadata.harness.args must be a list containing exactly one mapping.\n"
+        "Every exit must return (result_dict, observation), using the observation from a public tool call.\n"
+        "Never read state.env,\n"
         "simulator internals, files, processes, networks, or dynamically chosen tools.\n"
         "The Manager reviews it before it goes live. This is an ADDITIONAL block —\n"
         "do NOT alter your normal plan JSON/markdown output.\n\n"
@@ -103,9 +128,32 @@ def capture(task: str, run_id: str, wiki_md: str, content: str) -> Path | None:
         return None
     name, rationale, code, md = parsed
     from roborsi.agents.task_wiki import _enqueue_policy_proposal
-    return _enqueue_policy_proposal(
-        task=task, run_id=run_id, compound_name=name, policy_code=code,
-        skill_md=md, rationale=rationale, success_count=_success_count(wiki_md))
+    if task != 'libero_pick_place':
+        return _enqueue_policy_proposal(task=task,run_id=run_id,compound_name=name,policy_code=code,
+            skill_md=md,rationale=rationale,success_count=_verified_success_count(task))
+    from roborsi.embodied.paths import home
+    import fcntl,json,time,hashlib
+    with (home()/'compound-capture.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        prior=[json.loads(p.read_text()) for p in (home()/'policy_review').glob('*.json')]
+        reason=None
+        if not _stable_success(task):reason='Source stability prerequisite not met'
+        elif any(q.get('task')==task and q.get('status')=='pending' for q in prior):reason='Another compound is pending'
+        elif any(q.get('policy_code','').strip()==code.strip() and q.get('skill_md','').strip()==md.strip() for q in prior):reason='Unchanged proposal already retained'
+        if reason:
+            root=home()/'policy_review_deferred';root.mkdir(exist_ok=True)
+            key=str(time.time_ns())+'-'+hashlib.sha256(content.encode()).hexdigest()[:10]
+            (root/(key+'.json')).write_text(json.dumps({'source_run_id':run_id,'task':task,
+                'task_key':os.environ.get('ROBORSI_CURRENT_SIM_TASK'),'compound_name':name,'policy_code':code,
+                'skill_md':md,'rationale':rationale,'reason':reason,'status':'not_queued'},indent=2))
+            return None
+        try:
+            return _enqueue_policy_proposal(task=task,run_id=run_id,compound_name=name,policy_code=code,
+                skill_md=md,rationale=rationale,success_count=_verified_success_count(task))
+        except ValueError as exc:
+            from roborsi.agents.compound_capture_feedback import record_rejection
+            record_rejection(task,run_id,name,code,md,rationale,exc)
+            return None
 
 
 def strip(content: str) -> str:
@@ -146,3 +194,23 @@ def _unfence(text: str) -> str:
     if lines and lines[-1].strip() == "```":
         lines = lines[:-1]
     return "\n".join(lines).strip()
+
+
+def _verified_success_count(task: str) -> int:
+    if task == 'libero_pick_place':
+        from roborsi.agents.compound_source import records
+        return sum(r['verified_success'] for r in records(os.environ.get('ROBORSI_CURRENT_SIM_TASK')))
+    from roborsi.store import trace_db
+    trace_db.init()
+    rows = trace_db._conn().execute(
+        "SELECT episode_summary_json FROM runs WHERE task=? AND status='success' "
+        "AND COALESCE(run_mode,'evolve')='evolve'",(task,)).fetchall()
+    import json
+    task_key=os.environ.get("ROBORSI_CURRENT_SIM_TASK") if task=="libero_pick_place" else None
+    count=0
+    for row in rows:
+        try:summary=json.loads(row["episode_summary_json"] or "{}")
+        except (ValueError,TypeError):continue
+        if task_key and summary.get("sim_task")!=task_key:continue
+        count+=summary.get("predicate_check") is True
+    return count

@@ -24,6 +24,7 @@ class VisualHoldEvidence:
     identity_verified: bool = False
     object_offset_local: tuple[float, float, float] | None = None
     release_clearance_hint: float | None = None
+    pickup_reference: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class PendingVisualHoldEvidence:
     identity_verified: bool = False
     object_offset_local: tuple[float, float, float] | None = None
     release_clearance_hint: float | None = None
+    pickup_reference: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,10 @@ class VisualHoldVerification:
     identity_verified: bool = False
     current_source_mad: float | None = None
     current_to_after_mad: float | None = None
+    frame_token: str | None = None
+    instance_mask: np.ndarray | None = None
+    robot_mask: np.ndarray | None = None
+    association_metrics: dict[str, float] | None = None
 
 
 def _crop_patch(image: Any, pixel: tuple[int, int]) -> np.ndarray | None:
@@ -121,6 +127,7 @@ def _finite_depth_median(depth: np.ndarray) -> float | None:
 def clear_visual_hold(env: Any) -> None:
     setattr(env, _ATTR, None)
     setattr(env, _PENDING_ATTR, None)
+    setattr(env, "_libero_visual_hold_association", None)
 
 
 def get_visual_hold(env: Any) -> VisualHoldEvidence | None:
@@ -147,8 +154,11 @@ def record_pending_visual_hold(
     identity_verified: bool = False,
     object_offset_local: tuple[float, float, float] | None = None,
     release_clearance_hint: float | None = None,
+    pickup_reference: Any | None = None,
 ) -> PendingVisualHoldEvidence | None:
     clear_visual_hold(env)
+    if identity_verified and pickup_reference is None:
+        return None
     before = _crop_patch(before_rgb, source_pixel)
     depth = _crop_depth(before_depth, source_pixel)
     if before is None or depth is None:
@@ -167,6 +177,7 @@ def record_pending_visual_hold(
         identity_verified=bool(identity_verified),
         object_offset_local=object_offset_local,
         release_clearance_hint=release_clearance_hint,
+        pickup_reference=pickup_reference,
     )
     setattr(env, _PENDING_ATTR, evidence)
     return evidence
@@ -182,8 +193,11 @@ def record_visual_hold(
     identity_verified: bool = False,
     object_offset_local: tuple[float, float, float] | None = None,
     release_clearance_hint: float | None = None,
+    pickup_reference: Any | None = None,
 ) -> VisualHoldEvidence | None:
     clear_visual_hold(env)
+    if identity_verified and pickup_reference is None:
+        return None
     before = _crop_patch(before_rgb, source_pixel)
     after = _crop_patch(after_rgb, source_pixel)
     if before is None or after is None:
@@ -200,6 +214,7 @@ def record_visual_hold(
         identity_verified=bool(identity_verified),
         object_offset_local=object_offset_local,
         release_clearance_hint=release_clearance_hint,
+        pickup_reference=pickup_reference,
     )
     setattr(env, _ATTR, evidence)
     return evidence
@@ -210,6 +225,7 @@ def verify_visual_hold(
     current_rgb: Any,
     *,
     holding: bool | None = None,
+    frame: Any | None = None,
 ) -> VisualHoldVerification:
     evidence = get_visual_hold(env)
     if evidence is None:
@@ -303,54 +319,118 @@ def verify_visual_hold(
                 object_name=pending.object_name,
                 current_source_mad=current_source_mad,
             )
+        if not pending.identity_verified or pending.pickup_reference is None:
+            return VisualHoldVerification(
+                ok=False,
+                reason="pending_pickup_reference_missing",
+                object_name=pending.object_name,
+                current_source_mad=current_source_mad,
+            )
+        from roborsi.embodied.skills.base._lib.libero.instance_hold import (
+            associate_pickup_reference,
+        )
+
+        association = associate_pickup_reference(
+            env,
+            pending.pickup_reference,
+            holding=True,
+            frame=frame,
+        )
+        if not association.ok:
+            setattr(env, "_libero_visual_hold_association", association)
+            return VisualHoldVerification(
+                ok=False,
+                reason=f"pending_instance_{association.reason}",
+                object_name=pending.object_name,
+                identity_verified=False,
+                current_source_mad=current_source_mad,
+                frame_token=association.frame_token,
+                instance_mask=association.mask,
+                robot_mask=association.robot_mask,
+                association_metrics=association.metrics,
+            )
         promoted = VisualHoldEvidence(
             object_name=pending.object_name,
             source_pixel=pending.source_pixel,
             source_before=pending.source_before,
             source_after=current,
             source_mad=current_source_mad,
-            identity_verified=pending.identity_verified,
+            identity_verified=True,
             object_offset_local=pending.object_offset_local,
             release_clearance_hint=pending.release_clearance_hint,
+            pickup_reference=pending.pickup_reference,
         )
         setattr(env, _ATTR, promoted)
         setattr(env, _PENDING_ATTR, None)
+        setattr(env, "_libero_visual_hold_association", association)
         return VisualHoldVerification(
             ok=True,
-            reason="pending_visual_hold_promoted",
+            reason="pending_visual_hold_promoted_and_associated",
             object_name=pending.object_name,
-            identity_verified=pending.identity_verified,
+            identity_verified=True,
             current_source_mad=current_source_mad,
             current_to_after_mad=0.0,
+            frame_token=association.frame_token,
+            instance_mask=association.mask,
+            robot_mask=association.robot_mask,
+            association_metrics=association.metrics,
         )
-    current = _crop_patch(current_rgb, evidence.source_pixel)
-    if current is None:
+    if holding is not True:
         return VisualHoldVerification(
             ok=False,
-            reason="visual_hold_frame_unavailable",
+            reason="hold_not_confirmed",
             object_name=evidence.object_name,
         )
-    current_source_mad = _patch_mad(evidence.source_before, current)
-    current_to_after_mad = _patch_mad(evidence.source_after, current)
-    source_reoccupied = (
-        current_source_mad is None
-        or current_source_mad <= _MIN_SOURCE_MAD
-        or current_to_after_mad is None
-        or current_to_after_mad >= current_source_mad
+    if not evidence.identity_verified or evidence.pickup_reference is None:
+        return VisualHoldVerification(
+            ok=False,
+            reason="authenticated_pickup_reference_missing",
+            object_name=evidence.object_name,
+            identity_verified=False,
+        )
+    # source_mad is immutable historical removal evidence. Requiring the old
+    # pickup pixel to remain visually empty after transport confuses unrelated
+    # reoccupation with loss of the held instance. Current continuity is instead
+    # authenticated below from the pickup reference and measured robot pose.
+    if evidence.source_mad <= _MIN_SOURCE_MAD:
+        return VisualHoldVerification(
+            ok=False,
+            reason="historical_source_clearance_invalid",
+            object_name=evidence.object_name,
+        )
+    from roborsi.embodied.skills.base._lib.libero.instance_hold import (
+        associate_pickup_reference,
     )
-    if source_reoccupied:
+
+    association = associate_pickup_reference(
+        env,
+        evidence.pickup_reference,
+        holding=True,
+        frame=frame,
+    )
+    if not association.ok:
+        setattr(env, "_libero_visual_hold_association", association)
         return VisualHoldVerification(
             ok=False,
-            reason="source_patch_reoccupied",
+            reason=f"instance_{association.reason}",
             object_name=evidence.object_name,
-            current_source_mad=current_source_mad,
-            current_to_after_mad=current_to_after_mad,
+            identity_verified=False,
+            current_source_mad=evidence.source_mad,
+            frame_token=association.frame_token,
+            instance_mask=association.mask,
+            robot_mask=association.robot_mask,
+            association_metrics=association.metrics,
         )
+    setattr(env, "_libero_visual_hold_association", association)
     return VisualHoldVerification(
         ok=True,
-        reason="source_patch_remains_cleared",
+        reason="historical_source_cleared_and_instance_associated",
         object_name=evidence.object_name,
-        identity_verified=evidence.identity_verified,
-        current_source_mad=current_source_mad,
-        current_to_after_mad=current_to_after_mad,
+        identity_verified=True,
+        current_source_mad=evidence.source_mad,
+        current_to_after_mad=0.0,
+        frame_token=association.frame_token,
+        instance_mask=association.mask,
+        robot_mask=association.robot_mask,
+        association_metrics=association.metrics,
     )

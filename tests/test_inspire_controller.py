@@ -1,5 +1,7 @@
 """Tests for InspireController with mocked Modbus + hardware integration tests."""
 
+import os
+from pathlib import Path
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -103,6 +105,10 @@ def test_finger_labels() -> None:
 # -- Hardware integration tests --
 
 
+@pytest.mark.skipif(
+    os.environ.get("ROBORSI_RUN_HARDWARE_TESTS") != "1" or not Path(PORT).exists(),
+    reason="requires explicit hardware-test opt-in and the Inspire serial device",
+)
 @pytest.mark.hardware
 def test_hw_get_status() -> None:
     result = InspireController().get_status(PORT, slave_id=2)
@@ -110,12 +116,20 @@ def test_hw_get_status() -> None:
     assert "forces=" in result
 
 
+@pytest.mark.skipif(
+    os.environ.get("ROBORSI_RUN_HARDWARE_TESTS") != "1" or not Path(PORT).exists(),
+    reason="requires explicit hardware-test opt-in and the Inspire serial device",
+)
 @pytest.mark.hardware
 def test_hw_open_hand() -> None:
     result = InspireController().open_hand(PORT, slave_id=2)
     assert result == "Hand opened."
 
 
+@pytest.mark.skipif(
+    os.environ.get("ROBORSI_RUN_HARDWARE_TESTS") != "1" or not Path(PORT).exists(),
+    reason="requires explicit hardware-test opt-in and the Inspire serial device",
+)
 @pytest.mark.hardware
 def test_hw_close_hand() -> None:
     result = InspireController().close_hand(PORT, slave_id=2)

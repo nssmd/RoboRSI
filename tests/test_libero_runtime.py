@@ -108,6 +108,7 @@ def test_configure_cli_rejects_non_libero_directory(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("ROBORSI_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("COLUMNS", "200")
     empty = tmp_path / "empty"
     empty.mkdir()
 

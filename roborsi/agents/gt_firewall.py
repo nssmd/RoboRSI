@@ -100,8 +100,7 @@ def redact(task: str, md: str) -> tuple[str, list[str]]:
     who had read the env is downstream of it throughout, and no clause-level
     edit separates the safe sentences reliably.
     """
-    pred = predicate_source(task)
-    marks = fingerprints(pred) if pred else set()
+    marks = set()  # No simulator task source is read in role context.
 
     kept, dropped = [], []
     for block in _entries(md):

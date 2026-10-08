@@ -8,6 +8,7 @@ Output captured. Sandbox uses exec() with a controlled globals dict
 from __future__ import annotations
 
 import io
+import time
 import traceback
 from contextlib import redirect_stdout, redirect_stderr
 from typing import Any
@@ -49,11 +50,17 @@ def dispatch_runtime(state, args: dict[str, Any]):
     from roborsi.embodied.skills import discover as all_skills
 
     call_counter = {"n": 0}
+    deadline = time.monotonic() + 45.0
+    def reserve_call():
+        if call_counter["n"] >= 12 or time.monotonic() >= deadline:
+            raise RuntimeError("Snippet public-tool budget reached; use at most12 calls and split large scans across turns")
+        call_counter["n"] += 1
+
     return_dict: dict[str, Any] = {}
 
     def _make_handler_fn(name: str, handler):
         def fn(**kwargs):
-            call_counter["n"] += 1
+            reserve_call()
             result, _ = handler(state, kwargs)
             return result
         fn.__name__ = name
@@ -67,7 +74,7 @@ def dispatch_runtime(state, args: dict[str, Any]):
                 handler = _ensure_registry().get(name)
             if handler is None:
                 raise RuntimeError(f"skill {name!r} has no dispatcher")
-            call_counter["n"] += 1
+            reserve_call()
             result, _ = handler(state, kwargs)
             return result
         fn.__name__ = name

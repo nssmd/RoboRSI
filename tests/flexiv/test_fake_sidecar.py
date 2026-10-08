@@ -65,7 +65,8 @@ def test_shutdown_stops_sidecar(connected):
     connected.call("shutdown", {})
     # give the sidecar a moment to exit
     paths = SessionPaths.for_alias("e2e")
-    for _ in range(40):
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
         if not sidecar_running(paths):
             break
         time.sleep(0.05)

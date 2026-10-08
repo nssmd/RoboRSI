@@ -11,7 +11,7 @@ args:
   x: { type: number, required: false, description: "Override park EE x (world). Default: -0.38 for left, +0.38 for right." }
   y: { type: number, required: false, description: "Override park EE y (world). Default: -0.40 (behind the table, away from any object on it)." }
   z: { type: number, required: false, description: "Override park EE z (world). Default: 1.05 (well above the table, no risk of brushing actors)." }
-  quat: { type: array, required: false, description: "Override approach quat [qx,qy,qz,qw]. Default top-down [0.5,-0.5,0.5,0.5]." }
+  quat: { type: array, items: {type: number}, minItems: 4, maxItems: 4, required: false, description: "Override approach quat [qx,qy,qz,qw]. Default top-down [0.5,-0.5,0.5,0.5]." }
 returns:
   ok: bool
   arm: string

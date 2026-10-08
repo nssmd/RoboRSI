@@ -4,19 +4,39 @@ kind: base
 robot: libero
 category: control
 version: 0.1.0
-description: Gently set an object ONTO an exposed surface such as a plate, stove, pad, stand, or scale. Requires visual hold evidence from the current successful grasp_object call, preserves the grasp orientation, descends to a low release pose, and never opens unless every reach and hold gate passes. Do not use for a container, basket, bin, bowl, drawer, microwave cavity, or beside relation.
+description: Gently set an object ONTO an exposed surface such as a plate, stove,
+  pad, stand, or scale. Requires visual hold evidence from the current successful
+  grasp_object call, preserves the grasp orientation, descends to a low release pose,
+  and never opens unless every reach and hold gate passes. Do not use for a container,
+  basket, bin, bowl, drawer, microwave cavity, or beside relation.
 args:
-  target: { type: string, description: "Named exposed surface target. Provide this or pixel." }
-  pixel: { type: list, description: "Exact target-surface pixel [u,v] from the current head view. Preferred for ambiguous or relational surfaces." }
-  release_clearance: { type: float, default: 0.025, description: "End-effector release clearance above the perceived surface in meters; clamped to 0.01-0.05." }
-  hover: { type: float, default: 0.12, description: "Approach and retract height above the release pose in meters." }
-  pos_tol: { type: float, default: 0.02, description: "Maximum pre-release position error in meters." }
+  target:
+    type: string
+    description: Named exposed surface target. Provide this or pixel.
+  pixel:
+    type: list
+    description: Exact target-surface pixel [u,v] from the current head view. Preferred
+      for ambiguous or relational surfaces.
+  release_clearance:
+    type: float
+    default: 0.025
+    description: Clearance between the authenticated held object's pickup-cloud bottom
+      and the perceived support surface in meters; clamped to 0.01-0.05. The TCP
+      release height is derived from the pickup cloud and current held orientation.
+  hover:
+    type: float
+    default: 0.12
+    description: Approach and retract height above the release pose in meters.
+  pos_tol:
+    type: float
+    default: 0.02
+    description: Maximum pre-release position error in meters.
 returns:
   ok: bool
   reached: bool
   released: bool
   gripper_opened: bool
-  object_release_verified: "bool | null"
+  object_release_verified: bool | null
   target_pixel: list
   target_world: list
   target_source: string
@@ -31,21 +51,50 @@ returns:
   gripper_state_pre_release: string
   gripper_state_after: string
   ee_pos: list
-when_to_use: |
-  Use after grasp_object succeeds and records visual hold evidence, when the
+when_to_use: 'Use after grasp_object succeeds and records visual hold evidence, when
+  the
+
   destination is an exposed support surface: plate, stove burner, pad, stand,
+
   scale, or tabletop region. A manual gripper close or gap-only HELD reading is
+
   not sufficient; re-run grasp_object if the evidence is missing.
+
   For a basket, bin, bowl, drawer, or cavity use place_object_in. For beside
+
   relations use place_beside. For an exact externally-derived pose use
+
   place_held_at_target_servo.
+
+  '
+metadata:
+  harness:
+    backend: libero-pro
+    sim_task: libero_goal/8
+    seeds:
+    - 21
+    - 22
+    args:
+    - target: plate
+    setup:
+      skill: grasp_object
+      args:
+        object: bowl
+    pass_criteria:
+      kind: simulator_task_success
+      min_seeds_passing: 2
 ---
 
 # place_on_surface
 
 Resolve the exposed target surface from vision, preserve the held object's
 current orientation, reach a low release pose, confirm the hold again, open
-only after convergence, and retract. `ok=True` reports only this tool's
-motion result. `released` is a backward-compatible alias for
-`gripper_opened`; `object_release_verified` remains unknown until a later visual
-inspection confirms the object left the gripper and rests on the destination.
+only after convergence, and retract. Hold confirmation requires an immutable
+pickup-time RGB-D instance reference, current measured gripper state, unique
+current-frame instance association, and exclusion of rendered known robot
+geometry. The destination support is independently point-segmented in the same
+coherent frame and must not alias the authenticated held mask or robot mask.
+`ok=True` reports only this tool's motion result. `released` is a
+backward-compatible alias for `gripper_opened`; `object_release_verified`
+remains unknown until a later visual inspection confirms the object left the
+gripper and rests on the destination.

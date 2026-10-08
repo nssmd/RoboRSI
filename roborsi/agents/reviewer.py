@@ -104,14 +104,13 @@ Decide ONE outcome and emit a single JSON object. Schema:
     auto-rejected AND flagged as a cheat attempt. Grabbing ground truth is the
     single most common way this loop fails; do not do it.
 
-(D) GENERATED POLICY CAPABILITY BOUNDARY:
-    Agent-authored policy.py code is a composition layer, not a privileged
-    backend extension. It may import only `_dispatch_tool` from
-    `roborsi.embodied.agent_loop.rollout`, call it with literal public skill
-    names, and return the Observation from the final call. It must never read
-    `state.env`, alias or reflect on `state`, import simulator/helper internals,
-    access files/processes/networks, or choose a tool name dynamically. The
-    validator and final apply path both enforce this boundary.
+(D) NATIVE SKILL REPAIR:
+    You may inspect and modify native perception, geometric and control skill
+    implementations, including UPDATE of an existing skill under its current
+    name. Do not invent a new wrapper merely to work around a broken primitive.
+    Follow the existing native ABI and measured sensor/control contracts. Retain
+    the established no-private-task-state rules above. Submit complete code and
+    a functional harness for Manager review; do not publish it yourself.
 
 
 Rules:
@@ -179,7 +178,7 @@ CRITICAL — new_code / skill_md CONTENT FORMAT:
 
 def _gate_log_for_run(run_id: str, limit: int = 20) -> list[dict]:
     """Pull last gate fires for the run_id from ~/.roborsi/gate_log.jsonl."""
-    path = Path.home() / ".roborsi" / "gate_log.jsonl"
+    path = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "gate_log.jsonl"
     if not path.exists():
         return []
     out = []
@@ -672,8 +671,14 @@ class Reviewer:
             f"=== gate_log for this run ===\n"
             f"{json.dumps(gate_log, default=str)[:1500] or '(none)'}\n"
         )
+        if self.allow_evolution:
+            from roborsi.agents.repair_evidence import repair_evidence
+            user_block += "\n\n" + repair_evidence(_sanitize_trace(trace), ns)
         system_prompt = (_SYSTEM_PROMPT if ns == "robotwin"
                          else _SYSTEM_PROMPT.replace("base/robotwin", f"base/{ns}"))
+        from roborsi.agents.flat_refinement import flat_enabled, FLAT_RULES
+        if flat_enabled():
+            system_prompt += '\n\n' + FLAT_RULES
         if not self.allow_evolution:
             system_prompt += (
                 "\n\nEVALUATION MODE: diagnose this attempt for the report, but "
@@ -911,6 +916,7 @@ class Reviewer:
                          else payload.get("category", "base/robotwin")),
             "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "submitted_by": f"reviewer_agent[{workspace.task}]",
+            "development_mode": "native",
             "status": "pending",
             "new_code": payload.get("new_code", ""),
             "skill_md": payload.get("skill_md", ""),
@@ -922,7 +928,7 @@ class Reviewer:
             "verdict": review.get("verdict"),
             "next_action": review.get("next_action"),
         }
-        out_dir = Path.home() / ".roborsi" / "skill_review"
+        out_dir = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "skill_review"
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / f"{pid}.json").write_text(
             json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -932,7 +938,7 @@ class Reviewer:
                                              report: dict) -> None:
         """Patch the skill_review/<pid>.json with validation_report so
         downstream apply / HTML / human review can see verdicts."""
-        path = Path.home() / ".roborsi" / "skill_review" / f"{pid}.json"
+        path = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "skill_review" / f"{pid}.json"
         if not path.exists():
             return
         try:
@@ -1017,7 +1023,7 @@ REJECT:   python3 scripts/apply_selfevo_proposal.py --reject {html.escape(pid)}
 
 </body></html>
 """
-        out_dir = Path.home() / ".roborsi" / "proposal_html"
+        out_dir = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "proposal_html"
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"{pid}.html"
         path.write_text(body, encoding="utf-8")

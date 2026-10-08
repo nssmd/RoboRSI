@@ -48,11 +48,38 @@ def _skill_catalog(task: str, user_msg: str, ns: str = "robotwin") -> str:
         # the Reviewer misreads the failure as "prompt non-adherence".
         from roborsi.embodied.agent_loop.prompt_tools import _hidden_tools
         hidden = _hidden_tools(ns)
-        return "\n".join(
-            f"  {s.name}: {(s.description or '').splitlines()[0].strip()[:90]}"
-            for s in sorted(discover_ns(ns), key=lambda x: x.name)
-            if s.name not in hidden
-        )
+        base = [s for s in sorted(discover_ns(ns), key=lambda x: x.name)
+                if s.name not in hidden]
+        if ns == "libero":
+            from roborsi.agents.planner_contract import render_contract
+            from roborsi.embodied.agent_loop.prompt_tools import _build_tool_specs
+            by_name = {skill.name: skill for skill in base}
+            lines = []
+            for spec in _build_tool_specs(ns=ns, task=task):
+                function = spec["function"]
+                if function["name"] in hidden:
+                    continue
+                skill = by_name.get(function["name"])
+                returns = skill.frontmatter.get("returns") if skill is not None else None
+                lines.append(render_contract(function, returns))
+            return "\n".join(lines)
+        lines = [f"  {s.name}: {(s.description or '').splitlines()[0].strip()[:90]}"
+                 for s in base]
+        if ns == "libero" and task == "libero_pick_place":
+            # Advertise only released compounds that the actual Engineer can load.
+            # Its tool builder owns Code enablement, dispatchability and schemas.
+            from roborsi.embodied.skills import discover_compounds
+            from roborsi.embodied.agent_loop.prompt_tools import _build_tool_specs
+            compound_names = {s.name for s in discover_compounds(task)}
+            seen = {s.name for s in base}
+            for spec in _build_tool_specs(ns=ns, task=task):
+                function = spec.get("function", {})
+                name = function.get("name")
+                if name in compound_names and name not in hidden and name not in seen:
+                    description = str(function.get("description") or "").splitlines()
+                    lines.append(f"  {name}: {(description[0] if description else '').strip()[:90]}")
+                    seen.add(name)
+        return "\n".join(lines)
     from roborsi.embodied.agent_loop.prompt_tools import _maybe_shortlist_skills
     names = _maybe_shortlist_skills(user_msg or task, task, 0)
     if not names:
@@ -182,6 +209,20 @@ ok=False. For TRANSPORT after a grasp: never reuse the holding grasp-quat in
    or place_held_at_target_servo for an exact perceived target. Use a top-down
    quat [0.5,-0.5,0.5,0.5] only for a lower-level carry fallback.
 """
+
+
+def _compound_system_prompt(base: str, task: str, compound_block: str) -> str:
+    """Permit the already-qualified optional proposal in the system output contract."""
+    if task != "libero_pick_place" or not compound_block:
+        return base
+    old = "You DO NOT execute anything. You only write the plan."
+    output = "plan.md markdown. Nothing else. Schema:"
+    assert old in base and output in base, "Planner output contract changed"
+    return base.replace(old, "You DO NOT execute anything. You write the plan and may author the requested compound proposal.").replace(
+        output, "plan.md markdown. After the plan, you may append the OPTIONAL COMPOUND PROPOSAL "
+        "block requested in the user message. This exception permits candidate code only; "
+        "the actual Manager must independently review it and both declared simulator seeds "
+        "must pass before publication. If there is no useful candidate, omit that block. Schema:")
 
 
 def _extract_json_and_md(reply: str) -> tuple[dict, str]:
@@ -385,7 +426,7 @@ def _fallback_plan_md(entry: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def persistent_plan_path(task: str):
+def persistent_plan_path(task: str, task_key=None):
     """Path to the task's persistent plan.md inside its skill dir.
 
     This plan survives across runs and ships with the skill (git + cold
@@ -393,7 +434,25 @@ def persistent_plan_path(task: str):
     Reviewer amends; per-run workspaces get a copy for local editing.
     """
     from roborsi.agents.task_wiki import _task_skill_dir
-    return _task_skill_dir(task) / "plan.md"
+    from roborsi.agents.task_memory_identity import directory
+    scoped=directory(task,task_key)
+    return (scoped if scoped is not None else _task_skill_dir(task)) / "plan.md"
+
+
+def persistent_plan_input(task: str, task_key=None):
+    """Read a promoted task plan, falling back to the shipped generic seed.
+
+    Keep the promotion destination separate from this read-only fallback.
+    An existing empty task plan remains authoritative.
+    """
+    destination = persistent_plan_path(task, task_key)
+    if destination.exists():
+        return destination, "task_plan"
+    from roborsi.agents.task_memory_identity import key
+    if task == "libero_pick_place" and key(task, task_key) is not None:
+        from roborsi.agents.task_wiki import _task_skill_dir
+        return _task_skill_dir(task) / "plan.md", "generic_seed"
+    return destination, "task_plan"
 
 
 class Planner:
@@ -414,6 +473,9 @@ class Planner:
         """Call Opus, write plan.md, return mission_spec. `ns` = the active
         backend's skill namespace (drives which base skills the plan can name)."""
         # Lazy import — keeps agents package importable without sim deps.
+        from roborsi.agents.flat_refinement import flat_enabled, flat_plan
+        if flat_enabled():
+            return flat_plan(self, task=task, user_msg=user_msg, recent_reflections=recent_reflections, workspace=workspace, ns=ns)
         from roborsi.agents.gt_firewall import redact
         from roborsi.agents.plan_archive import (
             format_for_planner,
@@ -425,14 +487,28 @@ class Planner:
         # Persistent plan.md (carries improvements from prior runs). Read it
         # BEFORE the Opus call so the Planner refines it rather than starting
         # from scratch each run.
-        plan_file = persistent_plan_path(task)
+        plan_file, plan_origin = persistent_plan_input(task)
         persistent_plan = (
             plan_file.read_text(encoding="utf-8") if plan_file.exists() else "")
+        if task == "libero_pick_place":
+            import hashlib
+            (workspace.root / "plan-seed.json").write_text(json.dumps({
+                "task_key": os.environ.get("ROBORSI_CURRENT_SIM_TASK"),
+                "origin": plan_origin, "path": str(plan_file),
+                "exists": plan_file.exists(),
+                "sha256": hashlib.sha256(persistent_plan.encode("utf-8")).hexdigest(),
+            }, indent=2), encoding="utf-8")
         persistent_plan, _ = redact(task, persistent_plan)
-        persistent_block = (
+        seed_heading = (
+            "=== GENERIC INITIAL PLAN (adapt to the current instruction; "
+            "not a record of completed actions or task-specific success) ===\n"
+            if plan_origin == "generic_seed" else
             "=== CURRENT PERSISTENT PLAN (refine this — it carries "
             "improvements from prior runs; keep what works, only change what "
-            f"failed) ===\n{persistent_plan}\n\n" if persistent_plan.strip()
+            "failed) ===\n"
+        )
+        persistent_block = (
+            f"{seed_heading}{persistent_plan}\n\n" if persistent_plan.strip()
             else "")
         # Task wiki: successful tool sequences to REUSE + failed-attempt
         # Reviewer diagnoses (root_cause + next_action) to ADDRESS. This is the
@@ -501,9 +577,24 @@ class Planner:
         # planning memory. ROBORSI_ROLE_SESSION=0 falls back to the stateless
         # one-shot. See agents/persistent_agent.run_role.
         from roborsi.agents import persistent_agent
+        from roborsi.agents.planner_contract import system_for_namespace
+        effective_system = _compound_system_prompt(system_for_namespace(_SYSTEM_PROMPT, ns), task, compound_block)
+        proposal_audit = None
+        if task == "libero_pick_place" and compound_block:
+            import time
+            proposal_audit = workspace.root / ("compound-planner-" + str(time.time_ns()) + ".json")
+            proposal_record = {"run_id": workspace.run_id,
+                "task_key": os.environ.get("ROBORSI_CURRENT_SIM_TASK"),
+                "model": self.model, "state": "request_prepared",
+                "system_prompt": effective_system, "user_prompt": user_block}
+            proposal_audit.write_text(json.dumps(proposal_record, ensure_ascii=False, indent=2))
         content = persistent_agent.run_role(
             "planner", task, user_block,
-            system_prompt=_SYSTEM_PROMPT, model=self.model)
+            system_prompt=effective_system, model=self.model)
+        if proposal_audit is not None:
+            proposal_record.update(state="response_received", raw_response=content,
+                parsed_proposal=compound_proposal._extract(content) is not None)
+            proposal_audit.write_text(json.dumps(proposal_record, ensure_ascii=False, indent=2))
         # Queue any compound-policy proposal, then strip it so it never lands in
         # plan.md (no-op unless opt-in and a valid block is present).
         if evolution_enabled():

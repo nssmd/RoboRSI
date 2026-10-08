@@ -232,10 +232,22 @@ def _ensure_upstream_config(checkout: Path) -> Path:
         "assets": str(benchmark_root / "assets"),
     }
     config_dir.mkdir(parents=True, exist_ok=True)
-    config_file.write_text(
-        json.dumps(record, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    content = json.dumps(record, ensure_ascii=False, indent=2) + "\n"
+    # Readers must never see a truncated shared config during worker startup.
+    try:
+        if config_file.read_text(encoding="utf-8") == content:
+            return config_file
+    except FileNotFoundError:
+        pass
+    import tempfile
+    fd, name = tempfile.mkstemp(prefix=".config-", suffix=".tmp", dir=config_dir)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+        temporary.replace(config_file)
+    finally:
+        temporary.unlink(missing_ok=True)
     return config_file
 
 

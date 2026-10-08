@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -33,6 +34,10 @@ class SurfaceTarget:
     pixel: tuple[int, int]
     world: np.ndarray
     source: str
+    frame_token: str | None = None
+    sensor_frame: Any | None = None
+    support_mask: np.ndarray | None = None
+    robot_mask: np.ndarray | None = None
 
 
 def _surface_target_key(
@@ -60,9 +65,17 @@ def _cached_surface_target(
     if not isinstance(target, SurfaceTarget):
         return None
     return SurfaceTarget(
-        target.pixel,
-        np.asarray(target.world, dtype=float).copy(),
-        f"cached:{target.source}",
+        pixel=target.pixel,
+        world=np.asarray(target.world, dtype=float).copy(),
+        source=f"cached:{target.source}",
+        frame_token=target.frame_token,
+        sensor_frame=target.sensor_frame,
+        support_mask=(
+            None if target.support_mask is None else target.support_mask.copy()
+        ),
+        robot_mask=(
+            None if target.robot_mask is None else target.robot_mask.copy()
+        ),
     )
 
 
@@ -76,9 +89,17 @@ def _cache_surface_target(
         cache = {}
         setattr(env, _SURFACE_TARGET_CACHE_ATTR, cache)
     cache[key] = SurfaceTarget(
-        target.pixel,
-        np.asarray(target.world, dtype=float).copy(),
-        target.source,
+        pixel=target.pixel,
+        world=np.asarray(target.world, dtype=float).copy(),
+        source=target.source,
+        frame_token=target.frame_token,
+        sensor_frame=target.sensor_frame,
+        support_mask=(
+            None if target.support_mask is None else target.support_mask.copy()
+        ),
+        robot_mask=(
+            None if target.robot_mask is None else target.robot_mask.copy()
+        ),
     )
     return target
 
@@ -141,15 +162,30 @@ def _resolve_surface_target(
     elif target_name:
         from roborsi.embodied.skills.base._lib.libero._perception import (
             localize_precise,
-            retreat_from_head_view,
         )
 
-        retreat_reached = retreat_from_head_view(
+        # Do not call retreat_from_head_view here: that helper intentionally moves
+        # the held object out of agentview, while placement authentication requires
+        # the pickup-referenced instance to remain visible. Authenticate the hold
+        # on the current coherent frame, then localize without stepping. Repeated
+        # coherent captures do not advance the observation generation, and the
+        # exact target frame is associated again below before any motion or release.
+        _, current_hold_state = ctrl.read_gripper_state()
+        if current_hold_state is not GripperState.HELD:
+            return None
+        try:
+            localization_frame = env.coherent_sensor_frame("agentview")
+        except Exception:  # noqa: BLE001
+            return None
+        if not localization_frame.valid:
+            return None
+        localization_hold = verify_visual_hold(
             env,
-            ctrl,
-            quat=held_quat,
+            localization_frame.rgb,
+            holding=True,
+            frame=localization_frame,
         )
-        if not retreat_reached:
+        if not localization_hold.ok:
             return None
         located = localize_precise(state, target_name)
         if located is None:
@@ -166,25 +202,42 @@ def _resolve_surface_target(
     width, height = image_size
     if not (0 <= uv[0] < width and 0 <= uv[1] < height):
         return None
-    cache_key = _surface_target_key(target_name, uv)
-    cached = _cached_surface_target(env, cache_key)
-    if cached is not None:
-        return cached
+    try:
+        frame = env.coherent_sensor_frame("agentview")
+    except Exception:  # noqa: BLE001
+        return None
+    if not frame.valid:
+        return None
+    from roborsi.embodied.skills.base._lib.libero._perception import (
+        sam_mask_at_point,
+    )
+    from roborsi.embodied.skills.base._lib.libero.instance_hold import (
+        mask_world_cloud,
+        robot_projection_for_frame,
+    )
 
-    from roborsi.embodied.skills.base._lib.libero._perception import object_cloud
-
-    cloud = _finite_cloud(object_cloud(env, uv[0], uv[1], z_band=0.18))
-    depth_point = _valid_world_point(env.pixel_to_world(uv[0], uv[1]))
-    if cloud is None or len(cloud) < _MIN_SURFACE_POINTS:
-        if depth_point is None:
-            return None
-        return _cache_surface_target(
-            env,
-            cache_key,
-            SurfaceTarget(uv, depth_point, "depth_unproject"),
+    try:
+        projection = robot_projection_for_frame(env, frame)
+        mask = np.asarray(
+            sam_mask_at_point(frame.rgb, uv[0], uv[1]),
+            dtype=bool,
         )
-
-    cloud_point = np.array(
+    except Exception:  # noqa: BLE001
+        return None
+    if mask.shape != frame.depth_m.shape or not mask[uv[1], uv[0]]:
+        return None
+    robot_mask = np.asarray(projection.robot_mask, dtype=bool)
+    if robot_mask.shape != mask.shape or robot_mask[uv[1], uv[0]]:
+        return None
+    mask = mask & ~robot_mask
+    area = int(mask.sum())
+    fraction = area / float(mask.size)
+    if area < _MIN_SURFACE_POINTS or fraction > 0.45:
+        return None
+    cloud = mask_world_cloud(frame, mask)
+    if cloud is None or len(cloud) < _MIN_SURFACE_POINTS:
+        return None
+    world = np.array(
         [
             float(np.median(cloud[:, 0])),
             float(np.median(cloud[:, 1])),
@@ -192,24 +245,18 @@ def _resolve_surface_target(
         ],
         dtype=float,
     )
-    if (
-        depth_point is not None
-        and float(np.linalg.norm(cloud_point[:2] - depth_point[:2]))
-        > _PIXEL_CLOUD_MAX_XY_ERROR
-    ):
-        return _cache_surface_target(
-            env,
-            cache_key,
-            SurfaceTarget(
-                uv,
-                depth_point,
-                "depth_unproject_inconsistent_cloud",
-            ),
-        )
-    return _cache_surface_target(
-        env,
-        cache_key,
-        SurfaceTarget(uv, cloud_point, "sam_cloud"),
+    mask = mask.copy()
+    robot_mask = robot_mask.copy()
+    mask.setflags(write=False)
+    robot_mask.setflags(write=False)
+    return SurfaceTarget(
+        pixel=uv,
+        world=world,
+        source="phrase_pixel+point_sam+coherent_rgbd",
+        frame_token=frame.frame_token,
+        sensor_frame=frame,
+        support_mask=mask,
+        robot_mask=robot_mask,
     )
 
 
@@ -240,6 +287,50 @@ def _target_fields(target: SurfaceTarget) -> dict[str, Any]:
 
 def _rounded_metric(value: float) -> float | None:
     return round(float(value), 4) if np.isfinite(value) else None
+
+
+def _save_hold_diagnostic(
+    state: Any,
+    verification: Any,
+    frame: Any | None,
+    *,
+    stage: str,
+) -> str | None:
+    """Persist only public coherent RGB and derived masks for trial diagnosis."""
+    if frame is None or not getattr(frame, "valid", False):
+        return None
+    candidate = getattr(verification, "instance_mask", None)
+    robot = getattr(verification, "robot_mask", None)
+    if candidate is None and robot is None:
+        return None
+    try:
+        directory = Path(
+            getattr(state, "workdir", "/tmp/roborsi-place-diagnostics")
+        ) / "place_on_surface_diagnostics"
+        directory.mkdir(parents=True, exist_ok=True)
+        token = re.sub(
+            r"[^a-zA-Z0-9_.-]+",
+            "_",
+            str(getattr(frame, "frame_token", "unknown")),
+        )
+        path = directory / f"{stage}-{token}.npz"
+        np.savez_compressed(
+            path,
+            rgb=np.asarray(frame.rgb).copy(),
+            candidate_mask=(
+                np.asarray(candidate, dtype=bool).copy()
+                if candidate is not None
+                else np.empty((0, 0), dtype=bool)
+            ),
+            robot_mask=(
+                np.asarray(robot, dtype=bool).copy()
+                if robot is not None
+                else np.empty((0, 0), dtype=bool)
+            ),
+        )
+        return str(path)
+    except (OSError, TypeError, ValueError):
+        return None
 
 
 def _motion_error_fields(
@@ -394,12 +485,27 @@ def dispatch_runtime(state: Any, args: dict[str, Any]):
             env.take_snapshot(),
         )
 
+    try:
+        initial_hold_frame = env.coherent_sensor_frame("agentview")
+    except Exception:  # noqa: BLE001
+        initial_hold_frame = None
     initial_visual_hold = verify_visual_hold(
         env,
-        env.take_snapshot().images.get("head_camera"),
+        (
+            initial_hold_frame.rgb
+            if initial_hold_frame is not None and initial_hold_frame.valid
+            else env.take_snapshot().images.get("head_camera")
+        ),
         holding=True,
+        frame=initial_hold_frame,
     )
     if not initial_visual_hold.ok:
+        diagnostic_path = _save_hold_diagnostic(
+            state,
+            initial_visual_hold,
+            initial_hold_frame,
+            stage="initial_hold",
+        )
         return (
             {
                 "ok": False,
@@ -412,6 +518,9 @@ def dispatch_runtime(state: Any, args: dict[str, Any]):
                 "source_clear_verified": False,
                 "source_clear_reason": initial_visual_hold.reason,
                 "evidence_object": initial_visual_hold.object_name,
+                "association_frame_token": initial_visual_hold.frame_token,
+                "association_metrics": initial_visual_hold.association_metrics,
+                "public_sensor_diagnostic": diagnostic_path,
                 "visual_source_mad": (
                     round(float(initial_visual_hold.current_source_mad), 4)
                     if initial_visual_hold.current_source_mad is not None
@@ -465,6 +574,69 @@ def dispatch_runtime(state: Any, args: dict[str, Any]):
             env.take_snapshot(),
         )
 
+    # Reassociate using the exact coherent RGB-D frame consumed by support
+    # segmentation. Do not independently recapture and infer synchronization
+    # from token equality after the fact.
+    target_visual_hold = verify_visual_hold(
+        env,
+        (
+            target.sensor_frame.rgb
+            if target.sensor_frame is not None
+            else None
+        ),
+        holding=True,
+        frame=target.sensor_frame,
+    )
+    alias_reason = None
+    if (
+        target.sensor_frame is None
+        or not target_visual_hold.ok
+        or target_visual_hold.frame_token != target.frame_token
+        or target_visual_hold.instance_mask is None
+        or target.support_mask is None
+        or target_visual_hold.robot_mask is None
+    ):
+        alias_reason = "held/support evidence is not synchronized"
+    else:
+        import cv2
+
+        held_mask = np.asarray(target_visual_hold.instance_mask, dtype=bool)
+        support_mask = np.asarray(target.support_mask, dtype=bool)
+        robot_mask = np.asarray(target_visual_hold.robot_mask, dtype=bool)
+        if (
+            held_mask.shape != support_mask.shape
+            or held_mask.shape != robot_mask.shape
+        ):
+            alias_reason = "held/support mask shape mismatch"
+        elif held_mask[target.pixel[1], target.pixel[0]]:
+            alias_reason = "target pixel lies on the authenticated held object"
+        elif robot_mask[target.pixel[1], target.pixel[0]]:
+            alias_reason = "target pixel lies on rendered robot geometry"
+        else:
+            intersection = int(np.logical_and(held_mask, support_mask).sum())
+            denominator = max(1, min(int(held_mask.sum()), int(support_mask.sum())))
+            expanded_held = cv2.dilate(
+                held_mask.astype(np.uint8),
+                np.ones((7, 7), dtype=np.uint8),
+            ).astype(bool)
+            if intersection / float(denominator) > 0.05:
+                alias_reason = "held object and support masks alias"
+            elif np.logical_and(expanded_held, support_mask).any():
+                alias_reason = "held object and support are not separated under uncertainty"
+    if alias_reason is not None:
+        return (
+            {
+                "ok": False,
+                "reached": False,
+                "released": False,
+                "reason": alias_reason,
+                "source_clear_verified": target_visual_hold.ok,
+                "source_clear_reason": target_visual_hold.reason,
+                **_target_fields(target),
+            },
+            env.take_snapshot(),
+        )
+
     release_clearance = _bounded_arg(
         args,
         "release_clearance",
@@ -478,6 +650,7 @@ def dispatch_runtime(state: Any, args: dict[str, Any]):
     release_pos_tol = min(pos_tol, _MAX_RELEASE_Z_ERROR)
 
     held_object_offset_xy = None
+    held_object_bottom_offset_z = None
     evidence = get_visual_hold(env)
     if evidence is not None and evidence.object_offset_local is not None:
         candidate_offset = np.asarray(
@@ -491,19 +664,49 @@ def dispatch_runtime(state: Any, args: dict[str, Any]):
         ):
             from scipy.spatial.transform import Rotation
 
-            world_offset = Rotation.from_quat(held_quat).apply(
-                candidate_offset
-            )
+            held_rotation = Rotation.from_quat(held_quat)
+            world_offset = held_rotation.apply(candidate_offset)
             if (
                 np.all(np.isfinite(world_offset))
                 and float(np.linalg.norm(world_offset[:2])) <= 0.08
             ):
                 held_object_offset_xy = world_offset[:2]
+            reference = evidence.pickup_reference
+            local_cloud = np.asarray(
+                getattr(reference, "pickup_cloud_local", []),
+                dtype=float,
+            )
+            if (
+                local_cloud.ndim == 2
+                and local_cloud.shape[1] == 3
+                and len(local_cloud) >= _MIN_SURFACE_POINTS
+                and np.all(np.isfinite(local_cloud))
+            ):
+                rotated_cloud = held_rotation.apply(local_cloud)
+                bottom_offset = float(np.percentile(rotated_cloud[:, 2], 5))
+                vertical_span = float(
+                    np.percentile(rotated_cloud[:, 2], 95) - bottom_offset
+                )
+                if (
+                    np.isfinite(bottom_offset)
+                    and np.isfinite(vertical_span)
+                    and 0.003 <= vertical_span <= 0.20
+                    and -0.20 <= bottom_offset <= 0.10
+                ):
+                    held_object_bottom_offset_z = bottom_offset
     release_world = np.asarray(target.world, dtype=float).copy()
     if held_object_offset_xy is not None:
         release_world[:2] -= held_object_offset_xy
+    # release_clearance is clearance under the authenticated held object, not
+    # under the TCP. A bowl commonly extends well below the TCP and otherwise
+    # contacts the support before the commanded TCP pose can converge.
+    bottom_offset_z = (
+        held_object_bottom_offset_z
+        if held_object_bottom_offset_z is not None
+        else 0.0
+    )
     release_pose = release_world + np.array(
-        [0.0, 0.0, release_clearance],
+        [0.0, 0.0, release_clearance - bottom_offset_z],
         dtype=float,
     )
     hover_pose = release_pose + np.array([0.0, 0.0, hover], dtype=float)
@@ -979,6 +1182,11 @@ def dispatch_runtime(state: Any, args: dict[str, Any]):
         )
 
     _clear_surface_target_cache(env)
+    from roborsi.embodied.skills.base._lib.libero.visual_hold import (
+        clear_visual_hold,
+    )
+
+    clear_visual_hold(env)
     retract_reached, _ = ctrl.servo_to(
         hover_pose,
         quat=held_quat,
@@ -1002,6 +1210,15 @@ def dispatch_runtime(state: Any, args: dict[str, Any]):
                 ]
                 if held_object_offset_xy is not None
                 else None
+            ),
+            "held_object_bottom_offset_z": (
+                round(float(held_object_bottom_offset_z), 4)
+                if held_object_bottom_offset_z is not None
+                else None
+            ),
+            "release_bottom_clearance": round(
+                float(release_clearance),
+                4,
             ),
             "reason": (
                 "released and retracted"

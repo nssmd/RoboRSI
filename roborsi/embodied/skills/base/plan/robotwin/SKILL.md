@@ -17,8 +17,20 @@ args:
           description: "One-line task goal in your own words (RECEIVE_INSTRUCTION phase)." }
   scene_summary: { type: string, required: false,
                    description: "1-3 sentence description of what you saw via look() (DESCRIBE_SCENE phase). Strongly recommended on FIRST plan; optional on revision." }
-  substeps: { type: list, required: true,
-              description: "Ordered substep dicts. See schema below." }
+  substeps:
+    type: list
+    required: true
+    description: "Ordered steps; every step requires name and primary."
+    items:
+      type: object
+      properties:
+        name: {type: string, description: "Short snake_case step name"}
+        primary: {type: string, description: "Tool name and execution strategy"}
+        progress_pct: {type: integer, minimum: 0, maximum: 100}
+        preconditions: {type: array, items: {type: string}}
+        success_evidence: {type: string}
+        fallback: {type: string}
+      required: [name, primary]
   reason_for_revision: { type: string, required: false,
                           description: "If this is a re-plan (not the first), explain why the previous plan was wrong (failed substep, scene changed, new info). Helps debugging." }
 returns:

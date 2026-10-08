@@ -128,7 +128,7 @@ CREATE INDEX IF NOT EXISTS idx_events_chat ON events(chat_id, id);
 def db_path() -> Path:
     p = Path(os.environ.get(
         "ROBORSI_TRACE_DB",
-        str(Path.home() / ".roborsi" / "trace.db")))
+        str(__import__("roborsi.embodied.paths", fromlist=["home"]).home() / "trace.db")))
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 

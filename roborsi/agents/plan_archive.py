@@ -33,7 +33,9 @@ _ARCHIVE_DIR = _REPO / "roborsi" / "embodied" / "skills" / "_data" / "successful
 
 
 def _archive_path(task: str) -> Path:
-    return _ARCHIVE_DIR / f"{task}.jsonl"
+    from roborsi.agents.task_memory_identity import directory
+    scoped=directory(task)
+    return (scoped / "successful_plans.jsonl") if scoped is not None else _ARCHIVE_DIR / f"{task}.jsonl"
 
 
 def archive_successful_plan(task: str, plan_md: str,

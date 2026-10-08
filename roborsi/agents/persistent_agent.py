@@ -25,8 +25,8 @@ from roborsi.agents._codex_autoloop.codex_runner import (
 from roborsi.agents._codex_autoloop.runner_backend import BACKEND_CLAUDE
 
 _REPO = Path(__file__).resolve().parents[2]
-_SESSIONS = Path.home() / ".roborsi" / "agent_sessions.json"
-_MEMORY_DIR = Path.home() / ".roborsi" / "agent_memory"
+_SESSIONS = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "agent_sessions.json"
+_MEMORY_DIR = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "agent_memory"
 _DEFAULT_MODEL = "claude-opus-4-8"
 
 # Binding permissions preamble prepended to EVERY role session's system prompt.
@@ -139,6 +139,20 @@ def run_role(role: str, task: str, user_block: str, *,
         return run(role, task, user_block, system_prompt=system_prompt, model=model)
     from roborsi.embodied.agent_loop.vlm_io import _call_vlm_tools
     from roborsi.channels.core.agent import _extract_text_block
+    if role == "planner" and os.environ.get("ROBORSI_AUDIT_PLANNER_INPUT") == "1":
+        import time
+        from roborsi.embodied.paths import home as evidence_home
+        try:
+            audit_dir = evidence_home() / "planner_inputs"
+            audit_dir.mkdir(parents=True, exist_ok=True)
+            (audit_dir / (str(time.time_ns()) + ".json")).write_text(
+                json.dumps({"role": role, "task": task, "model": model,
+                            "system": system_prompt, "user": user_block,
+                            "capture": "actual_model_request",
+                            "episode_key": os.environ.get("ROBORSI_EVIDENCE_EPISODE_KEY")}, ensure_ascii=True),
+                encoding="utf-8")
+        except OSError as audit_error:
+            print("[planner-input-capture] " + type(audit_error).__name__)
     messages = [{"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_block}]
     resp = _call_vlm_tools(model, messages, [], thinking_budget=0, tool_choice="none")

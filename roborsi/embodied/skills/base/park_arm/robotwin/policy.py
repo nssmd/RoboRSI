@@ -24,18 +24,24 @@ _TOP_DOWN_QUAT = [0.5, -0.5, 0.5, 0.5]
 
 def dispatch_runtime(state, args: dict[str, Any]):
     from roborsi.embodied.agent_loop.rollout import _snapshot
-    from roborsi.embodied.sim.robotwin.robotwin_tools import _do_move_to_pose
+    from roborsi.embodied.sim.robotwin.robotwin_tools import _do_move_to_pose, _pose_components
 
     arm = args.get("arm")
-    if arm not in ("left", "right"):
+    if not isinstance(arm, str) or arm not in ("left", "right"):
         return ({"ok": False, "success": False,
                  "reason": "arm must be 'left' or 'right'"}, _snapshot(state.env))
 
     dx, dy, dz = _DEFAULT_PARK[arm]
-    x = float(args.get("x", dx))
-    y = float(args.get("y", dy))
-    z = float(args.get("z", dz))
-    quat = list(args.get("quat") or _TOP_DOWN_QUAT)
+    raw_pose = {
+        key: default if args.get(key) is None else args[key]
+        for key, default in (("x", dx), ("y", dy), ("z", dz))
+    }
+    raw_pose["quat"] = args.get("quat")
+    try:
+        (x, y, z), quat = _pose_components(raw_pose)
+    except ValueError as exc:
+        return ({"ok": False, "success": False,
+                 "reason": str(exc)}, _snapshot(state.env))
 
     # Hand off to the standard move primitive. keep_grip=True means we
     # simply don't issue any gripper command — the fingers stay closed, so

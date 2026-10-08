@@ -95,6 +95,8 @@ def _discover_root(root: Path, is_user: bool) -> list[Skill]:
         fm, body = parse_frontmatter(content)
         skill_dir = skill_md.parent
         name = str(fm.get("name") or skill_dir.name)
+        if name == "execute_with_pi05":
+            continue
         description = str(fm.get("description") or _first_nonheader_line(body))
         # category = first segment of path relative to root, or skill_dir.parent.name
         try:

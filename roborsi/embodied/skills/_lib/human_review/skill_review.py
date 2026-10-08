@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 
-_QUEUE_DIR = Path.home() / ".roborsi" / "skill_review"
+_QUEUE_DIR = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "skill_review"
 
 
 @dataclass
@@ -163,7 +163,7 @@ def _log_audit(name: str, code: str, docstring: str,
                 task_name: str | None, verdict: str, note: str = "",
                 test_images: dict | None = None,
                 test_result_preview: str | None = None) -> None:
-    audit_dir = Path.home() / ".roborsi" / "skill_audit"
+    audit_dir = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "skill_audit"
     audit_dir.mkdir(parents=True, exist_ok=True)
     p = audit_dir / f"{int(time.time())}-{name}-{verdict}.json"
     p.write_text(json.dumps({

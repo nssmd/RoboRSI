@@ -128,6 +128,51 @@ def run_rollout(env_id: str, body: dict[str, Any]) -> Response:
     return _msgpack_response(rollout)
 
 
+@app.post("/env/{env_id}/run_agent_loop")
+def run_agent_loop(env_id: str, body: dict[str, Any]) -> Response:
+    from roborsi.embodied.agent_loop.rollout import run_rollout as drive_loop
+    from roborsi.embodied.agent_loop.vlm_io import capture_usage
+    from roborsi.runtime_mode import use_run_mode
+    from roborsi.evaluation.atomic import _reasoning_effort
+
+    env = _get_env(env_id)
+    kwargs = {key: body[key] for key in (
+        "seed", "task_name", "instruction", "expected_on_success", "model",
+        "tool_budget", "use_sim_predicate", "prior_messages",
+    ) if key in body}
+    kwargs["workdir"] = Path(body["workdir"]) if body.get("workdir") else None
+    restriction = body.get("restrict_to_names")
+    kwargs["restrict_to_names"] = set(restriction) if restriction is not None else None
+    # The unchanged native loop performs simulator adjudication AFTER actions.
+    # No predicate endpoint or predicate-bearing tool response is introduced.
+    with use_run_mode(body["run_mode"]), _reasoning_effort(body.get("reasoning_effort")), capture_usage() as usage:
+        result = drive_loop(env, **kwargs)
+    return _msgpack_response({"result": result, "usage": usage.to_dict()})
+
+
+@app.post("/env/{env_id}/run_baseline_loop")
+def run_baseline_loop(env_id: str, body: dict[str, Any]) -> Response:
+    from roborsi.agents.baselines import _run_maestro, _run_openeta, _run_capx
+    from roborsi.agents.workspace import Workspace
+    from roborsi.embodied.agent_loop.vlm_io import capture_usage
+    from roborsi.runtime_mode import use_run_mode
+    from roborsi.evaluation.atomic import _reasoning_effort
+
+    runners = {"maestro": _run_maestro, "openeta": _run_openeta, "capx": _run_capx}
+    mode = body.get("agent_mode")
+    if mode not in runners:
+        raise HTTPException(400, "unknown baseline mode")
+    record = body["workspace"]
+    workspace = Workspace(task=record["task"], run_id=record["run_id"], root=Path(record["root"]))
+    kwargs = {key: body[key] for key in ("atomic", "seed", "tool_budget", "model", "task_instruction")}
+    kwargs["workspace"] = workspace
+    if mode != "maestro":
+        kwargs["ns"] = "robotwin"
+    with use_run_mode(body["run_mode"]), _reasoning_effort(body.get("reasoning_effort")), capture_usage() as usage:
+        result = runners[mode](_get_env(env_id), **kwargs)
+    return _msgpack_response({"result": result, "usage": usage.to_dict()})
+
+
 @app.post("/env/{env_id}/step")
 def step(env_id: str, body: dict[str, Any]) -> Response:
     env = _get_env(env_id)

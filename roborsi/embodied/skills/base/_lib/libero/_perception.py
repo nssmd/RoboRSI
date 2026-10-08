@@ -1374,7 +1374,12 @@ def locate_by_owlv2(env, rgb, target: str, scale: int = 3, thresh: float = 0.05)
     with torch.no_grad():
         out = o["mod"](**inp)
     tsz = torch.tensor([pil.size[::-1]]).to(o["dev"])
-    res = o["proc"].post_process_object_detection(out, threshold=thresh, target_sizes=tsz)[0]
+    # transformers >=5 removed Owlv2Processor.post_process_object_detection;
+    # the image processor keeps it on both major versions.
+    _post = getattr(o["proc"], "post_process_object_detection", None)
+    if _post is None:
+        _post = o["proc"].image_processor.post_process_object_detection
+    res = _post(out, threshold=thresh, target_sizes=tsz)[0]
     boxes = res["boxes"].cpu().numpy()
     scores = res["scores"].cpu().numpy()
     labels = res["labels"].cpu().numpy()
@@ -1846,7 +1851,8 @@ def grasps_at_pixel(env, u: int, v: int, top_k: int = 3):
     if cloud is None:
         return [], None
     grasps = []
-    if os.environ.get("GRASPGEN_PORT"):
+    graspgen_port = os.environ.get("GRASPGEN_PORT", "5556")
+    if graspgen_port:
         try:
             from roborsi.embodied.sim.robotwin.graspgen_infer import (
                 _grasps_from_cloud,
@@ -1855,6 +1861,7 @@ def grasps_at_pixel(env, u: int, v: int, top_k: int = 3):
             grasps = _grasps_from_cloud(
                 cloud.astype(np.float32),
                 top_k=top_k,
+                port=int(graspgen_port),
             )
         except Exception:
             grasps = []

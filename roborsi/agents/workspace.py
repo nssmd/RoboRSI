@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-_ROOT = Path.home() / ".roborsi" / "workspaces"
+_ROOT = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "workspaces"
 
 
 @dataclass(frozen=True)

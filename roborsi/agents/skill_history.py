@@ -35,10 +35,19 @@ def _current_commit_sha(skill_name: str) -> str | None:
     rel = f"roborsi/embodied/skills/base/{skill_name}/robotwin/policy.py"
     if not (_REPO / rel).exists():
         return None
-    res = subprocess.run(
-        ["git", "log", "-1", "--format=%h", "--", rel],
-        capture_output=True, text=True, cwd=_REPO, timeout=5,
-    )
+    try:
+        res = subprocess.run(
+            ["git", "log", "-1", "--format=%h", "--", rel],
+            capture_output=True, text=True, cwd=_REPO, timeout=5,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # Optional ranking provenance must not discard simulator outcomes.
+        # No fallback/stale version is recorded; unversioned records are skipped.
+        import sys
+        print(f"[skill-history] version unavailable for {skill_name}: {type(exc).__name__}", file=sys.stderr, flush=True)
+        return None
+    if res.returncode != 0:
+        return None
     sha = res.stdout.strip()
     return sha or None
 
@@ -50,6 +59,8 @@ def record_success(task: str, skills_used: list[str]) -> None:
         return
     if not skills_used:
         return
+    from roborsi.agents.task_memory_identity import key
+    task=key(task) or task
     _HISTORY.parent.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
     with _HISTORY.open("a", encoding="utf-8") as f:
@@ -66,6 +77,8 @@ def get_success_counts(task: str) -> dict[str, int]:
     """For the given task, return {skill_name: success_count_under_current_sha}.
     Records whose stored sha != current sha are silently ignored —
     that's the auto-reset behavior."""
+    from roborsi.agents.task_memory_identity import key
+    task=key(task) or task
     if not _HISTORY.exists():
         return {}
     sha_cache: dict[str, str | None] = {}

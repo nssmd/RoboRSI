@@ -19,6 +19,11 @@ from typing import Any
 from roborsi.embodied.paths import evals_root, home
 from roborsi.runtime_mode import RunMode, parse_mode, use_run_mode
 
+#: Selectable agent orchestrations. "roborsi" is the full
+#: Planner → Engineer → Reviewer triangle (default, unchanged); the other
+#: three are ablation baselines implemented in ``roborsi.agents.baselines``.
+AGENT_MODES = ("roborsi", "maestro", "openeta", "capx")
+
 _INFRA_EXCEPTION_NAMES = {
     "APIConnectionError",
     "APITimeoutError",
@@ -75,14 +80,29 @@ def run_atomic_attempt(
     reviewer_model: str | None = None,
     reasoning_effort: str | None = None,
     chat_id: str | None = None,
+    agent_mode: str = "roborsi",
 ) -> dict[str, Any]:
-    """Run one Planner -> Engineer -> Reviewer attempt and classify its result."""
+    """Run one agent attempt and classify its result.
+
+    ``agent_mode="roborsi"`` (default) runs the full Planner -> Engineer ->
+    Reviewer triangle exactly as before; ``maestro`` / ``openeta`` / ``capx``
+    run the corresponding baseline orchestration under the identical protocol
+    (same tool surface, tool budget, seed, and final simulator verdict).
+    """
     from roborsi.channels.agent.feishu.live_trace import get_session
     from roborsi.channels.core.agent import _run_atomic_3role
 
+    if agent_mode not in AGENT_MODES:
+        raise ValueError(
+            f"unknown agent_mode {agent_mode!r}; expected one of {AGENT_MODES}"
+        )
     parsed_mode = parse_mode(mode)
+    chat_prefix = (
+        parsed_mode.value if agent_mode == "roborsi"
+        else f"{parsed_mode.value}-{agent_mode}"
+    )
     chat_id = chat_id or (
-        f"{parsed_mode.value}-{task.replace('/', '-')}-{seed}-"
+        f"{chat_prefix}-{task.replace('/', '-')}-{seed}-"
         f"{uuid.uuid4().hex[:6]}"
     )
     sess = get_session(chat_id)
@@ -98,28 +118,46 @@ def run_atomic_attempt(
     )
     if sim_task:
         request += f" Simulator task key: {sim_task}."
+    if agent_mode != "roborsi":
+        request += f" Agent mode: {agent_mode}."
     sess.last_user_message = request
 
     with use_run_mode(parsed_mode), _reasoning_effort(reasoning_effort):
         try:
-            details = _run_atomic_3role(
-                text=request,
-                atomic=task,
-                seed=seed,
-                sess=sess,
-                target_chat_id=chat_id,
-                channel=None,
-                ctx=None,
-                tool_budget=tool_budget,
-                backend_name=backend,
-                sim_task=sim_task,
-                planner_model=planner_model,
-                engineer_model=engineer_model,
-                reviewer_model=reviewer_model,
-                return_details=True,
-            )
+            if agent_mode == "roborsi":
+                details = _run_atomic_3role(
+                    text=request,
+                    atomic=task,
+                    seed=seed,
+                    sess=sess,
+                    target_chat_id=chat_id,
+                    channel=None,
+                    ctx=None,
+                    tool_budget=tool_budget,
+                    backend_name=backend,
+                    sim_task=sim_task,
+                    planner_model=planner_model,
+                    engineer_model=engineer_model,
+                    reviewer_model=reviewer_model,
+                    return_details=True,
+                )
+            else:
+                from roborsi.agents.baselines import run_baseline_atomic
+
+                details = run_baseline_atomic(
+                    agent_mode=agent_mode,
+                    text=request,
+                    atomic=task,
+                    seed=seed,
+                    sess=sess,
+                    tool_budget=tool_budget,
+                    backend_name=backend,
+                    sim_task=sim_task,
+                    model=engineer_model,
+                )
             if not isinstance(details, dict):
                 raise TypeError("atomic runner returned a non-dict result")
+            details["agent_mode"] = agent_mode
             details["verdict"] = "success" if details["success"] else "failure"
             details["status"] = "terminal"
             details["reasoning_effort"] = reasoning_effort
@@ -141,6 +179,7 @@ def run_atomic_attempt(
                 "sim_task": sim_task,
                 "seed": seed,
                 "run_mode": parsed_mode.value,
+                "agent_mode": agent_mode,
                 "success": None,
                 "verdict": verdict,
                 "status": "incomplete",
@@ -178,6 +217,7 @@ def run_atomic_campaign(
     engineer_model: str | None = None,
     reviewer_model: str | None = None,
     reasoning_effort: str | None = None,
+    agent_mode: str = "roborsi",
     persist_manifest: bool = True,
     progress=None,
 ) -> dict[str, Any]:
@@ -206,6 +246,7 @@ def run_atomic_campaign(
             engineer_model=engineer_model,
             reviewer_model=reviewer_model,
             reasoning_effort=reasoning_effort,
+            agent_mode=agent_mode,
         ))
 
     summary = summarize_campaign(
@@ -219,6 +260,7 @@ def run_atomic_campaign(
         backend=backend,
         sim_task=sim_task,
         reasoning_effort=reasoning_effort,
+        agent_mode=agent_mode,
         started_at=started_at,
     )
     if persist_manifest:
@@ -250,6 +292,7 @@ def summarize_campaign(
     sim_task: str | None,
     reasoning_effort: str | None,
     started_at: datetime,
+    agent_mode: str = "roborsi",
 ) -> dict[str, Any]:
     passed = sum(1 for row in rows if row["verdict"] == "success")
     failed = sum(1 for row in rows if row["verdict"] == "failure")
@@ -270,6 +313,7 @@ def summarize_campaign(
             else "incomplete"
         ),
         "task": task,
+        "agent_mode": agent_mode,
         "backend_override": backend,
         "sim_task_override": sim_task,
         "reasoning_effort": reasoning_effort,

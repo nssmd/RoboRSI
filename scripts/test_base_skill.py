@@ -47,14 +47,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 _REPO = Path(__file__).resolve().parents[1]
 _BASE_DIR = _REPO / "roborsi/embodied/skills/base"
-_REPORT_DIR = Path.home() / ".roborsi" / "harness_reports"
+_REPORT_DIR = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "harness_reports"
 
 
-@dataclasses.dataclass
-class _State:
-    env: object
-    workdir: Path
-    last_image_path: Path | None = None
+from roborsi.embodied.agent_loop.rollout import DispatchContext
+
+class _State(DispatchContext):
+    def __init__(self, env, workdir, last_image_path=None):
+        super().__init__(env=env,workdir=workdir,last_image_path=last_image_path,
+                         ns=os.environ.get("ROBORSI_HARNESS_NAMESPACE","robotwin"),
+                         task=getattr(env,"task_name",""))
 
 
 def _load_skill_dispatch(skill_name: str):
@@ -67,7 +69,7 @@ def _load_skill_dispatch(skill_name: str):
     A skill only callable via run_skill from outside the sim loop still
     gets exercised here, which catches real bugs that wouldn't otherwise
     surface in either of the other two paths."""
-    mod_path = f"roborsi.embodied.skills.base.{skill_name}.robotwin.policy"
+    mod_path = f"roborsi.embodied.skills.base.{skill_name}.{os.environ.get('ROBORSI_HARNESS_NAMESPACE','robotwin')}.policy"
     mod = None
     try:
         mod = importlib.import_module(mod_path)
@@ -77,7 +79,8 @@ def _load_skill_dispatch(skill_name: str):
         dr = getattr(mod, "dispatch_runtime", None)
         if dr is not None:
             return dr
-    from roborsi.embodied.sim.robotwin.robotwin_agent import _dispatch, _ensure_registry, _snapshot
+    from roborsi.embodied.agent_loop.rollout import _dispatch, _snapshot
+    from roborsi.embodied.sim.robotwin.robotwin_agent import _ensure_registry
     if skill_name in _ensure_registry():
         def _router(state, args):
             return _dispatch(state, {"tool": skill_name, "args": args})
@@ -99,7 +102,7 @@ def _load_skill_dispatch(skill_name: str):
 def _load_frontmatter(skill_name: str) -> dict:
     """Read SKILL.md YAML frontmatter. Returns {} if missing."""
     import re
-    skill_md = _BASE_DIR / skill_name / "robotwin" / "SKILL.md"
+    skill_md = _BASE_DIR / skill_name / os.environ.get("ROBORSI_HARNESS_NAMESPACE","robotwin") / "SKILL.md"
     if not skill_md.exists():
         return {}
     text = skill_md.read_text(encoding="utf-8")
@@ -115,7 +118,7 @@ def _load_frontmatter(skill_name: str) -> dict:
 
 def _boot_env(sim_task: str, seed: int):
     from roborsi.embodied.agent_loop import get_backend
-    be = get_backend("bicoord")
+    be = get_backend(os.environ.get("ROBORSI_HARNESS_BACKEND","bicoord"))
     env = be.make_env(sim_task, {"require_depth": True})
     env.reset(seed=seed)
     return env
@@ -128,10 +131,30 @@ def _run_one(dispatch, env, args: dict, label: str, *,
     chains where the target reads state from setup, e.g. zoom_in needing
     look's recent image)."""
     if state is None:
-        state = _State(env=env, workdir=Path("/tmp/base_skill_harness"))
+        state = _State(env=env, workdir=__import__("roborsi.embodied.paths",fromlist=["home"]).home() / "harness_runs" / str(time.time_ns()))
         state.workdir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     crashed = False
+    # Instrument only this candidate's imported public dispatcher. Never expose
+    # adjudication through this wrapper or change which calls the policy makes.
+    scope = getattr(dispatch, "__globals__", {})
+    original_dispatch = scope.get("_dispatch_tool")
+    call_log = state.workdir / (label + "-public-calls.jsonl")
+    def traced_dispatch(ctx, tool, kwargs=None):
+        started = time.time()
+        try:
+            value, observation = original_dispatch(ctx, tool, kwargs)
+        except Exception as exc:
+            with call_log.open("a") as f:
+                f.write(json.dumps({"tool": tool, "args": kwargs, "exception": str(exc),
+                                    "wall_s": time.time()-started}, default=str) + "\n")
+            raise
+        with call_log.open("a") as f:
+            f.write(json.dumps({"tool": tool, "args": kwargs, "result": value,
+                                "wall_s": time.time()-started}, default=str) + "\n")
+        return value, observation
+    if original_dispatch is not None:
+        scope["_dispatch_tool"] = traced_dispatch
     try:
         result, _obs = dispatch(state, args)
     except Exception as exc:  # noqa: BLE001 — the harness must GRADE a crashing
@@ -144,8 +167,19 @@ def _run_one(dispatch, env, args: dict, label: str, *,
         crashed = True
         result = {"ok": False, "success": False,
                    "reason": f"CRASH {type(exc).__name__}: {exc}"}
+    finally:
+        if original_dispatch is not None:
+            scope["_dispatch_tool"] = original_dispatch
     wall = time.time() - t0
-    res = {
+    # Preserve the candidate's full returned diagnostics before presentation.
+    # This does not decide task success or alter the candidate result.
+    (state.workdir / (label + "-raw-result.json")).write_text(
+        json.dumps({"label": label, "args": args, "result": result,
+                    "crashed": crashed, "wall_s": wall}, default=str, indent=2))
+    reason_raw = result.get("reason")
+    reason_text = reason_raw if isinstance(reason_raw, str) else (
+        "" if reason_raw is None else json.dumps(reason_raw, default=str, ensure_ascii=False))
+    res = {"public_trace_path": str(call_log),
         "label": label,
         "args": args,
         "wall_s": round(wall, 2),
@@ -153,7 +187,8 @@ def _run_one(dispatch, env, args: dict, label: str, *,
         "success": result.get("success"),
         "holding_visual": result.get("holding_visual"),
         "verify_source": result.get("verify_source") or result.get("source"),
-        "reason": (result.get("reason") or "")[:160],
+        "reason": reason_text[:160],
+        "reason_raw": json.loads(json.dumps(reason_raw, default=str)),
         "crashed": crashed,
         "extras": {k: v for k, v in result.items()
                     if k not in {"ok", "success", "holding_visual",
@@ -170,6 +205,8 @@ def _grade(harness: dict, results: list[dict]) -> dict:
     min_pass = int(pc.get("min_seeds_passing", 1))
 
     def _seed_passed(r: dict) -> bool:
+        if kind == "simulator_task_success":
+            return r.get("harness_simulator_success") is True and not r.get("crashed")
         if kind == "grasp_holds_actor":
             # Pass if the skill reports holding (regardless of which
             # verify path produced the signal). Older skills that don't
@@ -193,15 +230,27 @@ def _grade(harness: dict, results: list[dict]) -> dict:
             return keys_ok and (bool(r.get("ok")) or has_payload)
         return bool(r.get("ok"))
 
-    passes = sum(1 for r in results if _seed_passed(r))
+    if kind == "simulator_task_success":
+        # Count independent development seeds, never multiple calls on one seed.
+        declared = {int(seed) for seed in harness.get("seeds", [])}
+        seen = {r.get("seed") for r in results if type(r.get("seed")) is int}
+        passed_seeds = {r["seed"] for r in results
+                        if type(r.get("seed")) is int and r["seed"] in declared
+                        and _seed_passed(r)}
+        passes = len(passed_seeds)
+        total = len(declared | seen)
+    else:
+        passes = sum(1 for r in results if _seed_passed(r))
+        total = len(results)
     crashes = sum(1 for r in results if r.get("crashed"))
     verdict = "PASS" if passes >= min_pass else "FAIL"
     return {"verdict": verdict, "kind": kind,
-             "pass_count": passes, "total": len(results),
+             "pass_count": passes, "total": total,
+             "call_count": len(results),
              "crash_count": crashes,
              "min_required": min_pass,
              "reason": ("" if verdict == "PASS"
-                         else f"only {passes}/{len(results)} seeds passed (need {min_pass})")}
+                         else f"only {passes}/{total} seeds passed (need {min_pass})")}
 
 
 def _run_skill_from_frontmatter(skill_name: str) -> dict:
@@ -230,27 +279,36 @@ def _run_skill_from_frontmatter(skill_name: str) -> dict:
     all_results: list[dict] = []
     for seed in seeds:
         env = _boot_env(sim_task, int(seed))
-        shared_state: _State | None = None
-        if setup_dispatch is not None:
-            _, shared_state = _run_one(setup_dispatch, env,
-                                          setup.get("args") or {},
-                                          f"setup-seed{seed}")
-        for i, a in enumerate(args_list):
-            r, shared_state = _run_one(dispatch, env, a,
-                                          f"seed{seed}-args{i}",
-                                          state=shared_state)
-            all_results.append(r)
-        for i, a in enumerate(extra):
-            env.reset(seed=int(seed))
-            shared_state = None
+        try:
+            shared_state: _State | None = None
             if setup_dispatch is not None:
                 _, shared_state = _run_one(setup_dispatch, env,
                                               setup.get("args") or {},
-                                              f"setup-seed{seed}-extra")
-            r, shared_state = _run_one(dispatch, env, a,
-                                          f"seed{seed}-extra{i}",
-                                          state=shared_state)
-            all_results.append(r)
+                                              f"setup-seed{seed}")
+            for i, a in enumerate(args_list):
+                r, shared_state = _run_one(dispatch, env, a,
+                                              f"seed{seed}-args{i}",
+                                              state=shared_state)
+                r["seed"] = int(seed)
+                if (harness.get("pass_criteria") or {}).get("kind") == "simulator_task_success":
+                    r["harness_simulator_success"] = bool(env.check_success())
+                all_results.append(r)
+            for i, a in enumerate(extra):
+                env.reset(seed=int(seed))
+                shared_state = None
+                if setup_dispatch is not None:
+                    _, shared_state = _run_one(setup_dispatch, env,
+                                                  setup.get("args") or {},
+                                                  f"setup-seed{seed}-extra")
+                r, shared_state = _run_one(dispatch, env, a,
+                                              f"seed{seed}-extra{i}",
+                                              state=shared_state)
+                r["seed"] = int(seed)
+                if (harness.get("pass_criteria") or {}).get("kind") == "simulator_task_success":
+                    r["harness_simulator_success"] = bool(env.check_success())
+                all_results.append(r)
+        finally:
+            env.close()
     grade = _grade(harness, all_results)
     return {"skill": skill_name, "sim_task": sim_task, "seeds": seeds,
              "results": all_results, **grade}

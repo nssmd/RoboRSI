@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-_LOG_PATH = Path.home() / ".roborsi" / "gate_log.jsonl"
+_LOG_PATH = __import__("roborsi.embodied.paths", fromlist=["home"]).home() / "gate_log.jsonl"
 
 
 def _primitives_seen(trace: list[dict] | None) -> list[str]:

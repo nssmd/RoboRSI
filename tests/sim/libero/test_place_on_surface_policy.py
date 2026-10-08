@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ import numpy as np
 import pytest
 
 import roborsi.embodied.skills.base._lib.libero._perception as perception
+import roborsi.embodied.skills.base._lib.libero.instance_hold as instance_hold
 import roborsi.embodied.skills.base.place_on_surface.libero.policy as policy
 from roborsi.embodied.agent_loop.prompt_tools import _build_tool_specs
 from roborsi.embodied.skills import get_ns
@@ -34,6 +36,8 @@ class FakeEnv:
             source_pixel=(16, 16),
             before_rgb=before,
             after_rgb=current,
+            identity_verified=True,
+            pickup_reference=self._authenticated_pickup(self),
         )
 
     def take_snapshot(self):
@@ -53,6 +57,9 @@ class FakeTargetControl:
             np.array([0.0, 0.0, 0.0, 1.0], dtype=float),
             np.array([0.02, -0.02], dtype=float),
         )
+
+    def read_gripper_state(self):
+        return 0.02, GripperState.HELD
 
     def servo_to(self, *args, **kwargs):
         return True, None
@@ -78,6 +85,7 @@ class FakeControl:
         hold_states=None,
     ):
         self.env = env
+        env.test_control = self
         self.pose = np.array([0.0, 0.0, 1.0], dtype=float)
         self.quat = np.array([0.1, 0.2, 0.3, 0.9], dtype=float)
         self.calls = []
@@ -150,6 +158,7 @@ class FakeControl:
             and kwargs.get("gripper") == "close"
             and self.reoccupy_after_stage
         ):
+            self.env.test_instance_visible = False
             self.env.snapshot.images["head_camera"] = np.zeros(
                 (32, 32, 3),
                 dtype=np.uint8,
@@ -168,18 +177,34 @@ class FakeControl:
             self.open_calls += 1
 
 
+def _patch_surface_cloud(monkeypatch, value):
+    real = instance_hold.mask_world_cloud
+    def cloud(frame, mask):
+        if mask[12, 10]:
+            return value() if callable(value) else value
+        return real(frame, mask)
+    monkeypatch.setattr(instance_hold, "mask_world_cloud", cloud)
+
+
 def _patch_target(monkeypatch):
     target = policy.SurfaceTarget(
         pixel=(10, 12),
         world=np.array([0.15, 0.25, 0.80], dtype=float),
         source="sam_cloud",
     )
-    monkeypatch.setattr(
-        policy,
-        "_resolve_surface_target",
-        lambda *args, **kwargs: target,
-    )
+    def resolve(state, *args, **kwargs):
+        frame = state.env.coherent_sensor_frame()
+        support = np.zeros((32, 32), dtype=bool)
+        support[10:15, 8:13] = True
+        return replace(target, frame_token=frame.frame_token, sensor_frame=frame,
+                       support_mask=support, robot_mask=np.zeros_like(support))
+    monkeypatch.setattr(policy, "_resolve_surface_target", resolve)
     return target
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_control_fixture(monkeypatch, authenticated_pickup):
+    monkeypatch.setattr(FakeEnv, "_authenticated_pickup", staticmethod(authenticated_pickup), raising=False)
 
 
 def test_place_on_surface_is_visible_with_expected_schema() -> None:
@@ -206,7 +231,7 @@ def test_explicit_pixel_uses_sam_surface(monkeypatch) -> None:
         [[0.14, 0.24, 0.79], [0.16, 0.26, 0.81]] * 12,
         dtype=float,
     )
-    monkeypatch.setattr(perception, "object_cloud", lambda *args, **kwargs: cloud)
+    _patch_surface_cloud(monkeypatch, cloud)
 
     target = policy._resolve_surface_target(
         state,
@@ -217,12 +242,12 @@ def test_explicit_pixel_uses_sam_surface(monkeypatch) -> None:
 
     assert target is not None
     assert target.pixel == (10, 12)
-    assert target.source == "sam_cloud"
+    assert target.source == "phrase_pixel+point_sam+coherent_rgbd"
     assert target.world[:2] == pytest.approx([0.15, 0.25])
     assert target.world[2] == pytest.approx(float(np.percentile(cloud[:, 2], 85)))
 
 
-def test_same_surface_pixel_reuses_cached_world_target(monkeypatch) -> None:
+def test_same_surface_pixel_reacquires_current_coherent_target(monkeypatch) -> None:
     env = FakeEnv()
     state = SimpleNamespace(env=env)
     clear_cloud = np.array(
@@ -239,7 +264,7 @@ def test_same_surface_pixel_reuses_cached_world_target(monkeypatch) -> None:
         calls["count"] += 1
         return clear_cloud if calls["count"] == 1 else occluded_cloud
 
-    monkeypatch.setattr(perception, "object_cloud", object_cloud)
+    _patch_surface_cloud(monkeypatch, object_cloud)
 
     first = policy._resolve_surface_target(
         state,
@@ -256,14 +281,15 @@ def test_same_surface_pixel_reuses_cached_world_target(monkeypatch) -> None:
 
     assert first is not None
     assert second is not None
-    assert calls["count"] == 1
-    assert second.world == pytest.approx(first.world)
+    assert calls["count"] == 2
+    assert second.world == pytest.approx([0.185, 0.275, 0.97])
+    assert second.frame_token == second.sensor_frame.frame_token
 
 
-def test_sparse_cloud_falls_back_to_depth(monkeypatch) -> None:
+def test_sparse_support_cloud_rejects_without_depth_fallback(monkeypatch) -> None:
     env = FakeEnv()
     state = SimpleNamespace(env=env)
-    monkeypatch.setattr(perception, "object_cloud", lambda *args, **kwargs: None)
+    _patch_surface_cloud(monkeypatch, None)
 
     target = policy._resolve_surface_target(
         state,
@@ -272,19 +298,17 @@ def test_sparse_cloud_falls_back_to_depth(monkeypatch) -> None:
         pixel=[10, 12],
     )
 
-    assert target is not None
-    assert target.source == "depth_unproject"
-    assert target.world == pytest.approx([0.15, 0.25, 0.80])
+    assert target is None
 
 
-def test_inconsistent_cloud_uses_depth(monkeypatch) -> None:
+def test_coherent_cloud_does_not_use_unrelated_depth_point(monkeypatch) -> None:
     env = FakeEnv()
     state = SimpleNamespace(env=env)
     cloud = np.array(
         [[0.50, 0.55, 0.82], [0.51, 0.54, 0.84]] * 12,
         dtype=float,
     )
-    monkeypatch.setattr(perception, "object_cloud", lambda *args, **kwargs: cloud)
+    _patch_surface_cloud(monkeypatch, cloud)
 
     target = policy._resolve_surface_target(
         state,
@@ -294,8 +318,8 @@ def test_inconsistent_cloud_uses_depth(monkeypatch) -> None:
     )
 
     assert target is not None
-    assert target.source == "depth_unproject_inconsistent_cloud"
-    assert target.world == pytest.approx([0.15, 0.25, 0.80])
+    assert target.source == "phrase_pixel+point_sam+coherent_rgbd"
+    assert target.world == pytest.approx([0.505, 0.545, 0.84])
 
 
 def test_out_of_frame_pixel_is_rejected(monkeypatch) -> None:
@@ -317,11 +341,10 @@ def test_out_of_frame_pixel_is_rejected(monkeypatch) -> None:
     assert target is None
 
 
-def test_nonfinite_cloud_rows_fall_back_to_depth(monkeypatch) -> None:
+def test_nonfinite_coherent_depth_is_rejected(monkeypatch) -> None:
     env = FakeEnv()
     state = SimpleNamespace(env=env)
-    cloud = np.full((24, 3), np.nan, dtype=float)
-    monkeypatch.setattr(perception, "object_cloud", lambda *args, **kwargs: cloud)
+    env.test_support_depth = float("nan")
 
     target = policy._resolve_surface_target(
         state,
@@ -330,16 +353,14 @@ def test_nonfinite_cloud_rows_fall_back_to_depth(monkeypatch) -> None:
         pixel=[10, 12],
     )
 
-    assert target is not None
-    assert target.source == "depth_unproject"
-    assert target.world == pytest.approx([0.15, 0.25, 0.80])
+    assert target is None
 
 
 def test_invalid_cloud_and_depth_are_rejected(monkeypatch) -> None:
     env = FakeEnv()
     env.depth_point = np.array([np.nan, 0.25, 0.80], dtype=float)
     state = SimpleNamespace(env=env)
-    monkeypatch.setattr(perception, "object_cloud", lambda *args, **kwargs: None)
+    _patch_surface_cloud(monkeypatch, None)
 
     target = policy._resolve_surface_target(
         state,
@@ -371,7 +392,7 @@ def test_named_target_reuses_visual_resolver(monkeypatch) -> None:
         ),
     )
     monkeypatch.setattr(perception, "localize_precise", lambda state, name: (10, 12))
-    monkeypatch.setattr(perception, "object_cloud", lambda *args, **kwargs: cloud)
+    _patch_surface_cloud(monkeypatch, cloud)
 
     target = policy._resolve_surface_target(
         state,
@@ -381,14 +402,14 @@ def test_named_target_reuses_visual_resolver(monkeypatch) -> None:
         held_quat=held_quat,
     )
 
-    assert called["retreat"] == 1
-    assert called["quat"] == pytest.approx(held_quat)
+    assert called["retreat"] == 0  # keep authenticated held instance in view
     assert target is not None
     assert target.pixel == (10, 12)
 
 
-def test_named_target_retreat_failure_skips_localization(monkeypatch) -> None:
+def test_named_target_without_authenticated_hold_skips_localization(monkeypatch) -> None:
     env = FakeEnv()
+    clear_visual_hold(env)
     state = SimpleNamespace(env=env)
     control = FakeTargetControl(env)
     localized = {"calls": 0}
@@ -900,7 +921,7 @@ def test_hold_lost_after_stage_stops_before_final_descent(monkeypatch) -> None:
     assert len(servo_calls) == 2
 
 
-def test_source_reoccupied_after_stage_stops_before_final_descent(
+def test_held_instance_disappears_after_stage_stops_before_final_descent(
     monkeypatch,
 ) -> None:
     env = FakeEnv()
@@ -915,7 +936,7 @@ def test_source_reoccupied_after_stage_stops_before_final_descent(
     assert result["ok"] is False
     assert result["released"] is False
     assert result["hold_check_stage"] == "staged_descent"
-    assert result["source_clear_reason"] == "source_patch_reoccupied"
+    assert result["source_clear_reason"] == "instance_mismatch_or_occluded"
     assert len(servo_calls) == 2
 
 
@@ -1035,7 +1056,7 @@ def test_missing_visual_hold_evidence_never_opens_gripper(monkeypatch) -> None:
     assert control.calls == []
 
 
-def test_source_reoccupied_never_opens_gripper(monkeypatch) -> None:
+def test_old_source_reoccupation_does_not_invalidate_authenticated_hold(monkeypatch) -> None:
     env = FakeEnv()
     env.snapshot.images["head_camera"] = np.zeros(
         (32, 32, 3),
@@ -1048,11 +1069,11 @@ def test_source_reoccupied_never_opens_gripper(monkeypatch) -> None:
 
     result, _ = policy.dispatch_runtime(state, {"pixel": [10, 12]})
 
-    assert result["ok"] is False
-    assert result["released"] is False
-    assert result["source_clear_verified"] is False
-    assert result["source_clear_reason"] == "source_patch_reoccupied"
-    assert control.calls == []
+    assert result["ok"] is True
+    assert result["released"] is True
+    assert result["source_clear_verified"] is True
+    assert result["source_clear_reason"] == "historical_source_cleared_and_instance_associated"
+    assert control.open_calls == 1
 
 
 def test_success_preserves_orientation_releases_and_retracts(monkeypatch) -> None:
@@ -1113,6 +1134,8 @@ def test_surface_place_compensates_held_object_center_offset(
         source_pixel=(16, 16),
         before_rgb=before,
         after_rgb=after,
+        identity_verified=True,
+        pickup_reference=env._authenticated_pickup(env),
         object_offset_local=(0.03, -0.04, 0.0),
     )
     env.snapshot.images["head_camera"] = after
@@ -1152,6 +1175,8 @@ def test_surface_place_rotates_local_object_offset_with_current_quat(
         source_pixel=(16, 16),
         before_rgb=before,
         after_rgb=after,
+        identity_verified=True,
+        pickup_reference=env._authenticated_pickup(env),
         object_offset_local=(0.03, 0.0, 0.0),
     )
     env.snapshot.images["head_camera"] = after
@@ -1190,6 +1215,8 @@ def test_surface_place_rotates_local_vertical_offset_into_world_xy(
         source_pixel=(16, 16),
         before_rgb=before,
         after_rgb=after,
+        identity_verified=True,
+        pickup_reference=env._authenticated_pickup(env),
         object_offset_local=(0.0, 0.0, 0.04),
     )
     env.snapshot.images["head_camera"] = after
@@ -1267,7 +1294,7 @@ def test_invalid_entry_orientation_refuses_before_target_motion(
 
     assert result["ok"] is False
     assert result["released"] is False
-    assert result["reason"] == "current end-effector orientation is invalid"
+    assert result["source_clear_reason"] == "instance_frame_unavailable"
     assert control.calls == []
 
 
@@ -1360,3 +1387,28 @@ def test_place_on_surface_is_wired_into_libero_tool_specs() -> None:
         "hover",
         "pos_tol",
     }
+
+
+@pytest.mark.parametrize("invalid_reference", ["missing", "reset", "appearance"])
+def test_invalid_pickup_reference_refuses_before_localization_or_motion(monkeypatch, invalid_reference):
+    from roborsi.embodied.skills.base._lib.libero.visual_hold import get_visual_hold
+    env = FakeEnv()
+    if invalid_reference == "missing":
+        env._libero_visual_hold_evidence = replace(get_visual_hold(env), pickup_reference=None)
+    elif invalid_reference == "reset":
+        env.test_reset_generation += 1
+    else:
+        env.test_instance_visible = False
+    control = FakeControl(env)
+    monkeypatch.setattr(policy, "LiberoControl", lambda env: control)
+    monkeypatch.setattr(policy, "_resolve_surface_target", lambda *a, **k: pytest.fail("must authenticate before target localization"))
+    result, _ = policy.dispatch_runtime(SimpleNamespace(env=env), {"pixel": [10, 12]})
+    assert result["ok"] is False
+    assert result["released"] is False
+    assert control.open_calls == 0
+    assert control.calls == []
+    assert result["source_clear_reason"] == {
+        "missing": "authenticated_pickup_reference_missing",
+        "reset": "instance_stale_or_invalid_frame",
+        "appearance": "instance_mismatch_or_occluded",
+    }[invalid_reference]

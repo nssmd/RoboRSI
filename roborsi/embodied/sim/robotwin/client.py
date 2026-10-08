@@ -108,6 +108,45 @@ class HttpRobotwinEnv(Env):
     def reset(self, seed: int) -> Observation:
         return _to_obs(self._post(f"/env/{self.env_id}/reset", {"seed": int(seed)}))
 
+    def take_snapshot(self) -> Observation:
+        return _to_obs(self._get(f"/env/{self.env_id}/obs"))
+
+    def _run_remote_loop(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        from roborsi.runtime_mode import current_mode
+        from roborsi.embodied.agent_loop.vlm_io import record_remote_usage
+
+        body = {**body, "run_mode": current_mode().value,
+                "reasoning_effort": os.environ.get("ROBORSI_REASONING_EFFORT")}
+        response = requests.post(
+            f"{self.base_url}/env/{self.env_id}/{path}", json=body,
+            timeout=float(os.environ.get("ROBORSI_SIM_HTTP_TIMEOUT", "14400")),
+        )
+        response.raise_for_status()
+        payload = _unpack(response.content)
+        record_remote_usage(payload["usage"])
+        return payload["result"]
+
+    def run_tool_loop(self, **kwargs: Any):
+        from roborsi.embodied.agent_loop.rollout import RolloutResult
+
+        kwargs["workdir"] = str(kwargs["workdir"]) if kwargs.get("workdir") else None
+        if kwargs.get("restrict_to_names") is not None:
+            kwargs["restrict_to_names"] = sorted(kwargs["restrict_to_names"])
+        result = self._run_remote_loop("run_agent_loop", kwargs)
+        result["rollout"] = _to_rollout(result["rollout"])
+        return RolloutResult(**result)
+
+    def run_baseline_loop(self, *, agent_mode: str, atomic: str, seed: int,
+                          tool_budget: int, model: str, workspace: Any,
+                          task_instruction: str, ns: str) -> dict[str, Any]:
+        return self._run_remote_loop("run_baseline_loop", {
+            "agent_mode": agent_mode, "atomic": atomic, "seed": seed,
+            "tool_budget": tool_budget, "model": model,
+            "workspace": {"task": workspace.task, "run_id": workspace.run_id,
+                          "root": str(workspace.root)},
+            "task_instruction": task_instruction, "ns": ns,
+        })
+
     def run_expert(self, seed: int) -> Rollout:
         return _to_rollout(self._post(f"/env/{self.env_id}/run_expert", {"seed": int(seed)}))
 
