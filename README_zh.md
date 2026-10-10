@@ -113,11 +113,14 @@ roborsi web   # 演化看板 :8787
 
 ## 社区
 
-扫码加入微信用户交流群(二维码会定期更新):
+扫码加入微信或飞书用户交流群(二维码会定期更新):
 
 <p align="center">
-  <img src="assets/wechat-group-20261007.jpg" alt="RoboRSI 微信用户交流群二维码" width="320">
+  <img src="assets/wechat-group-20261007.jpg" alt="RoboRSI 微信用户交流群二维码" width="300">
+  &nbsp;&nbsp;
+  <img src="assets/feishu-group-20261010.jpg" alt="RoboRSI 飞书用户交流群二维码" width="300">
 </p>
+<p align="center"><em>微信群 &nbsp;·&nbsp; 飞书群</em></p>
 
 ## 引用
 
