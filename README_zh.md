@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://arxiv.org/abs/2610.12424"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-2610.12424-b31b1b"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-open_source-1f6feb"></a>
   <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-3776ab">
   <img alt="LIBERO 120 tasks" src="https://img.shields.io/badge/LIBERO-120_tasks-16845b">
@@ -20,11 +21,11 @@ trace 做诊断。自顶向下的技能细化(TSR)把所有能力组织在一棵
 在线探索寻找解法,稳定流程固化为代码,执行数据可以训练 learning-based
 policy,失败则回到最早出错的节点修订。
 
-项目主页:<https://lab.noematrix.ai/blog/2-roborsi-research-preview/>
+论文:<https://arxiv.org/abs/2610.12424> · 项目主页:<https://lab.noematrix.ai/blog/2-roborsi/>
 
 <p align="center">
   <img src="assets/real-world-demo.gif" alt="真机完整任务链 16 倍速" width="900"><br>
-  <em>真机完整任务链(16 倍速)—— <a href="https://lab.noematrix.ai/blog/2-roborsi-research-preview/">完整视频与精确工具调用链见项目主页</a></em>
+  <em>真机完整任务链(16 倍速)—— <a href="https://lab.noematrix.ai/blog/2-roborsi/">完整视频与精确工具调用链见项目主页</a></em>
 </p>
 
 <p align="center">
@@ -45,7 +46,7 @@ policy,失败则回到最早出错的节点修订。
 
 累计任务通过率统计的是"至少通过一次"的任务数,跨演化中的多个
 release,不是固定策略分数,也不是常规固定方法的 Pass@k。完整口径、视频与
-精确工具调用链见[项目主页](https://lab.noematrix.ai/blog/2-roborsi-research-preview/)。
+精确工具调用链见[项目主页](https://lab.noematrix.ai/blog/2-roborsi/)。
 
 ## 工作原理
 
@@ -121,12 +122,10 @@ roborsi web   # 演化看板 :8787
 ## 引用
 
 ```bibtex
-@misc{noematrix2026roborsi,
-  author       = {{Noematrix Team}},
-  title        = {RoboRSI: Stable, Efficient, and Reusable Robot Self-Evolution in Complex Real-World Environments},
-  year         = {2026},
-  month        = sep,
-  howpublished = {Research Blog},
-  url          = {https://lab.noematrix.ai/blog/2-roborsi-research-preview/}
+@article{wen2026roborsi,
+  title   = {RoboRSI: Stable, Efficient, and Reusable Robot Self-Evolution in Complex Real-World Environments},
+  author  = {Wen, Zimo and Chen, Yijin and Cao, Yuxuan and Chen, Wendi and Zou, Yanwen and Yu, Wenye and Kuang, Fuhang and Xue, Han and Lv, Jun and Wen, Chuan and Lu, Cewu},
+  journal = {arXiv preprint arXiv:2610.12424},
+  year    = {2026}
 }
 ```

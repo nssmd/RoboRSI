@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://arxiv.org/abs/2610.12424"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-2610.12424-b31b1b"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-open_source-1f6feb"></a>
   <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-3776ab">
   <img alt="LIBERO 120 tasks" src="https://img.shields.io/badge/LIBERO-120_tasks-16845b">
@@ -22,11 +23,11 @@ a task–skill tree: online exploration finds a solution, stable workflows
 consolidate into code, execution data can train a learning-based policy, and
 failures return to the earliest responsible node.
 
-Project page: <https://lab.noematrix.ai/blog/2-roborsi-research-preview/>
+Paper: <https://arxiv.org/abs/2610.12424> · Project page: <https://lab.noematrix.ai/blog/2-roborsi/>
 
 <p align="center">
   <img src="assets/real-world-demo.gif" alt="Real-robot full task chain, 16x timelapse" width="900"><br>
-  <em>Real-robot full task chain (16× timelapse) — <a href="https://lab.noematrix.ai/blog/2-roborsi-research-preview/">full video with exact tool traces on the project page</a></em>
+  <em>Real-robot full task chain (16× timelapse) — <a href="https://lab.noematrix.ai/blog/2-roborsi/">full video with exact tool traces on the project page</a></em>
 </p>
 
 <p align="center">
@@ -48,7 +49,7 @@ Project page: <https://lab.noematrix.ai/blog/2-roborsi-research-preview/>
 Cumulative task pass rates count tasks passed at least once across evolving
 releases; they are not frozen-policy scores or fixed-method Pass@k. Full
 calibers, videos, and exact tool traces are on the
-[project page](https://lab.noematrix.ai/blog/2-roborsi-research-preview/).
+[project page](https://lab.noematrix.ai/blog/2-roborsi/).
 
 ## How It Works
 
@@ -128,12 +129,10 @@ Scan to join the WeChat user group (the QR code is refreshed periodically):
 ## Citation
 
 ```bibtex
-@misc{noematrix2026roborsi,
-  author       = {{Noematrix Team}},
-  title        = {RoboRSI: Stable, Efficient, and Reusable Robot Self-Evolution in Complex Real-World Environments},
-  year         = {2026},
-  month        = sep,
-  howpublished = {Research Blog},
-  url          = {https://lab.noematrix.ai/blog/2-roborsi-research-preview/}
+@article{wen2026roborsi,
+  title   = {RoboRSI: Stable, Efficient, and Reusable Robot Self-Evolution in Complex Real-World Environments},
+  author  = {Wen, Zimo and Chen, Yijin and Cao, Yuxuan and Chen, Wendi and Zou, Yanwen and Yu, Wenye and Kuang, Fuhang and Xue, Han and Lv, Jun and Wen, Chuan and Lu, Cewu},
+  journal = {arXiv preprint arXiv:2610.12424},
+  year    = {2026}
 }
 ```
