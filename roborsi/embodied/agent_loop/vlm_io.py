@@ -325,9 +325,15 @@ def _messages_to_responses_input(
 ) -> tuple[str, list[dict[str, Any]]]:
     instructions: list[str] = []
     items: list[dict[str, Any]] = []
+    # function_call_output carries text only, so images attached to tool results
+    # follow the run of outputs as a user turn instead of being dropped.
+    tool_images: list[dict[str, Any]] = []
     for message in messages:
         role = str(message.get("role") or "user")
         content = message.get("content")
+        if role != "tool" and tool_images:
+            items.append({"role": "user", "content": tool_images})
+            tool_images = []
         if role in {"system", "developer"}:
             text = _message_text(content)
             if text:
@@ -339,6 +345,9 @@ def _messages_to_responses_input(
                 "call_id": str(message.get("tool_call_id") or ""),
                 "output": _message_text(content) or "(no output)",
             })
+            if isinstance(content, list):
+                tool_images += [b for b in _content_to_responses_blocks(content, role="user")
+                                if b["type"] == "input_image"]
             continue
 
         tool_calls = message.get("tool_calls") or []
@@ -359,6 +368,8 @@ def _messages_to_responses_input(
                 "name": str(function.get("name") or ""),
                 "arguments": str(function.get("arguments") or "{}"),
             })
+    if tool_images:
+        items.append({"role": "user", "content": tool_images})
     return "\n\n".join(instructions), items
 
 
