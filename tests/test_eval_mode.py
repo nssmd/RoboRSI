@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import click
 import pytest
 from typer.testing import CliRunner
 
@@ -729,7 +730,7 @@ def test_eval_cli_runs_all_requested_seeds(
 def test_web_cli_is_exposed() -> None:
     result = CliRunner().invoke(app, ["web", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--evo-port" in result.output
+    assert "--evo-port" in click.unstyle(result.output)
 
 
 def test_eval_cli_excludes_infra_from_success_denominator(
