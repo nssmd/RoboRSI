@@ -42,9 +42,11 @@ returns:
 when_to_use: |
   Any pick action. It grounds by vision from the object prompt and pixel, so pass
   a visually meaningful name. If grasped=false, inspect the current image, then
-  inspect holding and do_not_regrasp. Retry only when holding=false and the scene
-  provides a fresh, stable target observation. If do_not_regrasp=true, never call
-  grasp_object again and never open the gripper.
+  inspect holding and do_not_regrasp. Retry with a fresh observation (another
+  pixel or side) when holding=false. do_not_regrasp=true means the object is in
+  the hand: do not grasp again or open the gripper while holding it. If a later
+  check shows holding=false (the object was dropped or lost), the flag no longer
+  applies: look again and grasp it again. There is no limit of one grasp.
 ---
 
 # grasp_object

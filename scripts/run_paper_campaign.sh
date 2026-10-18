@@ -10,6 +10,9 @@ set -euo pipefail
 #   scripts/run_paper_campaign.sh libero     <out>   # 30 tasks x 5 = 150 episodes
 #   scripts/run_paper_campaign.sh libero-pro <out>   # 120 tasks x 5 = 600 episodes
 #
+# ROBORSI_TOOL_BUDGET (default 80, as in the paper) is the episode's tool
+# budget; ROBORSI_ROUND_TOOL_BUDGET (default half of it) caps one round.
+#
 # Evolution runs on a copy of the skill library under <out>/library; the
 # checkout is not modified. Results depend on the model and on what the run
 # learns, so a rerun is not expected to give the paper's numbers exactly.
@@ -44,7 +47,7 @@ exec roborsi eval-suite \
   --run-all-seeds \
   --seed-start 0 \
   --workers "${workers}" \
-  --tool-budget 80 \
+  --tool-budget "${ROBORSI_TOOL_BUDGET:-80}" \
   --infra-retries 2 \
   --run-mode evolve \
   --planner-model "${model}" \

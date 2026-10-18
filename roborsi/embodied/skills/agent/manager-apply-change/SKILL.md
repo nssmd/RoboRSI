@@ -47,7 +47,9 @@ description: Use when proposals are queued - check them against the preserved ev
    two integers), `args` (a list of argument dictionaries) and
    `pass_criteria` (`kind`, `min_seeds_passing` >= 2).
 5. Keep reusable, parameterized behaviour in skills; keep coordinates and
-   pixels episode-local.
+   pixels episode-local. Never approve or write a rule that limits attempts
+   (only one grasp, never regrasp, stop after one failure); a failed or
+   dropped grasp is retried with a fresh observation while budget remains.
 6. When the evidence locates the failure in a skill (wrong geometry, missing
    check, bad retry logic, unhandled case), do not stop at approving the
    lesson: read that skill's `policy.py` and `SKILL.md` (attached as

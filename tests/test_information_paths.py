@@ -153,3 +153,19 @@ def test_inspection_views_prefer_high_resolution_renders():
     assert _inspection_views(env)["head_camera"].shape == (512, 512, 3)
     plain = SimpleNamespace(take_snapshot=lambda: SimpleNamespace(images={"head_camera": small, "depth": small}))
     assert set(_inspection_views(plain)) == {"head_camera"}
+
+
+def test_rounds_have_their_own_budget():
+    import inspect
+    from roborsi.channels.core import agent
+    src = inspect.getsource(agent)
+    assert "ROBORSI_ROUND_TOOL_BUDGET" in src and "tool_budget=min(budget_left, round_budget)" in src
+
+
+def test_no_one_grasp_rule_in_skill_contracts():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "roborsi/embodied/skills"
+    for rel in ("base/grasp_object/libero/SKILL.md", "atomic/libero_pick_place/SKILL.md"):
+        text = (root / rel).read_text()
+        assert "never call\n  grasp_object again" not in text and "do not call grasp_object\n         again" not in text
+        assert "grasp it again" in text

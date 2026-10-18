@@ -28,8 +28,10 @@ metadata:
          needs an explicit pixel.
       2. Call grasp_object with a visually meaningful object name and, when
          available, pixel=[u,v]. Continue only when grasped=true and visual hold
-         evidence was recorded. If do_not_regrasp=true, do not call grasp_object
-         again and do not open the gripper.
+         evidence was recorded. While do_not_regrasp=true and the object is
+         held, do not grasp again or open the gripper. If the object is later
+         dropped (holding=false), look again and grasp it again; failed grasps
+         are retried with a fresh observation while budget remains.
       3. Route placement by geometry:
          - plate, stove, pad, stand, scale, exposed support: place_on_surface;
          - basket, bowl, bin, drawer, cavity: place_object_in;

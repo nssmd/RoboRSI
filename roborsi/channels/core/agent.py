@@ -1289,6 +1289,10 @@ def run_atomic_episode(*, text: str, atomic: str, seed: int,
 
         max_rounds = max(1, int(os.environ.get("ROBORSI_EPISODE_MAX_ROUNDS", "6")))
         budget_left = int(tool_budget)
+        # Each round may use at most this many tool calls, so a first round
+        # that goes wrong leaves budget for the Reviewer's correction.
+        round_budget = max(1, int(os.environ.get("ROBORSI_ROUND_TOOL_BUDGET",
+                                                 str(max(20, int(tool_budget) // 2)))))
         review_feedback = ""
         planner_usage_list = []
         engineer_usage_list = []
@@ -1336,7 +1340,7 @@ def run_atomic_episode(*, text: str, atomic: str, seed: int,
                     mission_spec=mission_spec,
                     workspace=workspace,
                     seed=seed,
-                    tool_budget=budget_left,
+                    tool_budget=min(budget_left, round_budget),
                     backend_name=resolved_backend,
                     sim_task=resolved_sim_task,
                     env=active_env,

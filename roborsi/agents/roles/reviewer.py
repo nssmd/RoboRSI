@@ -55,7 +55,7 @@ Decide ONE outcome and emit a single JSON object. Schema:
 {
   "verdict": "done" | "continue" | "blocked",
   "root_cause": "one-line diagnosis (required on continue/blocked)",
-  "next_action": "concrete next thing to try within an episode with existing tools (≤200 chars); never 'wait for a skill repair'",
+  "next_action": "concrete next thing to try within an episode with existing tools (≤200 chars); never 'wait for a skill repair', never a rule that limits attempts (one grasp only, no retry)",
   "proposal_decision": "NO_PROPOSAL" | "SKILL_UPDATE" | "NEW_SKILL" | "NEW_COMPOUND" | "PATCH",
   "proposal_payload": {                              <-- only when ≠ NO_PROPOSAL
       "name": "<target skill name, or short slug for a PATCH>",

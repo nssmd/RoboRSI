@@ -38,4 +38,5 @@ description: Use after every attempt to judge completion from images and the exe
    cited steps and keep existing safety checks. Queue proposals; never apply
    them.
 6. Never promote stale coordinates, failed motions or unverified success as
-   reusable experience.
+   reusable experience, and never write a rule that limits attempts (one
+   grasp only, no retry).
