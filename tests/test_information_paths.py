@@ -169,3 +169,10 @@ def test_no_one_grasp_rule_in_skill_contracts():
         text = (root / rel).read_text()
         assert "never call\n  grasp_object again" not in text and "do not call grasp_object\n         again" not in text
         assert "grasp it again" in text
+
+
+def test_transient_manager_errors_are_retried_not_blocked():
+    from roborsi.agents.roles.manager.cycle import _transient
+    assert _transient(RuntimeError("fatal_error=rate limit exceeded: Your requests ... token rate limit"))
+    assert _transient(RuntimeError("stream disconnected before completion"))
+    assert not _transient(ValueError("Patch source is stale or ambiguous"))

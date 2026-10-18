@@ -71,6 +71,12 @@ def validate_code(q):
         return fallback
     return report
 
+def _transient(exc):
+    """Errors that pass on their own: rate limits, timeouts, dropped streams."""
+    return bool(re.search(r"rate limit|too many requests|\b429\b|timed? ?out|disconnected|"
+                          r"connection (reset|refused|error)|\b50[0234]\b|temporarily",
+                          type(exc).__name__+' '+str(exc), re.I))
+
 def _source_task_key(q):
     """Concrete task key (for example libero_object/0) of a proposal's source
     episode, from its workspace identity; None when unknown."""
@@ -138,6 +144,7 @@ def cycle():
      regate=(folder=='skill_review' and q.get('status','pending')=='pending'
              and q.get('manager_decision')=='approve' and bool(q.get('manager_reviewed_at')))
      if q.get('status','pending')!='pending' or (q.get('manager_reviewed_at') and not regate):continue
+     if float(q.get('retry_after',0))>time.time():continue
      # Review with the source task's view of the skills (its task-local
      # revisions included), as its episodes see them.
      early_key=_source_task_key(q)
@@ -382,6 +389,12 @@ def cycle():
        except Exception as exc:log('manager_candidate_blocked',name=name,error=str(exc))
      log('review_complete',proposal=p.name,decision=d['decision'],applied=applied)
     except Exception as exc:
+     if _transient(exc):
+      # Rate limits and dropped connections pass; review it again later.
+      try:
+       q=json.loads(p.read_text());q['retry_after']=time.time()+300;p.write_text(json.dumps(q,indent=2))
+      except Exception:pass
+      log('proposal_retry_later',proposal=p.name,error=type(exc).__name__+': '+str(exc)[:300]);continue
      # One unusable proposal must not block every later cycle.
      try:
       q=json.loads(p.read_text());q.update(status='blocked',manager_reviewed_at=time.time(),manager_decision='defer',manager_note=type(exc).__name__+': '+str(exc)[:500]);p.write_text(json.dumps(q,indent=2))

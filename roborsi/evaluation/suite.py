@@ -321,6 +321,7 @@ _REVIEW_QUEUES = ("wiki_review", "plan_review", "skill_review", "policy_review")
 
 
 def _pending_reviews() -> bool:
+    import time
     from roborsi.embodied.paths import home
     for folder in _REVIEW_QUEUES:
         for path in (home() / folder).glob("*.json"):
@@ -329,6 +330,8 @@ def _pending_reviews() -> bool:
             except (OSError, ValueError):
                 continue
             if q.get("status", "pending") != "pending":
+                continue
+            if float(q.get("retry_after", 0)) > time.time():
                 continue
             # Unreviewed, or approved code whose simulator gate never ran
             # (an interrupted cycle); both are picked up by the next cycle.
