@@ -1077,6 +1077,21 @@ def _detect_lh_intent(text: str) -> tuple[str, int] | None:
     return task, seed
 
 
+def _inspection_views(env: Any) -> dict[str, Any]:
+    """Camera views for the Reviewer and Planner: 512-pixel renders when the
+    environment offers them (objects span a few dozen pixels at 256), else
+    the observation images."""
+    render = getattr(env, "render_views", None)
+    if render is not None:
+        try:
+            return render(512)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[3role] 512 view render failed, using observation images: {exc}", flush=True)
+    obs = env.take_snapshot()
+    return {k: v for k, v in (getattr(obs, "images", None) or {}).items()
+            if v is not None and "depth" not in k}
+
+
 def _save_initial_view(env: Any, workspace_root: Path) -> None:
     """Save the public camera views of the starting scene. Instructions that
     name an object by where it was (the bowl next to the ramekin) can only be
@@ -1085,9 +1100,8 @@ def _save_initial_view(env: Any, workspace_root: Path) -> None:
         import cv2
         out = workspace_root / "rollout"
         out.mkdir(parents=True, exist_ok=True)
-        obs = env.take_snapshot()
-        for name, rgb in (getattr(obs, "images", None) or {}).items():
-            if rgb is not None and "depth" not in name:
+        for name, rgb in _inspection_views(env).items():
+            if rgb is not None:
                 cv2.imwrite(str(out / f"initial_view_{name}.jpg"),
                             cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
     except Exception as exc:  # noqa: BLE001
@@ -1101,9 +1115,8 @@ def _save_round_view(env: Any, workspace_root: Path) -> None:
         return
     try:
         import cv2
-        obs = env.take_snapshot()
-        for name, rgb in (getattr(obs, "images", None) or {}).items():
-            if rgb is not None and "depth" not in name:
+        for name, rgb in _inspection_views(env).items():
+            if rgb is not None:
                 cv2.imwrite(str(rounds[-1] / f"final_view_{name}.jpg"),
                             cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
     except Exception as exc:  # noqa: BLE001

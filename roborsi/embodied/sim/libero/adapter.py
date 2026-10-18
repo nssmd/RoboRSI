@@ -715,6 +715,28 @@ class LiberoProEnv(Env):
             return np.asarray([0.0, 0.0, 0.8], dtype=np.float64)
         return np.median(finite, axis=0)
 
+    def render_views(self, size: int = 512) -> dict[str, Any]:
+        """Head and wrist camera views rendered at ``size`` pixels for
+        inspection (the Reviewer and Planner); the 256-pixel observation
+        stream is unchanged. Keys match Observation.images."""
+        import numpy as np
+
+        size = max(64, min(512, int(size)))
+        self._bind_gl_context()
+        sim = self._env.env.sim
+        # Same offscreen context and call pattern as capture_orbit_views.
+        context = sim._render_context_offscreen
+        views: dict[str, Any] = {}
+        for key, camera in (("head_camera", _DEFAULT_HEAD_CAMERA),
+                            ("wrist", _DEFAULT_WRIST_CAMERA)):
+            context.render(size, size, camera_id=sim.model.camera_name2id(camera))
+            rgb = context.read_pixels(size, size, depth=False)
+            if isinstance(rgb, tuple):
+                rgb = rgb[0]
+            views[key] = np.ascontiguousarray(np.flipud(np.asarray(rgb))[..., :3],
+                                              dtype=np.uint8)
+        return views
+
     def capture_orbit_views(self, *, image_size: int = 512):
         import numpy as np
 

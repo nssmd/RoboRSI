@@ -140,3 +140,16 @@ def test_multi_round_success_reaches_the_manager():
     src = inspect.getsource(agent)
     # A success that needed replanning is queued for the Manager, not dropped.
     assert "if eval_rounds > 1:" in src and "Multi-round success" in src
+
+
+def test_inspection_views_prefer_high_resolution_renders():
+    import numpy as np
+    from roborsi.channels.core.agent import _inspection_views
+
+    small = np.zeros((256, 256, 3), np.uint8)
+    big = np.zeros((512, 512, 3), np.uint8)
+    env = SimpleNamespace(render_views=lambda size: {"head_camera": big},
+                          take_snapshot=lambda: SimpleNamespace(images={"head_camera": small}))
+    assert _inspection_views(env)["head_camera"].shape == (512, 512, 3)
+    plain = SimpleNamespace(take_snapshot=lambda: SimpleNamespace(images={"head_camera": small, "depth": small}))
+    assert set(_inspection_views(plain)) == {"head_camera"}
