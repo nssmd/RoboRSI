@@ -52,6 +52,47 @@ def test_messages_to_responses_input_preserves_tools_and_images() -> None:
     }
 
 
+def test_messages_to_responses_input_forwards_tool_result_images() -> None:
+    # rollout._append_image attaches each new frame to the latest turn, which is
+    # the tool result after a tool call.
+    _, items = vlm_io._messages_to_responses_input([
+        {"role": "user", "content": "Pick the bowl."},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "observe_orbit", "arguments": "{}"},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": [
+                {"type": "text", "text": "{\"ok\": true}"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/jpeg;base64,orbit"},
+                },
+            ],
+        },
+    ])
+
+    assert items[2] == {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": "{\"ok\": true}",
+    }
+    assert items[3] == {
+        "role": "user",
+        "content": [{
+            "type": "input_image",
+            "image_url": "data:image/jpeg;base64,orbit",
+        }],
+    }
+
+
 def test_wrap_openai_responses_matches_existing_tool_interface() -> None:
     response = SimpleNamespace(output=[
         SimpleNamespace(
