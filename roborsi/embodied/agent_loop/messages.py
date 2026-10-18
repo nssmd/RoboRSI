@@ -115,17 +115,17 @@ def _summarize_old_trace(convo: list[dict[str, Any]],
     return head + [summary_msg] + recent
 
 
-def _image_version(path: Path | None) -> tuple[str, str] | None:
-    """Identity of an image file's current contents. Tools such as look()
-    overwrite one file per camera, so the path alone does not tell whether a
-    new frame was written; an unchanged frame rewritten is not new."""
+def _image_version(path: Path | None) -> str | None:
+    """Identity of an image's contents. Tools such as look() overwrite one
+    file per camera, so the path does not tell whether a new frame was
+    written; the same frame under another name is not new either."""
     if path is None:
         return None
     import hashlib
     try:
-        return (str(path), hashlib.md5(Path(path).read_bytes()).hexdigest())
+        return hashlib.md5(Path(path).read_bytes()).hexdigest()
     except OSError:
-        return (str(path), "")
+        return str(path)
 
 
 def _attach_latest_image(convo: list[dict[str, Any]], state: Any) -> list[dict[str, Any]]:

@@ -26,6 +26,7 @@ from roborsi.embodied.agent_loop.env import Observation, Rollout, Step
 from roborsi.embodied.agent_loop.messages import (
     _append_image,
     _attach_latest_image,
+    _image_version,
     _assistant_tool_calls_msg,
     _initial_messages,
     _summarize_old_trace,
@@ -88,10 +89,29 @@ class DispatchContext:
     _sim_contaminated: bool = False
     _timeout_history: dict[str, int] = field(default_factory=dict)
     _tool_handlers: dict[str, Callable] | None = None
-    # Version (path, content hash) of the frame last embedded in the conversation.
-    _attached_image_path: tuple[str, str] | None = None
+    # Content hash of the frame last embedded in the conversation.
+    _attached_image_path: str | None = None
     _perception_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
 
+
+
+def _refresh_head_view(state: Any) -> None:
+    """Point last_image_path at the current head-camera view, so the next
+    turn carries it when the scene changed (called when no tool of the turn
+    produced a frame of its own)."""
+    try:
+        obs = state.env.take_snapshot()
+        images = getattr(obs, "images", None) or {}
+        key = next((k for k in images if "head" in k or k == "agentview"),
+                   next(iter(images), None))
+        if key is None or images[key] is None:
+            return
+        import cv2
+        path = state.workdir / f"view_{key}.jpg"
+        cv2.imwrite(str(path), cv2.cvtColor(images[key], cv2.COLOR_RGB2BGR))
+        state.last_image_path = path
+    except Exception as exc:  # noqa: BLE001
+        print(f"[zeroshot] head view refresh failed: {exc}", flush=True)
 
 # ────────────────────────────────────────────────────────────────────────
 # Top-level entry: drive one episode to completion.
@@ -338,6 +358,7 @@ def run_rollout(
         if reasoning_text:
             print(f"[zeroshot] step={step_idx} 💭 "
                   f"{reasoning_text[:600]}", flush=True)
+        image_before_turn = _image_version(state.last_image_path)
         for tc in tool_calls:
             name = tc.function.name
             try:
@@ -463,6 +484,11 @@ def run_rollout(
             "tap_held_on_target", "execute_with_pi05",
         }
         had_action = any(tc.function.name in ACTION_TOOLS for tc in tool_calls)
+        # The model sees the scene after every turn: if the turn changed it
+        # and no tool produced a new frame, attach the current head view
+        # (an unchanged frame is not sent again).
+        if _image_version(state.last_image_path) == image_before_turn:
+            _refresh_head_view(state)
         if had_action and step_idx < tool_budget - 1:
             convo.append({"role": "user", "content": _build_status_check_prompt()})
     unhook()

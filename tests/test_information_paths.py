@@ -112,3 +112,23 @@ def test_reviewer_sees_the_starting_scene_and_the_latest_views(tmp_path):
     (rollout / "round_01" / "final_view_head_camera.jpg").write_bytes(b"f")
     names = [p.name for p in review_frames(tmp_path)]
     assert names == ["initial_view_head_camera.jpg", "final_view_head_camera.jpg"]
+
+
+def test_scene_view_is_refreshed_after_a_turn_without_a_frame(tmp_path):
+    import numpy as np
+    from roborsi.embodied.agent_loop.rollout import _refresh_head_view
+
+    frame = {"img": np.zeros((8, 8, 3), np.uint8)}
+    env = SimpleNamespace(take_snapshot=lambda: SimpleNamespace(images={"head_camera": frame["img"], "wrist": None}))
+    state = SimpleNamespace(env=env, workdir=tmp_path, last_image_path=None, _attached_image_path=None)
+    convo = [{"role": "user", "content": "go"}]
+    _refresh_head_view(state)
+    convo = _attach_latest_image(convo, state)
+    assert _images(convo) == 1
+    _refresh_head_view(state)                       # nothing moved
+    convo = _attach_latest_image(convo, state)
+    assert _images(convo) == 1
+    frame["img"] = np.full((8, 8, 3), 200, np.uint8)  # the arm moved something
+    _refresh_head_view(state)
+    convo = _attach_latest_image(convo, state)
+    assert _images(convo) == 2
