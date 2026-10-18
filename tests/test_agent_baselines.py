@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import click
 import pytest
 from typer.testing import CliRunner
 
@@ -419,7 +420,7 @@ def test_eval_suite_cli_exposes_agent_mode() -> None:
 
     result = CliRunner().invoke(app, ["eval-suite", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--agent-mode" in result.output
+    assert "--agent-mode" in click.unstyle(result.output)
 
 
 def test_suite_pass_through_of_run_suite_attempt(
