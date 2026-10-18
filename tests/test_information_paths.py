@@ -101,3 +101,14 @@ def test_gate_puts_the_candidate_where_the_task_loads_it(tmp_path):
     _write_candidate(tmp_path, {"name": "push_object", "new_code": "NEW", "skill_md": "md"}, "libero_goal/5")
     assert (local / "policy.py").read_text() == "NEW"
     assert not (tmp_path / "roborsi/embodied/skills/base/push_object/libero/policy.py").exists()
+
+
+def test_reviewer_sees_the_starting_scene_and_the_latest_views(tmp_path):
+    from roborsi.agents.tools.reviewer import review_frames
+    rollout = tmp_path / "rollout"
+    (rollout / "round_01").mkdir(parents=True)
+    (rollout / "initial_view_head_camera.jpg").write_bytes(b"s")
+    (rollout / "initial_view_wrist.jpg").write_bytes(b"w")
+    (rollout / "round_01" / "final_view_head_camera.jpg").write_bytes(b"f")
+    names = [p.name for p in review_frames(tmp_path)]
+    assert names == ["initial_view_head_camera.jpg", "final_view_head_camera.jpg"]

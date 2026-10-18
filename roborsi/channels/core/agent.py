@@ -1077,6 +1077,23 @@ def _detect_lh_intent(text: str) -> tuple[str, int] | None:
     return task, seed
 
 
+def _save_initial_view(env: Any, workspace_root: Path) -> None:
+    """Save the public camera views of the starting scene. Instructions that
+    name an object by where it was (the bowl next to the ramekin) can only be
+    checked against the start of the episode."""
+    try:
+        import cv2
+        out = workspace_root / "rollout"
+        out.mkdir(parents=True, exist_ok=True)
+        obs = env.take_snapshot()
+        for name, rgb in (getattr(obs, "images", None) or {}).items():
+            if rgb is not None and "depth" not in name:
+                cv2.imwrite(str(out / f"initial_view_{name}.jpg"),
+                            cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[3role] initial view capture failed: {exc}", flush=True)
+
+
 def _save_round_view(env: Any, workspace_root: Path) -> None:
     """Save the public camera views at the end of a round for the Reviewer."""
     rounds = sorted((workspace_root / "rollout").glob("round_*"))
@@ -1272,6 +1289,7 @@ def run_atomic_episode(*, text: str, atomic: str, seed: int,
         eval_rounds = 0
         first_round_plan = ""
         last_round_review: dict[str, Any] | None = None
+        _save_initial_view(active_env, workspace.root)
         for _round in range(1, max_rounds + 1):
             eval_rounds = _round
             t0 = _t.time()
@@ -1279,14 +1297,15 @@ def run_atomic_episode(*, text: str, atomic: str, seed: int,
                   f"round={_round}/{max_rounds}, budget_left={budget_left}) ...",
                   flush=True)
             with capture_usage() as planner_usage:
-                from roborsi.agents.tools.reviewer import last_frames
+                from roborsi.agents.tools.reviewer import initial_frames, last_frames
                 mission_spec = planner.plan(
                     task=atomic,
                     user_msg=base_planner_request + review_feedback,
                     recent_reflections=reflections_text,
                     workspace=workspace,
                     ns=ns,
-                    images=last_frames(workspace.root) if _round > 1 else None,
+                    images=(last_frames(workspace.root) if _round > 1
+                            else initial_frames(workspace.root)),
                 )
             planner_usage_list.append(planner_usage)
             print(f"[3role] 🧠 Planner goal: {str(mission_spec.get('goal',''))[:200]}",

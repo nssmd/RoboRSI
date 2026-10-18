@@ -603,7 +603,8 @@ class Planner:
                 "system_prompt": effective_system, "user_prompt": user_block}
             proposal_audit.write_text(json.dumps(proposal_record, ensure_ascii=False, indent=2))
         if images:
-            # A replan starts from the scene the last round left behind.
+            # The plan starts from the current scene: the start of the
+            # episode, or what the last round left behind on a replan.
             user_block += ("\n=== CURRENT SCENE (camera frames attached) ===\n"
                            + "\n".join(str(p) for p in images) + "\n")
         content = persistent_agent.run_role(

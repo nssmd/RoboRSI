@@ -71,6 +71,18 @@ def execution_chain(workspace_root: Path, max_chars: int = 16000) -> str:
     return text if len(text) <= max_chars else text[-max_chars:]
 
 
+def initial_frames(workspace_root: Path) -> list[Path]:
+    """Camera views of the starting scene (head camera first)."""
+    return sorted((workspace_root / "rollout").glob("initial_view_*.jpg"))
+
+
+def review_frames(workspace_root: Path) -> list[Path]:
+    """Starting head view plus the latest views: what the Reviewer needs to
+    tell which object the instruction meant and where it is now."""
+    start = [p for p in initial_frames(workspace_root) if "head" in p.name][:1]
+    return start + last_frames(workspace_root)
+
+
 def last_frames(workspace_root: Path, n: int = 2) -> list[Path]:
     """The last camera frames of the last round with frames."""
     for rd in reversed(_round_dirs(workspace_root)):
@@ -156,7 +168,7 @@ def run_review_agent(model: str, system_prompt: str, user_block: str,
     from roborsi.embodied.agent_loop.vlm_io import _call_vlm_tools
 
     first: list[dict[str, Any]] = []
-    for path in last_frames(workspace_root):
+    for path in review_frames(workspace_root):
         b64 = base64.b64encode(path.read_bytes()).decode()
         first.append({"type": "image_url", "image_url": {
             "url": f"data:image/jpeg;base64,{b64}"}})
@@ -167,7 +179,8 @@ def run_review_agent(model: str, system_prompt: str, user_block: str,
             "whatever evidence you need (for example the last frame of the "
             "last round to see the current scene). When you have enough, "
             "reply with the verdict JSON only. The attached images are the "
-            "last camera frames of the episode so far.")}] + first},
+            "starting head view (initial_view_*) followed by the last camera "
+            "frames of the episode so far.")}] + first},
     ]
     for _ in range(_MAX_TOOL_TURNS):
         msg = _call_vlm_tools(model, convo, TOOL_SPECS)

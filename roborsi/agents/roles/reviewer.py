@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from roborsi.agents.tools.reviewer import (
-    evidence_index, execution_chain, last_frames, run_review_agent,
+    evidence_index, execution_chain, last_frames, review_frames, run_review_agent,
 )
 from roborsi.agents.memory.workspace import Workspace
 
@@ -782,7 +782,10 @@ class Reviewer:
                 "qualifier in the instruction (which object: next to, on, "
                 "between, the one in the middle; which drawer layer, which "
                 "plate) against the image; a similar object at a similar place "
-                "is not done.\n"
+                "is not done. For an object named by where it was at the start "
+                "(next to, on, between ...), identify it in the starting head "
+                "view (initial_view_*) and check that this same object, not "
+                "a look-alike, is at the destination now.\n"
                 "If the task is not done, return continue whenever budget and "
                 "rounds remain: give the concrete mismatch as root_cause and, as "
                 "next_action, a different attempt that existing tools can make "
@@ -811,9 +814,10 @@ class Reviewer:
         from roborsi.agents.sessions import persistent_agent
         if os.environ.get("ROBORSI_ROLE_SESSION", "1") != "0":
             # The agent-CLI session reads the evidence files itself.
-            frames = [str(p) for p in last_frames(workspace.root)]
+            frames = [str(p) for p in review_frames(workspace.root)]
             user_block += (
-                "\n\n=== LAST CAMERA FRAMES (attached; also on disk) ===\n"
+                "\n\n=== CAMERA FRAMES (attached; also on disk): the starting "
+                "head view (initial_view_*), then the last frames ===\n"
                 + "\n".join(frames) +
                 "\n\n=== EVIDENCE FILES (read whatever you need) ===\n"
                 f"Episode workspace: {workspace.root}\n"
