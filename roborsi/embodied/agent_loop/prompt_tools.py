@@ -339,7 +339,7 @@ def _build_tool_specs(ns: str = "robotwin", task: str = "") -> list[dict[str, An
         "type": "function",
         "function": {
             "name": "done",
-            "description": "End the episode with your verdict. Call when the success criterion is visibly met OR when further attempts are clearly hopeless.",
+            "description": "End the episode with your verdict. Call when the success criterion is visibly met, or with success=false only when different attempts are exhausted.",
             "parameters": {
                 "type": "object",
                 "properties": {

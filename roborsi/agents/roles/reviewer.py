@@ -55,7 +55,7 @@ Decide ONE outcome and emit a single JSON object. Schema:
 {
   "verdict": "done" | "continue" | "blocked",
   "root_cause": "one-line diagnosis (required on continue/blocked)",
-  "next_action": "concrete next thing to try (≤200 chars)",
+  "next_action": "concrete next thing to try within an episode with existing tools (≤200 chars); never 'wait for a skill repair'",
   "proposal_decision": "NO_PROPOSAL" | "SKILL_UPDATE" | "NEW_SKILL" | "NEW_COMPOUND" | "PATCH",
   "proposal_payload": {                              <-- only when ≠ NO_PROPOSAL
       "name": "<target skill name, or short slug for a PATCH>",
@@ -674,7 +674,9 @@ class Reviewer:
                 run_id: str | None = None,
                 ns: str = "robotwin",
                 in_episode: bool = False,
-                task_instruction: str = "") -> dict[str, Any]:
+                task_instruction: str = "",
+                budget_left: int | None = None,
+                rounds_left: int | None = None) -> dict[str, Any]:
         """Run the Reviewer LLM, write review.md, optionally drop proposal.
 
         ``in_episode``: the review decides whether the episode continues, so
@@ -766,11 +768,26 @@ class Reviewer:
                 "\"intended_destination\": ..., \"object_location_in_image\": ..., "
                 "\"correct_destination\": true|false|\"unclear\", "
                 "\"relation_holds\": true|false|\"unclear\"}. Return done only "
-                "when both are true. If either is false or unclear and progress "
-                "is possible, return continue with the concrete mismatch as "
-                "root_cause and the next action; return blocked only when no "
-                "public capability can make further progress."
+                "when both are true. Before returning done, check every "
+                "qualifier in the instruction (which object: next to, on, "
+                "between, the one in the middle; which drawer layer, which "
+                "plate) against the image; a similar object at a similar place "
+                "is not done.\n"
+                "If the task is not done, return continue whenever budget and "
+                "rounds remain: give the concrete mismatch as root_cause and, as "
+                "next_action, a different attempt that existing tools can make "
+                "now (re-localize, grasp at another pixel or from another side, "
+                "another route or placement skill, retreat and re-observe). A "
+                "skill that failed once or several times is not a reason to "
+                "stop: try another way in this episode and put the durable "
+                "skill fix in your post-episode proposal, never in this "
+                "episode's next_action. Return blocked only when no budget or "
+                "rounds remain, or when no different attempt exists at all."
             )
+            if budget_left is not None:
+                system_prompt += (
+                    f"\nRemaining in this episode: {budget_left} tool calls and "
+                    f"{rounds_left} rounds after this one.")
         if not self.allow_evolution:
             system_prompt += (
                 "\n\nEVALUATION MODE: diagnose this attempt for the report, but "

@@ -1124,6 +1124,9 @@ def _adjudicate_episode(eng_result: dict[str, Any], env: Any, workspace: Any,
         outcome = "predicate_passed_without_done"
     elif declared:
         outcome = "vlm_overclaimed"
+    elif eng_result.get("outcome") == "vlm_declared_done":
+        # done(success=false): the Engineer ended the attempt itself.
+        outcome = "engineer_gave_up"
     else:
         outcome = eng_result.get("outcome") or "budget_exceeded"
     eng_result["success"] = real
@@ -1333,6 +1336,8 @@ def run_atomic_episode(*, text: str, atomic: str, seed: int,
                         ns=ns,
                         in_episode=True,
                         task_instruction=task_instruction,
+                        budget_left=budget_left if can_continue else 0,
+                        rounds_left=max_rounds - _round if can_continue else 0,
                     )
                 round_review_usage_list.append(round_review_usage)
             except Exception as exc:  # noqa: BLE001

@@ -175,7 +175,9 @@ turns only when you need the result before deciding.
 
 DONE: call done(success=True) once the instruction is satisfied. Success is
 adjudicated by the simulator's own predicate AFTER the episode — never fabricate
-it; if you're stuck after honest attempts, done(success=False).
+it. While tool budget remains, a failed skill call is not the end: try a
+different way (another pixel, side, route or placement skill) before
+done(success=False), and never stop to wait for a skill to be repaired.
 """
 
 

@@ -308,3 +308,28 @@ def test_failed_skill_harness_falls_back_to_comparison_with_current_skill(monkey
     # A crashing or malformed harness is not rescued by the comparison.
     monkeypatch.setattr(validator.ProposalValidator, "validate", lambda self, q: Report("ERROR"))
     assert not cycle.validate_code({"name": "push_object", "skill_md": md, "source_task": "libero_goal/5"}).overall_pass
+
+
+def test_engineer_giving_up_is_labelled_as_such(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from roborsi.channels.core.agent import _adjudicate_episode
+
+    class Env:
+        def check_success(self):
+            return False
+
+    eng = {"outcome": "vlm_declared_done", "rollout_meta": {"vlm_declared": False}}
+    try:
+        _adjudicate_episode(eng, Env(), SimpleNamespace(root=tmp_path), "t", 0)
+    except Exception:
+        pass  # later steps (frames, video) need a real workspace
+    result = json.loads((tmp_path / "episode_result.json").read_text())
+    assert result == {"success": False, "outcome": "engineer_gave_up"}
+
+
+def test_manager_outcome_view_marks_old_give_ups():
+    from roborsi.agents.roles.manager.cycle import outcome_view
+
+    view = outcome_view({"success": False, "outcome": "vlm_declared_done"})
+    assert view["engineer_gave_up"] and not view["engineer_declared_done"]

@@ -19,7 +19,11 @@ description: Use after every attempt to judge completion from images and the exe
    In-episode decision: `done` only when the correct destination and the
    relation are both confirmed; `continue` with the concrete mismatch and one
    next action when either is false or unclear and progress is possible;
-   `blocked` when no available capability can make progress.
+   `blocked` only when no budget or rounds remain or no different attempt
+   exists. A failed skill is not a reason to stop: give a different attempt
+   that existing tools can make now, and keep the durable skill fix for the
+   post-episode proposal. Before `done`, check every qualifier in the
+   instruction (which object, which layer, which plate) in the image.
 3. Locate the first failed contract boundary: perception, grasp, motion,
    placement/release, or planning. Cite the step and image.
 4. After the episode the simulator outcome is shown. If it failed, give the
