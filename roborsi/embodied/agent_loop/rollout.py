@@ -88,8 +88,8 @@ class DispatchContext:
     _sim_contaminated: bool = False
     _timeout_history: dict[str, int] = field(default_factory=dict)
     _tool_handlers: dict[str, Callable] | None = None
-    # Version (path, mtime) of the frame last embedded in the conversation.
-    _attached_image_path: tuple[str, int] | None = None
+    # Version (path, content hash) of the frame last embedded in the conversation.
+    _attached_image_path: tuple[str, str] | None = None
     _perception_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 

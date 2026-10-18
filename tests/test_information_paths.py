@@ -24,9 +24,10 @@ def test_a_new_frame_in_the_same_file_is_attached_again(tmp_path):
     convo.append({"role": "tool", "tool_call_id": "c1", "content": "{}"})
     convo = _attach_latest_image(convo, state)          # nothing new
     assert _images(convo) == 1
-    time.sleep(0.01)
+    frame.write_bytes(b"first")                          # same frame rewritten
+    convo = _attach_latest_image(convo, state)
+    assert _images(convo) == 1
     frame.write_bytes(b"second")                         # look() again: same path
-    os.utime(frame, None)
     convo = _attach_latest_image(convo, state)
     assert _images(convo) == 2
 
