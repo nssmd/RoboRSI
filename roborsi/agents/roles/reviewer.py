@@ -336,14 +336,24 @@ def _sanitize_trace(trace: list[dict]) -> list[dict]:
 
 
 def _parse_review_json(raw: str) -> dict[str, Any]:
-    """Best-effort JSON extraction. Falls back to empty dict."""
-    m = re.search(r"\{.*\}", raw, re.S)
-    if not m:
-        return {}
-    try:
-        return json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return {}
+    """The JSON object in the reply: the last object that parses and has a
+    verdict (or lh_verdict), else the largest object that parses. Text with
+    braces around the JSON no longer breaks parsing. Falls back to {}."""
+    decoder = json.JSONDecoder()
+    found: list[dict[str, Any]] = []
+    for i, ch in enumerate(raw):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(raw, i)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            found.append(obj)
+    for obj in reversed(found):
+        if "verdict" in obj or "lh_verdict" in obj:
+            return obj
+    return max(found, key=lambda o: len(json.dumps(o)), default={})
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -824,7 +834,10 @@ class Reviewer:
                                        workspace.root)
 
         review = _parse_review_json(content)
-        review.setdefault("verdict", "blocked")
+        if "verdict" not in review:
+            # An unreadable review must not end the episode silently.
+            print(f"[reviewer] unparseable review, continuing: {str(content)[:300]!r}", flush=True)
+            review["verdict"] = "continue" if in_episode else "blocked"
         review.setdefault("root_cause", "(reviewer parse failed)")
         review.setdefault("next_action", "")
         review.setdefault("proposal_decision", "NO_PROPOSAL")

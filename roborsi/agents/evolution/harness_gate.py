@@ -101,7 +101,7 @@ def _parse_report(out: str, skill_name: str) -> dict:
     return value
 
 
-def _harness_environment() -> tuple[dict, Path]:
+def _harness_environment(repo: Path = _REPO) -> tuple[dict, Path]:
     env = dict(os.environ)
     compat_root = env.get("ROBORSI_RT_COMPAT_PATH")
     compat = Path(compat_root) if compat_root else None
@@ -109,15 +109,15 @@ def _harness_environment() -> tuple[dict, Path]:
         # RT's binary wheels target Python3.10; LIBERO's existing env is3.12.
         paths = [x for x in env.get("PYTHONPATH", "").split(os.pathsep)
                  if x and (compat is None or Path(x).resolve() != compat.resolve())]
-        env["PYTHONPATH"] = os.pathsep.join([str(_REPO), *paths])
-        cwd = _REPO
+        env["PYTHONPATH"] = os.pathsep.join([str(repo), *paths])
+        cwd = repo
     else:
         bicoord = env.get("ROBORSI_BICOORD_ROOT")
         if not bicoord or not Path(bicoord).is_dir():
             raise ValueError("set ROBORSI_BICOORD_ROOT to a valid checkout")
         cwd = Path(bicoord)
         env["PYTHONPATH"] = os.pathsep.join(
-            x for x in (str(compat) if compat else "", str(_REPO), env.get("PYTHONPATH", "")) if x)
+            x for x in (str(compat) if compat else "", str(repo), env.get("PYTHONPATH", "")) if x)
     model_root = env.get("ROBORSI_MODEL_ROOT")
     if model_root:
         for key, folder in (("ROBORSI_POINT_SAM_MODEL", "facebook-sam-vit-base"),
@@ -127,16 +127,18 @@ def _harness_environment() -> tuple[dict, Path]:
     return env, cwd
 
 
-def _invoke_harness(skill_name: str, timeout_s: int) -> tuple[dict, str, str]:
+def _invoke_harness(skill_name: str, timeout_s: int,
+                    repo: Path = _REPO) -> tuple[dict, str, str]:
     """Preserve complete process evidence; parse only the final skill report."""
     artifact = _BASELINES.parent / "harness_invocations" / str(time.time_ns())
     artifact.mkdir(parents=True, exist_ok=False)
     out, err, parsed, rc = "", "", {}, None
     try:
-        env, cwd = _harness_environment()
+        env, cwd = _harness_environment(repo)
         default_python = sys.executable
+        harness = repo / _HARNESS.relative_to(_REPO) if _HARNESS.is_relative_to(_REPO) else _HARNESS
         cmd = [env.get("ROBORSI_HARNESS_PYTHON") or default_python,
-               str(_HARNESS), skill_name, "--from-frontmatter"]
+               str(harness), skill_name, "--from-frontmatter"]
         (artifact / "invocation.json").write_text(json.dumps({
             "skill": skill_name, "cmd": cmd, "cwd": str(cwd),
             "namespace": env.get("ROBORSI_HARNESS_NAMESPACE", "robotwin"),
@@ -165,8 +167,11 @@ def _invoke_harness(skill_name: str, timeout_s: int) -> tuple[dict, str, str]:
     return parsed, out, err
 
 
-def run_gate_for(skill_name: str, timeout_s: int = 600) -> GateResult:
-    parsed, out, err = _invoke_harness(skill_name, timeout_s)
+def run_gate_for(skill_name: str, timeout_s: int = 600,
+                 repo: Path = _REPO) -> GateResult:
+    """Run the skill's harness; ``repo`` is the source tree the harness
+    imports (a throw-away worktree holding the candidate)."""
+    parsed, out, err = _invoke_harness(skill_name, timeout_s, repo)
     verdict = parsed.get("verdict", "ERROR")
     pc = parsed.get("pass_count")
     cc = parsed.get("crash_count")

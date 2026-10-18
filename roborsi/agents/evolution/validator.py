@@ -74,36 +74,36 @@ def _stage_and_gate(
     *,
     namespace: str = "robotwin",
 ) -> CheckOutcome:
-    """Write new_code (and optional skill_md) into the skill's path, run
-    harness gate, restore original. Safe: filesystem state is identical
-    before and after this call regardless of verdict."""
+    """Run the skill's harness on new_code (and optional skill_md) in a
+    throw-away worktree; the library itself is never modified."""
     sys.path.insert(0, str(_REPO / "scripts"))
     from roborsi.agents.evolution.harness_gate import run_gate_for
 
     t0 = time.time()
-    skill_dir = (
-        _REPO
-        / "roborsi"
-        / "embodied"
-        / "skills"
-        / "base"
-        / name
-        / namespace
-    )
-    is_new_skill = not skill_dir.exists()
-    pol_path = skill_dir / "policy.py"
-    md_path = skill_dir / "SKILL.md"
-    backups: dict[Path, bytes | None] = {}
-
+    # Test the candidate in a throw-away worktree of the library: writing it
+    # into the live tree would let episodes started meanwhile load untested
+    # code.
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(prefix="roborsi-harness-"))
+    tree = tmp / "tree"
     try:
+        subprocess.run(["git", "worktree", "add", "--detach", str(tree), "HEAD"],
+                       cwd=_REPO, check=True, capture_output=True)
+        skill_dir = tree / "roborsi" / "embodied" / "skills" / "base" / name / namespace
+        key = os.environ.get("ROBORSI_CURRENT_SIM_TASK")
+        if key:
+            local = (tree / "roborsi/embodied/skills/task_local" / key.replace("/", "__")
+                     / "base" / name / namespace)
+            if local.exists():
+                skill_dir = local
         skill_dir.mkdir(parents=True, exist_ok=True)
-        for path, content in [(pol_path, new_code), (md_path, skill_md)]:
-            if not content:
-                continue
-            backups[path] = path.read_bytes() if path.exists() else None
-            path.write_text(content, encoding="utf-8")
-
-        gate = run_gate_for(name, timeout_s=_harness_timeout_s(namespace))
+        for path, content in [(skill_dir / "policy.py", new_code), (skill_dir / "SKILL.md", skill_md)]:
+            if content:
+                path.write_text(content, encoding="utf-8")
+        gate = run_gate_for(name, timeout_s=_harness_timeout_s(namespace), repo=tree)
         return CheckOutcome(
             name="harness",
             passed=(gate.verdict == "PASS"),
@@ -114,17 +114,9 @@ def _stage_and_gate(
                     "stdout_tail": gate.stdout_tail[-300:]},
         )
     finally:
-        for path, original in backups.items():
-            if original is None:
-                if path.exists():
-                    path.unlink()
-            else:
-                path.write_bytes(original)
-        if is_new_skill and skill_dir.exists():
-            try:
-                skill_dir.rmdir()
-            except OSError:
-                pass
+        subprocess.run(["git", "worktree", "remove", "--force", str(tree)],
+                       cwd=_REPO, capture_output=True)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 class ProposalValidator:

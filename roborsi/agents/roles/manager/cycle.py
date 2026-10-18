@@ -71,6 +71,21 @@ def validate_code(q):
         return fallback
     return report
 
+def _source_task_key(q):
+    """Concrete task key (for example libero_object/0) of a proposal's source
+    episode, from its workspace identity; None when unknown."""
+    roots=[]
+    if q.get('source_workspace'):roots.append(Path(q['source_workspace']))
+    if q.get('source_run_id'):
+        roots+=[w for w in (home()/'workspaces').glob('*'+str(q['source_run_id'])+'*') if w.is_dir()]
+    for w in roots:
+        identity=w/'episode_identity.json'
+        if identity.exists():
+            try:return json.loads(identity.read_text()).get('task_key')
+            except (OSError,ValueError):pass
+    key=q.get('source_task') or q.get('task_key') or q.get('task')
+    return key if key and '/' in str(key) else None
+
 def manager_reply(user_turn,system,model):
     """One Manager turn: the persistent Manager session (one across all tasks
     and cycles, compacted when it grows) or a stateless call."""
@@ -118,7 +133,16 @@ def cycle():
    for p in sorted((home()/folder).glob('*.json')):
     try:
      q=json.loads(p.read_text())
-     if q.get('status','pending')!='pending' or q.get('manager_reviewed_at'):continue
+     # Approved code whose gate never ran (an interrupted cycle) is gated
+     # again without a second review.
+     regate=(folder=='skill_review' and q.get('status','pending')=='pending'
+             and q.get('manager_decision')=='approve' and bool(q.get('manager_reviewed_at')))
+     if q.get('status','pending')!='pending' or (q.get('manager_reviewed_at') and not regate):continue
+     # Review with the source task's view of the skills (its task-local
+     # revisions included), as its episodes see them.
+     early_key=_source_task_key(q)
+     if early_key:os.environ['ROBORSI_CURRENT_SIM_TASK']=early_key
+     else:os.environ.pop('ROBORSI_CURRENT_SIM_TASK',None)
      if folder=='skill_review' or q.get('kind')=='code_revision_request':q['development_mode']='native'
      from roborsi.agents.roles.manager.patch_context import materialize_policy_patch, review_text, HARNESS_CONTRACT, normalize_harness
      from roborsi.agents.roles.manager.native import attach_failure_source
@@ -210,25 +234,37 @@ def cycle():
      actual_system=unified_review_system(q,NATIVE_REVIEW_SYSTEM,HARNESS_CONTRACT)
      import hashlib
      log("manager_review_context",proposal=p.name,system_sha256=hashlib.sha256(actual_system.encode()).hexdigest(),native_source_sha256=q.get("native_source_sha256"),native_source_path=q.get("native_source_path"),proposal_kind=q.get("kind"))
-     with capture_usage() as usage:
-      user_turn='Prior Manager decisions:\n'+'\n'.join(prior)+'\nPublic capability index:\n'+tools_block+'\nProposal:\n'+clean
-      content=manager_reply(user_turn,actual_system,model)
-     responses=home()/'manager_responses';responses.mkdir(exist_ok=True)
-     response_path=responses/(p.stem+'-'+str(time.time_ns())+'.json')
-     response_path.write_text(json.dumps({'proposal':p.name,'model':model,'utc':time.time(),'raw_response':content,'usage':usage.to_dict()},indent=2))
-     try:
-      d=parse(content)
-      if d.get('decision') not in ['approve','reject','defer']:
-       raise ValueError('invalid Manager decision')
-     except (ValueError,TypeError,AttributeError) as exc:
-      q.update(manager_reviewed_at=time.time(),manager_decision='defer',manager_note='Unusable structured response; explicit evidence repair required',manager_response_path=str(response_path))
-      p.write_text(json.dumps(q,indent=2))
-      log('manager_response_invalid',proposal=p.name,error=str(exc),response_path=str(response_path))
-      continue
+     if regate:
+      d={'decision':'approve','scope':q.get('manager_scope','task'),'reason':q.get('manager_note','')}
+      log('regate',proposal=p.name)
+     else:
+      with capture_usage() as usage:
+       user_turn='Prior Manager decisions:\n'+'\n'.join(prior)+'\nPublic capability index:\n'+tools_block+'\nProposal:\n'+clean
+       content=manager_reply(user_turn,actual_system,model)
+      responses=home()/'manager_responses';responses.mkdir(exist_ok=True)
+      response_path=responses/(p.stem+'-'+str(time.time_ns())+'.json')
+      response_path.write_text(json.dumps({'proposal':p.name,'model':model,'utc':time.time(),'raw_response':content,'usage':usage.to_dict()},indent=2))
+      try:
+       d=parse(content)
+       if d.get('decision') not in ['approve','reject','defer']:
+        raise ValueError('invalid Manager decision')
+      except (ValueError,TypeError,AttributeError) as exc:
+       q['review_attempts']=int(q.get('review_attempts',0))+1
+       q.update(manager_decision='defer',manager_note='Unusable structured response; explicit evidence repair required',manager_response_path=str(response_path))
+       # Retry an unusable answer up to three times instead of dropping the proposal.
+       if q['review_attempts']>=3:q['manager_reviewed_at']=time.time()
+       p.write_text(json.dumps(q,indent=2))
+       log('manager_response_invalid',proposal=p.name,error=str(exc),response_path=str(response_path))
+       continue
 
-     rec={'utc':time.time(),'proposal':p.name,'source_task':source_task_key,'decision':d,'model':model,'usage':usage.to_dict()}
-     with hist.open('a') as f:f.write(json.dumps(rec)+'\n')
-     q.update(manager_reviewed_at=rec['utc'],manager_decision=d['decision'],manager_note=d.get('reason',''));p.write_text(json.dumps(q,indent=2))
+      rec={'utc':time.time(),'proposal':p.name,'source_task':source_task_key,'decision':d,'model':model,'usage':usage.to_dict()}
+      with hist.open('a') as f:f.write(json.dumps(rec)+'\n')
+      q.update(manager_reviewed_at=rec['utc'],manager_decision=d['decision'],manager_note=d.get('reason',''),manager_scope=d.get('scope','task'))
+      if d['decision']=='defer':
+       # A deferred proposal is reviewed again (up to three times), not dropped.
+       q['review_attempts']=int(q.get('review_attempts',0))+1
+       if q['review_attempts']<3:q.pop('manager_reviewed_at',None)
+      p.write_text(json.dumps(q,indent=2))
      approved=d['decision']=='approve';applied=False
      if d['decision']=='reject':
       q['status']='rejected';p.write_text(json.dumps(q,indent=2))

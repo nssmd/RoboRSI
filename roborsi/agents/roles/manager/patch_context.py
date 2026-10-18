@@ -12,6 +12,13 @@ def materialize_policy_patch(proposal, repo):
         # pretend they are directly publishable as one named skill update.
         return q
     path=Path(repo)/target
+    # The source task may already run a task-local revision of this skill;
+    # the patch was written against that version and must build on it.
+    import os
+    key=os.environ.get('ROBORSI_CURRENT_SIM_TASK')
+    if key:
+        local=(Path(repo)/'roborsi/embodied/skills/task_local'/key.replace('/','__')/'base'/match[1]/match[2]/'policy.py')
+        if local.exists():path=local
     old,new=q.get('old_string'),q.get('new_string')
     if not isinstance(old,str) or not old or not isinstance(new,str):raise ValueError('Patch needs exact old_string and new_string')
     source=path.read_text()

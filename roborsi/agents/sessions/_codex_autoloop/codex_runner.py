@@ -314,6 +314,9 @@ class CodexRunner:
             command.append(resume_thread_id)
         # Always stream the prompt through stdin so multiline prompts survive
         # Windows `.cmd` wrappers and do not appear in process lists.
+        if options.images and not resume_thread_id:
+            # `codex exec -i` takes several files and would read "-" as one more.
+            command.append("--")
         command.append("-")
         return command
 

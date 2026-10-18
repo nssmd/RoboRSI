@@ -175,6 +175,11 @@ def run_libero_short_suite(
     try:
 
         for seed in range(seed_start, seed_start + seeds):
+            if manager is not None and seed > seed_start:
+                wait_s = float(os.environ.get("ROBORSI_SEED_SYNC_S", "3600"))
+                if not manager.wait_idle(wait_s):
+                    print(f"[suite] Manager still busy after {wait_s:.0f}s; "
+                          f"starting seed {seed} with the current library", flush=True)
             pending = [
                 task_key
                 for task_key in task_keys
@@ -294,6 +299,11 @@ def _use_library_copy(root: Path) -> None:
     library = root / "library"
     if not (library / "roborsi").exists():
         if (source / ".git").exists():
+            dirty = subprocess.run(["git", "status", "--porcelain", "--", "roborsi"],
+                                   cwd=source, capture_output=True, text=True).stdout.strip()
+            if dirty:
+                print("[suite] WARNING: uncommitted changes under roborsi/ are NOT in the "
+                      "evolving library copy (it is created from HEAD):\n" + dirty[:800], flush=True)
             subprocess.run(["git", "worktree", "add", "--detach", str(library), "HEAD"],
                            cwd=source, check=True, capture_output=True)
         else:
@@ -318,8 +328,18 @@ def _pending_reviews() -> bool:
                 q = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if q.get("status", "pending") == "pending" and not q.get("manager_reviewed_at"):
+            if q.get("status", "pending") != "pending":
+                continue
+            # Unreviewed, or approved code whose simulator gate never ran
+            # (an interrupted cycle); both are picked up by the next cycle.
+            if not q.get("manager_reviewed_at") or (
+                    folder == "skill_review" and q.get("manager_decision") == "approve"):
                 return True
+    # Approved compounds waiting for their functional test.
+    for job in (home() / "compound-gates").glob("*"):
+        if (job / "request.json").exists() and not (job / "result.json").exists() \
+                and not (job / "started.json").exists():
+            return True
     return False
 
 
@@ -331,6 +351,7 @@ class _ManagerLoop:
         import threading
         self._event = threading.Event()
         self._stopping = False
+        self._busy = False
         self._poll_s = poll_s
         self._thread = threading.Thread(target=self._run, name="manager-loop",
                                         daemon=True)
@@ -347,6 +368,7 @@ class _ManagerLoop:
                 break
             try:
                 while _pending_reviews() and not self._stopping:
+                    self._busy = True
                     if not _run_manager_cycle():
                         # Back off; a failing cycle must not spin.
                         self._event.wait(min(300.0, self._poll_s * 4))
@@ -354,6 +376,20 @@ class _ManagerLoop:
             except Exception as exc:  # noqa: BLE001
                 print(f"[manager] loop error: {exc}", flush=True)
                 _note_manager_failure()
+            finally:
+                self._busy = False
+
+    def wait_idle(self, timeout_s: float) -> bool:
+        """Wait until the queues are reviewed and no cycle runs, so the next
+        seed starts from the library the previous seed produced."""
+        import time
+        deadline = time.time() + timeout_s
+        self.wake()
+        while time.time() < deadline:
+            if not self._busy and not _pending_reviews():
+                return True
+            time.sleep(5)
+        return False
 
     def stop(self) -> None:
         """Finish the queue left by the last episodes, then stop."""
@@ -380,7 +416,8 @@ def _run_manager_cycle() -> bool:
                  "PYTHONPATH": os.pathsep.join(
                      [str(repo), os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep)},
             capture_output=True, text=True,
-            timeout=int(os.environ.get("ROBORSI_MANAGER_TIMEOUT_S", "3600")),
+            # A cycle may run several simulator gates in series.
+            timeout=int(os.environ.get("ROBORSI_MANAGER_TIMEOUT_S", "14400")),
         )
     except subprocess.TimeoutExpired:
         print("[manager] cycle timed out; continuing with the current library",

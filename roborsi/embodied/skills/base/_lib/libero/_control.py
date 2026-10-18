@@ -570,6 +570,19 @@ class LiberoControl:
             last = self._step(np.zeros(7), grip)
             if last is not None and last.done:
                 break
+        # Twelve ticks leave an empty close at a ~4 mm gap, which the
+        # classifier reads as holding a thin object. Keep commanding until
+        # the fingers stop moving (an empty close settles near 1.5 mm, a
+        # held object at its width) before classifying.
+        prev = self._gripper_gap()
+        for _ in range(40):
+            if last is not None and last.done:
+                break
+            last = self._step(np.zeros(7), grip)
+            gap = self._gripper_gap()
+            if abs(gap - prev) < 2e-4:
+                break
+            prev = gap
         post_gap = self._gripper_gap()
         if close:
             self._gripper_classifier().confirm_close(pre_gap=pre_gap, post_gap=post_gap)

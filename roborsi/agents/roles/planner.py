@@ -228,10 +228,26 @@ def _compound_system_prompt(base: str, task: str, compound_block: str) -> str:
 def _extract_json_and_md(reply: str) -> tuple[dict, str]:
     """Parse Planner's two fenced blocks. Tolerant of missing fences."""
     json_match = re.search(r"```json\s*(\{.*?\})\s*```", reply, re.S)
-    md_match = re.search(r"```markdown\s*(.*?)```", reply, re.S)
     spec = json.loads(json_match.group(1)) if json_match else {}
-    plan_md = md_match.group(1).strip() if md_match else reply.strip()
-    return spec, plan_md
+    return spec, _fenced_markdown(reply)
+
+
+def _fenced_markdown(reply: str) -> str:
+    """Body of the ```markdown block, keeping fenced code blocks inside it:
+    the block ends at the first fence that is not paired with an inner
+    opening fence."""
+    start = re.search(r"```markdown[^\n]*\n", reply)
+    if not start:
+        return reply.strip()
+    lines = reply[start.end():].split("\n")
+    inner = False
+    for i, line in enumerate(lines):
+        fence = line.strip()
+        if fence.startswith("```"):
+            if fence == "```" and not inner:
+                return "\n".join(lines[:i]).strip()
+            inner = fence != "```" if not inner else False
+    return "\n".join(lines).strip()
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -469,7 +485,8 @@ class Planner:
 
     def plan(self, *, task: str, user_msg: str,
              recent_reflections: str, workspace: Workspace,
-             ns: str = "robotwin") -> dict[str, Any]:
+             ns: str = "robotwin",
+             images: list[Any] | None = None) -> dict[str, Any]:
         """Call Opus, write plan.md, return mission_spec. `ns` = the active
         backend's skill namespace (drives which base skills the plan can name)."""
         # Lazy import — keeps agents package importable without sim deps.
@@ -585,9 +602,14 @@ class Planner:
                 "model": self.model, "state": "request_prepared",
                 "system_prompt": effective_system, "user_prompt": user_block}
             proposal_audit.write_text(json.dumps(proposal_record, ensure_ascii=False, indent=2))
+        if images:
+            # A replan starts from the scene the last round left behind.
+            user_block += ("\n=== CURRENT SCENE (camera frames attached) ===\n"
+                           + "\n".join(str(p) for p in images) + "\n")
         content = persistent_agent.run_role(
             "planner", task, user_block,
-            system_prompt=effective_system, model=self.model)
+            system_prompt=effective_system, model=self.model,
+            images=[str(p) for p in images] if images else None)
         if proposal_audit is not None:
             proposal_record.update(state="response_received", raw_response=content,
                 parsed_proposal=compound_proposal._extract(content) is not None)

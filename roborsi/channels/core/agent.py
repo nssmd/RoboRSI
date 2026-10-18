@@ -1279,12 +1279,14 @@ def run_atomic_episode(*, text: str, atomic: str, seed: int,
                   f"round={_round}/{max_rounds}, budget_left={budget_left}) ...",
                   flush=True)
             with capture_usage() as planner_usage:
+                from roborsi.agents.tools.reviewer import last_frames
                 mission_spec = planner.plan(
                     task=atomic,
                     user_msg=base_planner_request + review_feedback,
                     recent_reflections=reflections_text,
                     workspace=workspace,
                     ns=ns,
+                    images=last_frames(workspace.root) if _round > 1 else None,
                 )
             planner_usage_list.append(planner_usage)
             print(f"[3role] 🧠 Planner goal: {str(mission_spec.get('goal',''))[:200]}",

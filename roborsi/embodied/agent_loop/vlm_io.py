@@ -459,6 +459,12 @@ def _wrap_openai_responses(response: Any) -> Any:
                 if text:
                     text_parts.append(str(text))
     text = "".join(text_parts)
+    if getattr(response, "status", None) == "incomplete" and not tool_calls:
+        # Output limit reached (often spent on reasoning): say so instead of
+        # returning an empty turn that reads as "no tool call".
+        reason = getattr(getattr(response, "incomplete_details", None), "reason", None) or "incomplete"
+        print(f"[vlm_io] response incomplete ({reason}); no tool call returned", flush=True)
+        text = text or f"(response incomplete: {reason})"
     return _Message(text or None, tool_calls)
 
 

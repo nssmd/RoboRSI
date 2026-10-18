@@ -127,6 +127,27 @@ def record_episode_success(task: str, trace: list[dict[str, Any]],
                                 skills_used=list(skills_used))
 
 
+
+def fit_wiki(md: str, limit: int) -> str:
+    """The task wiki within ``limit`` characters. Sections are kept whole when
+    possible; failure records are shortened first (keeping their newest
+    entries), then any remaining section from its end. Cutting the start of
+    the wiki dropped the successful sequences, which come first."""
+    if len(md) <= limit:
+        return md
+    import re
+    parts = re.split(r"(?m)^(?=## )", md)
+    order = sorted(range(len(parts)),
+                   key=lambda i: ("fail" not in parts[i][:80].lower(), -len(parts[i])))
+    for i in order:
+        excess = sum(map(len, parts)) - limit
+        if excess <= 0:
+            break
+        head, _, body = parts[i].partition("\n")
+        keep = max(0, len(body) - excess - 40)
+        parts[i] = head + "\n[... older entries omitted ...]\n" + body[len(body) - keep:]
+    return "".join(parts)[:limit]
+
 class Engineer:
     """Drives the sim tool loop as Opus. Reads plan.md, writes summary.md."""
 
@@ -214,7 +235,7 @@ class Engineer:
                     "TASK WIKI (accumulated task knowledge — reuse the "
                     "successful tool sequences below when they fit the current "
                     "scene; do not repeat sequences recorded as failures):\n"
-                    + _wiki_md[-6000:]
+                    + fit_wiki(_wiki_md, 12000)
                     + "\n\n"
                 )
         except Exception:  # noqa: BLE001

@@ -347,16 +347,18 @@ def resolve_wiki_hypothesis(proposal_path: Path, *, approve: bool,
     task = payload["task"]
     p = _ensure_wiki(task, payload.get("task_key"))
     if approve:
-        md = p.read_text(encoding="utf-8")
-        block = (
-            f"- [{payload['source_run_id']}] "
-            f"{payload['next_action'].strip()}\n"
-            f"  - root_cause: {payload['root_cause'].strip()}\n"
-            f"  - approved {_now_iso()}"
-            + (f" · {manager_note}" if manager_note else "") + "\n"
-        )
-        p.write_text(_insert_under_section(md, "Manager-approved leads", block),
-                     encoding="utf-8")
+        # Episodes append traces to the same file concurrently.
+        with _wiki_lock():
+            md = p.read_text(encoding="utf-8")
+            block = (
+                f"- [{payload['source_run_id']}] "
+                f"{payload['next_action'].strip()}\n"
+                f"  - root_cause: {payload['root_cause'].strip()}\n"
+                f"  - approved {_now_iso()}"
+                + (f" · {manager_note}" if manager_note else "") + "\n"
+            )
+            p.write_text(_insert_under_section(md, "Manager-approved leads", block),
+                         encoding="utf-8")
     payload["status"] = "approved" if approve else "rejected"
     payload["manager_note"] = manager_note
     payload["resolved_at"] = _now_iso()

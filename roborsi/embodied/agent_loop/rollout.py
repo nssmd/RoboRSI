@@ -25,6 +25,7 @@ from roborsi.embodied.agent_loop.config import DEFAULT_MODEL, _skill_namespace
 from roborsi.embodied.agent_loop.env import Observation, Rollout, Step
 from roborsi.embodied.agent_loop.messages import (
     _append_image,
+    _attach_latest_image,
     _assistant_tool_calls_msg,
     _initial_messages,
     _summarize_old_trace,
@@ -87,7 +88,8 @@ class DispatchContext:
     _sim_contaminated: bool = False
     _timeout_history: dict[str, int] = field(default_factory=dict)
     _tool_handlers: dict[str, Callable] | None = None
-    _attached_image_path: Path | None = None
+    # Version (path, mtime) of the frame last embedded in the conversation.
+    _attached_image_path: tuple[str, int] | None = None
     _perception_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -248,6 +250,8 @@ def run_rollout(
         # Summarize old trace if conversation got too long.
         if len(convo) > SUMMARIZE_AT_MSGS:
             convo = _summarize_old_trace(convo, keep_recent=12)
+            # The summary drops older images: re-attach the latest frame.
+            state._attached_image_path = None
             print(f"[zeroshot] step={step_idx} convo summarized to "
                    f"{len(convo)} msgs", flush=True)
         print(f"[zeroshot] step={step_idx} convo_msgs={len(convo)} tools={len(tools)}", flush=True)
@@ -256,10 +260,7 @@ def run_rollout(
         # read the file this turn. Nulling it here used to make zoom_in fail
         # every call ("no recent image") — the VLM sees an image it can never
         # zoom into. Re-embed guard = the path we last attached.
-        if (state.last_image_path is not None
-                and state.last_image_path != state._attached_image_path):
-            convo = _append_image(convo, state.last_image_path)
-            state._attached_image_path = state.last_image_path
+        convo = _attach_latest_image(convo, state)
 
         # Force a reflection turn periodically — don't let VLM grind 25 attempts
         # without stepping back. Zero-shot loop pattern: "describe what happened,
@@ -341,8 +342,18 @@ def run_rollout(
             name = tc.function.name
             try:
                 args = json.loads(tc.function.arguments or "{}")
-            except (json.JSONDecodeError, TypeError):
-                args = {}
+                bad_args = None if isinstance(args, dict) else "arguments are not a JSON object"
+            except (json.JSONDecodeError, TypeError) as exc:
+                args, bad_args = {}, f"arguments are not valid JSON ({exc})"
+            if bad_args:
+                # Running the tool with {} would hide the error from the model.
+                print(f"[zeroshot] step={step_idx} → {name}: {bad_args}", flush=True)
+                trace.append({"step": step_idx, "tool_call": {"tool": name, "args": {}},
+                              "tool_call_id": tc.id, "result": {"ok": False, "reason": bad_args}})
+                convo.append({"role": "tool", "tool_call_id": tc.id, "name": name,
+                              "content": json.dumps({"ok": False, "reason": bad_args
+                                                     + "; the tool was not run, resend the call"})})
+                continue
             print(f"[zeroshot] step={step_idx} → {name}({_fmt_args(args)})",
                   flush=True)
             _t_dispatch = _t.time()

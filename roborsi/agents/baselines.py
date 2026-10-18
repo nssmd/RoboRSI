@@ -338,6 +338,7 @@ def _run_openeta(env: Any, *, atomic: str, seed: int, tool_budget: int,
     from roborsi.agents.roles.engineer import _summarize_tool_timing
     from roborsi.embodied.agent_loop.messages import (
         _append_image,
+        _attach_latest_image,
         _assistant_tool_calls_msg,
         _initial_messages,
     )
@@ -395,10 +396,7 @@ def _run_openeta(env: Any, *, atomic: str, seed: int, tool_budget: int,
             "reply with EXACTLY ONE tool call. Call done(success=...) if "
             "the task is finished or clearly hopeless."
         )})
-        if (state.last_image_path is not None
-                and state.last_image_path != state._attached_image_path):
-            convo = _append_image(convo, state.last_image_path)
-            state._attached_image_path = state.last_image_path
+        convo = _attach_latest_image(convo, state)
         if len(trace) >= tool_budget:
             break
 

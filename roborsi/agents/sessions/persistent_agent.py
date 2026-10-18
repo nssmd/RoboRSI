@@ -149,7 +149,8 @@ def run(role: str, task: str, prompt: str, *, system_prompt: str,
         result = runner.run_exec(prompt=prompt, resume_thread_id=thread_id,
                                  options=options, run_label=key)
         _save(key, result.thread_id)
-    if not result.last_agent_message:
+    if not result.last_agent_message or result.turn_failed:
+        # A failed turn's last message is interim commentary, not an answer.
         raise RuntimeError(
             f"persistent_agent[{key}] returned no message "
             f"(turn_failed={result.turn_failed}, fatal_error={result.fatal_error})")

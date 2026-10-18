@@ -32,11 +32,18 @@ class EpisodeGateReport:
                 "details": self.details, "kind": "episode_gate"}
 
 
-def _write_candidate(tree: Path, q: dict) -> None:
+def _write_candidate(tree: Path, q: dict, task_key: str | None = None) -> None:
     name, code = str(q.get("name", "")), str(q.get("new_code", ""))
     if not name or not code:
         raise ValueError("candidate has no skill name or code")
     target = tree / "roborsi/embodied/skills/base" / name / "libero"
+    if task_key:
+        # Episodes of this task load its task-local revision first; put the
+        # candidate there, or the gate would run the old revision.
+        local = (tree / "roborsi/embodied/skills/task_local" / task_key.replace("/", "__")
+                 / "base" / name / "libero")
+        if local.exists():
+            target = local
     target.mkdir(parents=True, exist_ok=True)
     (target / "policy.py").write_text(code, encoding="utf-8")
     if q.get("skill_md"):
@@ -60,7 +67,7 @@ def run(q: dict, task_key: str | None, *, apply_candidate: bool = True,
         subprocess.run(["git", "worktree", "add", "--detach", str(tree), "HEAD"],
                        cwd=R, check=True, capture_output=True)
         if apply_candidate:
-            _write_candidate(tree, q)
+            _write_candidate(tree, q, task_key)
         # Eval mode needs a clean tree; commit the candidate in the throw-away worktree.
         if apply_candidate:
             subprocess.run(["git", "add", "-A"], cwd=tree, check=True, capture_output=True)

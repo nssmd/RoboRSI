@@ -95,17 +95,46 @@ def _summarize_old_trace(convo: list[dict[str, Any]],
                 tool_summary.append(f"  - {name}({arg_str})")
         elif role == "tool":
             content = m.get("content", "")
+            if isinstance(content, list):
+                # Tool results that carried an image: keep their text.
+                content = " ".join(b.get("text", "") for b in content
+                                   if isinstance(b, dict) and b.get("type") == "text")
             if isinstance(content, str):
-                # Extract ok and short note
                 snippet = content[:150].replace("\n", " ")
                 tool_summary.append(f"    → {snippet}")
+        elif role == "user" and str(m.get("content", "")).startswith("[TRACE SUMMARY"):
+            # An earlier summary: keep its lines so the oldest steps survive.
+            prior = str(m["content"]).splitlines()[1:-1]
+            tool_summary.extend(prior)
     summary_text = (
         "[TRACE SUMMARY of older steps — full detail removed to save context]\n"
-        + "\n".join(tool_summary[:80])
+        + "\n".join(tool_summary[-120:])
         + "\n[END TRACE SUMMARY — most recent steps follow]"
     )
     summary_msg = {"role": "user", "content": summary_text}
     return head + [summary_msg] + recent
+
+
+def _image_version(path: Path | None) -> tuple[str, int] | None:
+    """Identity of an image file's current contents. Tools such as look()
+    overwrite one file per camera, so the path alone does not tell whether a
+    new frame was written."""
+    if path is None:
+        return None
+    try:
+        return (str(path), Path(path).stat().st_mtime_ns)
+    except OSError:
+        return (str(path), -1)
+
+
+def _attach_latest_image(convo: list[dict[str, Any]], state: Any) -> list[dict[str, Any]]:
+    """Attach the newest frame once: when last_image_path points at a file
+    whose contents changed since the last attachment."""
+    version = _image_version(getattr(state, "last_image_path", None))
+    if version is not None and version != getattr(state, "_attached_image_path", None):
+        convo = _append_image(convo, state.last_image_path)
+        state._attached_image_path = version
+    return convo
 
 
 def _append_image(convo: list[dict[str, Any]], path: Path) -> list[dict[str, Any]]:
