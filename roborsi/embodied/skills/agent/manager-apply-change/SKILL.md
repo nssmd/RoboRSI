@@ -28,7 +28,9 @@ description: Use when proposals are queued - check them against the preserved ev
    their task: approve them unless a step is unsafe, reads private state or
    calls a tool missing from the capability index (`done` is built in). When
    only a step or a claim is wrong, return the whole revised plan as
-   `corrected_plan`.
+   `corrected_plan`. A "Multi-round success" record lists every round's plan
+   and the Reviewer's diagnoses: write the complete plan from the start that
+   the successful rounds support as `corrected_plan`.
 4. Base skills are shared by every task. Review a base-skill change strictly
    on form: a canonical harness (`harness_check` lists what is still wrong)
    whose task, seeds and arguments run the changed code, an unchanged

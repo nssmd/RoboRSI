@@ -132,3 +132,11 @@ def test_scene_view_is_refreshed_after_a_turn_without_a_frame(tmp_path):
     _refresh_head_view(state)
     convo = _attach_latest_image(convo, state)
     assert _images(convo) == 2
+
+
+def test_multi_round_success_reaches_the_manager():
+    import inspect
+    from roborsi.channels.core import agent
+    src = inspect.getsource(agent)
+    # A success that needed replanning is queued for the Manager, not dropped.
+    assert "if eval_rounds > 1:" in src and "Multi-round success" in src

@@ -1288,6 +1288,7 @@ def run_atomic_episode(*, text: str, atomic: str, seed: int,
         total_tool_calls = 0
         eval_rounds = 0
         first_round_plan = ""
+        round_plans: list[str] = []
         last_round_review: dict[str, Any] | None = None
         _save_initial_view(active_env, workspace.root)
         for _round in range(1, max_rounds + 1):
@@ -1331,8 +1332,9 @@ def run_atomic_episode(*, text: str, atomic: str, seed: int,
                     record_memory=False,
                     adjudicate=False,
                 )
+            round_plans.append(workspace.read_plan())
             if _round == 1:
-                first_round_plan = workspace.read_plan()
+                first_round_plan = round_plans[0]
             engineer_usage_list.append(engineer_usage)
             engineer_wallclock_s += _t.time() - t0
             round_tool_calls = int(eng_result.get("tool_calls") or 0)
@@ -1558,6 +1560,27 @@ def run_atomic_episode(*, text: str, atomic: str, seed: int,
                 active_plan = get_active_plan()
             else:
                 active_plan = {}
+            if eval_rounds > 1:
+                # Success needed several rounds: no single plan ran from the
+                # start to the end. Hand the Manager every round's plan with
+                # the Reviewer's diagnosis between them; it approves only a
+                # complete plan it writes as corrected_plan.
+                parts = []
+                for k, plan_k in enumerate(round_plans, start=1):
+                    parts.append(f"## Round {k} plan\n{plan_k}")
+                    if k <= len(round_reviews) and k < len(round_plans):
+                        rv = round_reviews[k - 1]
+                        parts.append(f"## Reviewer after round {k}\n"
+                                     f"- {rv.get('root_cause', '')}\n- next: {rv.get('next_action', '')}")
+                _enqueue_plan_promotion(
+                    task=atomic, run_id=workspace.run_id,
+                    workspace_plan_md=("# Multi-round success: write one complete plan from "
+                                       "the start (corrected_plan); do not approve this record as is.\n\n"
+                                       + "\n\n".join(parts)),
+                    rationale=f"simulator success after {eval_rounds} rounds",
+                    engineer_replanned=True,
+                    reason_for_revision="later rounds corrected the first plan",
+                )
             if eval_rounds == 1:
                 _enqueue_plan_promotion(
                     task=atomic, run_id=workspace.run_id,
