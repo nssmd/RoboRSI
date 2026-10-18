@@ -143,7 +143,7 @@ Scan to join the WeChat or Feishu user group (the QR codes are refreshed periodi
 <p align="center">
   <img src="assets/wechat-group-20261007.jpg" alt="RoboRSI WeChat user group QR code" width="300">
   &nbsp;&nbsp;
-  <img src="assets/feishu-group-20261010.jpg" alt="RoboRSI Feishu user group QR code" width="300">
+  <img src="assets/feishu-group.jpg" alt="RoboRSI Feishu user group QR code" width="300">
 </p>
 <p align="center"><em>WeChat group &nbsp;·&nbsp; Feishu group</em></p>
 

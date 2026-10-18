@@ -133,7 +133,7 @@ roborsi web   # 演化看板 :8787
 <p align="center">
   <img src="assets/wechat-group-20261007.jpg" alt="RoboRSI 微信用户交流群二维码" width="300">
   &nbsp;&nbsp;
-  <img src="assets/feishu-group-20261010.jpg" alt="RoboRSI 飞书用户交流群二维码" width="300">
+  <img src="assets/feishu-group.jpg" alt="RoboRSI 飞书用户交流群二维码" width="300">
 </p>
 <p align="center"><em>微信群 &nbsp;·&nbsp; 飞书群</em></p>
 
