@@ -1119,8 +1119,34 @@ def _save_round_view(env: Any, workspace_root: Path) -> None:
             if rgb is not None:
                 cv2.imwrite(str(rounds[-1] / f"final_view_{name}.jpg"),
                             cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        _save_change_view(workspace_root, rounds[-1])
     except Exception as exc:  # noqa: BLE001
         print(f"[3role] round view capture failed: {exc}", flush=True)
+
+
+def _save_change_view(workspace_root: Path, round_dir: Path) -> None:
+    """The current head view with the regions that changed since the start
+    of the episode outlined: where objects left from and where something
+    arrived. An aid for the Reviewer; the robot arm also shows as change."""
+    import cv2
+    import numpy as np
+
+    start = cv2.imread(str(workspace_root / "rollout" / "initial_view_head_camera.jpg"))
+    now = cv2.imread(str(round_dir / "final_view_head_camera.jpg"))
+    if start is None or now is None or start.shape != now.shape:
+        return
+    diff = cv2.absdiff(cv2.GaussianBlur(start, (5, 5), 0), cv2.GaussianBlur(now, (5, 5), 0))
+    mask = (diff.max(axis=2) > 40).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    mask = cv2.dilate(mask, np.ones((9, 9), np.uint8))
+    count, _, stats, _ = cv2.connectedComponentsWithStats(mask)
+    marked = now.copy()
+    min_area = 0.0015 * mask.size
+    for i in range(1, count):
+        x, y, w, h, area = stats[i]
+        if area >= min_area:
+            cv2.rectangle(marked, (int(x), int(y)), (int(x + w), int(y + h)), (0, 0, 255), 2)
+    cv2.imwrite(str(round_dir / "final_view_head_changes.jpg"), marked)
 
 
 def _adjudicate_episode(eng_result: dict[str, Any], env: Any, workspace: Any,

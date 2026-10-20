@@ -117,6 +117,9 @@ not an experiment in the paper. See [docs/EVALUATION.md](./docs/EVALUATION.md).
 RoboTwin runs in its own conda environment; see
 [docs/sim-robotwin.md](./docs/sim-robotwin.md).
 
+Recommended model, GPU, parallelism and budget settings:
+[docs/EVALUATION.md#recommended-setup](./docs/EVALUATION.md#recommended-setup).
+
 ### Manual installation
 
 See [docs/INSTALLATION.md](./docs/INSTALLATION.md) and

@@ -9,6 +9,27 @@ RoboRSI has two runtime modes:
   as their persistent role sessions, as in evolve mode. (`eval` is accepted
   as a legacy name.)
 
+## Recommended setup
+
+The settings below are the ones we use for the LIBERO runs; they are a
+working starting point, not a requirement.
+
+| Item | Recommended | Notes |
+|---|---|---|
+| Model | `gpt-5.6-sol` over the Responses API (`ROBORSI_OPENAI_TRANSPORT=responses`), reasoning effort `medium` | The paper uses this model for every role. Planner and Reviewer run as `codex` sessions, so `codex` must reach the same endpoint. |
+| GPUs | One GPU for GraspGen and PyRoKi; the episode workers on the others with `ROBORSI_PERCEPTION_DEVICE=spread` | Each worker renders the scene and loads its perception models (about 5 GB); GraspGen uses about 5 GB. We run 8-20 workers over seven 96 GB H20 GPUs. |
+| GraspGen | Required for results comparable to the paper | Without it grasps fall back to an analytic planner and success drops. |
+| Parallel episodes | `ROBORSI_EVAL_WORKERS=8` | More workers mainly hit the model's rate limit; with 20 workers on a shared deployment many episodes were rate-limited. |
+| Tool budget | `ROBORSI_TOOL_BUDGET=80` (paper), `ROBORSI_ROUND_TOOL_BUDGET=40` | A per-round budget leaves room for the Reviewer's corrections; we also use 120 per episode. |
+| Rounds | `ROBORSI_EPISODE_MAX_ROUNDS=6` (default) | |
+| State | A fresh `ROBORSI_HOME` per campaign | Wiki, sessions and review queues of earlier campaigns would otherwise carry over. |
+| Time | LIBERO, 30 tasks x 5 episodes, 8 workers: about 12 hours | Median episode about 22 minutes, 90th percentile about 50 minutes. |
+
+Before a long run, run one episode (`--task libero_spatial/1 --pass-at 1`)
+and read its workspace under `ROBORSI_HOME/workspaces/`: `plan.md`, the
+round traces and the `initial_view_*` / `final_view_*` frames show what the
+Planner, Engineer and Reviewer worked from.
+
 ## Run an atomic evaluation
 
 ```bash

@@ -41,6 +41,27 @@ HARNESS_CONTRACT='''Canonical native harness: metadata.harness has sim_task, see
 HARNESS_KINDS=('simulator_task_success','grasp_holds_actor','verify_returns_bool','move_completes','tool_returns_well_formed')
 
 
+def _repair_yaml(front):
+    """Quote free-text scalar values that broke the YAML (for example a
+    description containing [u,v] or ': '); returns the parsed mapping or None."""
+    import json,yaml
+    lines=[]
+    for line in front.split('\n'):
+        m=re.match(r'^(\s*)([A-Za-z_][\w-]*):[ \t]+(.+?)\s*$',line)
+        if m and m.group(2) not in ('args','seeds','pass_criteria','harness','metadata') \
+                and not m.group(3).startswith(('"',"'",'|','>')):
+            try:
+                if not isinstance(yaml.safe_load(m.group(3)),(str,int,float,bool,type(None))):raise ValueError
+            except (yaml.YAMLError,ValueError):
+                line=m.group(1)+m.group(2)+': '+json.dumps(m.group(3))
+        lines.append(line)
+    try:
+        fm=yaml.safe_load('\n'.join(lines))
+        return fm if isinstance(fm,dict) else None
+    except yaml.YAMLError:
+        return None
+
+
 def normalize_harness(skill_md, source_task):
     """Repair the mechanical parts of a SKILL.md harness and list what is
     still wrong. Fixed here: a missing or non-simulator sim_task (an atomic
@@ -53,7 +74,9 @@ def normalize_harness(skill_md, source_task):
         return text,['SKILL.md has no YAML frontmatter with metadata.harness']
     _,front,body=text.split('---',2)
     try:fm=yaml.safe_load(front) or {}
-    except yaml.YAMLError as exc:return text,['frontmatter is not valid YAML: '+str(exc)[:200]]
+    except yaml.YAMLError as exc:
+        fm=_repair_yaml(front)
+        if fm is None:return text,['frontmatter is not valid YAML: '+str(exc)[:200]]
     meta=fm.setdefault('metadata',{}) if isinstance(fm,dict) else {}
     h=meta.get('harness') if isinstance(meta,dict) else None
     if not isinstance(h,dict):

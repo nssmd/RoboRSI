@@ -176,3 +176,38 @@ def test_transient_manager_errors_are_retried_not_blocked():
     assert _transient(RuntimeError("fatal_error=rate limit exceeded: Your requests ... token rate limit"))
     assert _transient(RuntimeError("stream disconnected before completion"))
     assert not _transient(ValueError("Patch source is stale or ambiguous"))
+
+
+def test_harness_with_unquoted_brackets_in_description_is_repaired():
+    import yaml
+    from roborsi.agents.roles.manager.patch_context import normalize_harness
+    md = ("---\nname: grasp_object\ndescription: Grasp at pixel [u,v] from the head view: top-down first\n"
+          "metadata:\n  harness:\n    sim_task: libero_goal/9\n    seeds: [0, 1]\n    args: [{object: wine bottle}]\n"
+          "    pass_criteria: {kind: simulator_task_success, min_seeds_passing: 2}\n---\nbody\n")
+    fixed, problems = normalize_harness(md, "libero_goal/9")
+    assert problems == []
+    fm = yaml.safe_load(fixed.split("---", 2)[1])
+    assert fm["description"].startswith("Grasp at pixel [u,v]")
+    assert fm["metadata"]["harness"]["args"] == [{"object": "wine bottle"}]
+
+
+def test_change_view_outlines_what_moved(tmp_path):
+    import cv2
+    import numpy as np
+    from roborsi.channels.core.agent import _save_change_view
+    start = np.full((128, 128, 3), 180, np.uint8)
+    now = start.copy()
+    cv2.rectangle(now, (80, 80), (110, 110), (20, 20, 20), -1)   # an object arrived
+    (tmp_path / "rollout" / "round_01").mkdir(parents=True)
+    cv2.imwrite(str(tmp_path / "rollout/initial_view_head_camera.jpg"), start)
+    cv2.imwrite(str(tmp_path / "rollout/round_01/final_view_head_camera.jpg"), now)
+    _save_change_view(tmp_path, tmp_path / "rollout/round_01")
+    marked = cv2.imread(str(tmp_path / "rollout/round_01/final_view_head_changes.jpg"))
+    assert marked is not None and (marked[..., 2] > 200).sum() > 50   # red outline drawn
+
+
+def test_manager_code_checks_send_a_doubted_patch_to_the_gate():
+    import inspect
+    from roborsi.agents.roles.manager import cycle
+    src = inspect.getsource(cycle)
+    assert "approved_by_checks" in src and "could_help" in cycle.NATIVE_REVIEW_SYSTEM

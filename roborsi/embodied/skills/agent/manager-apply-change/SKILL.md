@@ -45,7 +45,10 @@ description: Use when proposals are queued - check them against the preserved ev
    you write must be canonical: `metadata.harness` with `sim_task` (a
    concrete task key such as `libero_goal/5`), `seeds` (a list of at least
    two integers), `args` (a list of argument dictionaries) and
-   `pass_criteria` (`kind`, `min_seeds_passing` >= 2).
+   `pass_criteria` (`kind`, `min_seeds_passing` >= 2). Report `code_checks`
+   (interface kept, safety checks kept, harness runs the changed code, could
+   help); a base change with all four true goes to the simulator gate. Doubt
+   about whether the evidence proves the fix is not a reason to reject it.
 5. Keep reusable, parameterized behaviour in skills; keep coordinates and
    pixels episode-local. Never approve or write a rule that limits attempts
    (only one grasp, never regrasp, stop after one failure); a failed or

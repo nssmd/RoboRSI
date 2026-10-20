@@ -107,6 +107,9 @@ HuggingFace 官方数据集
 
 RoboTwin 需要单独的 conda 环境,见 [docs/sim-robotwin.md](./docs/sim-robotwin.md)。
 
+推荐的模型、GPU、并行数和预算设置见
+[docs/EVALUATION.md#recommended-setup](./docs/EVALUATION.md#recommended-setup)。
+
 ### 手动安装
 
 见 [docs/INSTALLATION.md](./docs/INSTALLATION.md) 与
