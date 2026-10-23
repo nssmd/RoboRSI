@@ -24,10 +24,13 @@ from typing import Any, Callable
 from roborsi.embodied.agent_loop.config import DEFAULT_MODEL, _skill_namespace
 from roborsi.embodied.agent_loop.env import Observation, Rollout, Step
 from roborsi.embodied.agent_loop.messages import (
-    _append_image,
+    _append_pending_images,
     _assistant_tool_calls_msg,
+    _capture_tool_image,
     _initial_messages,
     _summarize_old_trace,
+    serialize_assistant_message,
+    skipped_results,
 )
 from roborsi.embodied.agent_loop.prompt_tools import (
     _build_status_check_prompt,
@@ -38,7 +41,9 @@ from roborsi.embodied.agent_loop.prompt_tools import (
     _try_load_plugin_dispatcher,
     atomic_compounds_enabled,
 )
-from roborsi.embodied.agent_loop.vlm_io import _call_vlm_tools
+from roborsi.embodied.agent_loop.vlm_io import (
+    _call_vlm_tools, with_perception_default,
+)
 from roborsi.runtime_mode import current_mode, is_eval_mode
 
 
@@ -87,7 +92,12 @@ class DispatchContext:
     _sim_contaminated: bool = False
     _timeout_history: dict[str, int] = field(default_factory=dict)
     _tool_handlers: dict[str, Callable] | None = None
-    _attached_image_path: Path | None = None
+    _image_fingerprint: tuple[str, int, str] | None = None
+    _pending_images: list[dict[str, Any]] = field(default_factory=list)
+    _image_sequence: int = 0
+    _last_image_observation: dict[str, Any] | None = None
+    _image_physics_steps: int = 0
+    _image_step_hook_active: bool = False
     _perception_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -96,6 +106,7 @@ class DispatchContext:
 # ────────────────────────────────────────────────────────────────────────
 
 
+@with_perception_default
 def run_rollout(
     env: Any,                                           # Env with reset() already called
     *,
@@ -184,6 +195,7 @@ def run_rollout(
     tick_counter = {"n": 0, "captured": 0}
 
     def _on_tick() -> None:
+        state._image_physics_steps += 1
         tick_counter["n"] += 1
         if tick_counter["n"] % subsample_every != 0:
             return
@@ -203,258 +215,261 @@ def run_rollout(
             tick_path = workdir / f"tick_{tick_counter['n']:05d}.jpg"
             _cv2.imwrite(str(tick_path), _cv2.cvtColor(head_rgb, _cv2.COLOR_RGB2BGR))
 
-    unhook = env.hook_physics_step(_on_tick)
+    unhook_physics = env.hook_physics_step(_on_tick)
+    state._image_step_hook_active = True
 
-    if prior_messages is not None:
-        # LH path: continue an existing sustained conversation by adding
-        # a new user turn carrying THIS atomic's instruction. Don't
-        # rebuild system prompt — keep the original (and its tool list).
-        convo = list(prior_messages)
-        convo.append({"role": "user", "content": (
-            f"Next sub-task in this long-horizon session.\n"
-            f"Task: {instruction}\n"
-            f"Success criterion: {expected_on_success}\n\n"
-            f"Issue exactly one tool call, in JSON, no prose."
-        )})
-    else:
-        # Fresh episode: two-stage skill selection. A Sonnet SkillSelector
-        # shortlists the relevant skills first (when restrict isn't already
-        # pinned) so the Engineer sees a focused, fully-described tool set.
-        if restrict_to_names is None:
-            restrict_to_names = _maybe_shortlist_skills(
-                instruction, task_name, seed, ns=ns)
-        convo = _initial_messages(instruction, expected_on_success,
-                                     task_name=task_name,
-                                     restrict_to_names=restrict_to_names,
-                                     ns=ns)
-    tools = _build_tool_specs(ns=ns, task=task_name)
-    success = False
-    outcome = "budget_exceeded"
-    # Clear the module-global active plan so is_revision is per-episode correct
-    # (a single-process runner would otherwise leak the prior episode's plan).
-    from roborsi.embodied.skills.base.plan.robotwin.policy import (
-        _reset_active_plan,
-    )
-    _reset_active_plan()
-    REFLECT_EVERY = 8  # inject reflection prompt every N steps without done
-    # Trace summarization threshold: when convo exceeds this many turns,
-    # compact older trace into a synthetic "previously tried X failed Y"
-    # message so Engineer stays within ~20k tokens. Per 2026-06-15 user
-    # request "trace 累计加一下达到一定 token 就总结".
-    SUMMARIZE_AT_MSGS = 30
-    import time as _t
-    for step_idx in range(tool_budget):
-        _t0 = _t.time()
-        # Summarize old trace if conversation got too long.
-        if len(convo) > SUMMARIZE_AT_MSGS:
-            convo = _summarize_old_trace(convo, keep_recent=12)
-            print(f"[zeroshot] step={step_idx} convo summarized to "
-                   f"{len(convo)} msgs", flush=True)
-        print(f"[zeroshot] step={step_idx} convo_msgs={len(convo)} tools={len(tools)}", flush=True)
-        # Embed the newest view into the convo ONCE, but keep last_image_path
-        # pointing at it so crop tools (zoom_in, find_pixel-on-view) can still
-        # read the file this turn. Nulling it here used to make zoom_in fail
-        # every call ("no recent image") — the VLM sees an image it can never
-        # zoom into. Re-embed guard = the path we last attached.
-        if (state.last_image_path is not None
-                and state.last_image_path != state._attached_image_path):
-            convo = _append_image(convo, state.last_image_path)
-            state._attached_image_path = state.last_image_path
+    def unhook() -> None:
+        state._image_step_hook_active = False
+        unhook_physics()
 
-        # Force a reflection turn periodically — don't let VLM grind 25 attempts
-        # without stepping back. Zero-shot loop pattern: "describe what happened,
-        # identify cause, plan next steps".
-        if step_idx > 0 and step_idx % REFLECT_EVERY == 0:
+    def call_vlm():
+        return _call_vlm_tools(model or DEFAULT_MODEL, convo, tools)
+
+    try:
+        if prior_messages is not None:
+            # LH path: continue an existing sustained conversation by adding
+            # a new user turn carrying THIS atomic's instruction. Don't
+            # rebuild system prompt — keep the original (and its tool list).
+            convo = list(prior_messages)
             convo.append({"role": "user", "content": (
-                f"REFLECTION CHECKPOINT (step {step_idx}/{tool_budget}). Stop and analyse:\n"
-                "  1. What's the current state of the scene + arms? (look at the latest image)\n"
-                "  2. What have you tried? Which tool calls failed and why?\n"
-                "  3. What's the failure pattern? (e.g. 'fingers close above the cube' / "
-                "'gripper grabs bowl rim instead of cube')\n"
-                "  4. What's the next plan? Try a DIFFERENT strategy than what already failed.\n"
-                "  5. Issue your next tool call(s) — you may emit MULTIPLE tool_use blocks "
-                "in one assistant turn to compose a multi-step plan (e.g. unproject + "
-                "move_to_pose hover + move_to_pose descend + gripper close in one turn)."
+                f"Next sub-task in this long-horizon session.\n"
+                f"Task: {instruction}\n"
+                f"Success criterion: {expected_on_success}\n\n"
+                f"Issue exactly one tool call, in JSON, no prose."
             )})
-
-        print(f"[zeroshot] step={step_idx} calling _call_vlm_tools...", flush=True)
-        msg = _call_vlm_tools(model or DEFAULT_MODEL, convo, tools)
-        print(f"[zeroshot] step={step_idx} got response in {_t.time()-_t0:.1f}s "
-              f"tool_calls={len(getattr(msg,'tool_calls',None) or [])}", flush=True)
-        tool_calls = list(getattr(msg, "tool_calls", None) or [])
-        if not tool_calls:
-            # VLM produced text instead of a tool call. Retry up to 2 times by
-            # nudging it to act, then give up. Without this, GPT-5.4 sometimes
-            # returns a "let me think" text and we abandon the whole atomic.
-            for retry_idx in range(2):
-                trace.append({"step": step_idx, "tool_call": None,
-                              "raw": (getattr(msg, "content", "") or "")[:200],
-                              "no_tool_retry": retry_idx})
-                convo.append({"role": "assistant",
-                              "content": getattr(msg, "content", "") or " "})
+        else:
+            # Fresh episode: two-stage skill selection. A Sonnet SkillSelector
+            # shortlists the relevant skills first (when restrict isn't already
+            # pinned) so the Engineer sees a focused, fully-described tool set.
+            if restrict_to_names is None:
+                restrict_to_names = _maybe_shortlist_skills(
+                    instruction, task_name, seed, ns=ns)
+            convo = _initial_messages(instruction, expected_on_success,
+                                         task_name=task_name,
+                                         restrict_to_names=restrict_to_names,
+                                         ns=ns)
+        tools = _build_tool_specs(ns=ns, task=task_name)
+        success = False
+        outcome = "budget_exceeded"
+        # Clear the module-global active plan so is_revision is per-episode correct
+        # (a single-process runner would otherwise leak the prior episode's plan).
+        from roborsi.embodied.skills.base.plan.robotwin.policy import (
+            _reset_active_plan,
+        )
+        _reset_active_plan()
+        REFLECT_EVERY = 8  # inject reflection prompt every N steps without done
+        # Trace summarization threshold: when convo exceeds this many turns,
+        # compact older trace into a synthetic "previously tried X failed Y"
+        # message so Engineer stays within ~20k tokens. Per 2026-06-15 user
+        # request "trace 累计加一下达到一定 token 就总结".
+        SUMMARIZE_AT_MSGS = 30
+        import time as _t
+        for step_idx in range(tool_budget):
+            _t0 = _t.time()
+            # Summarize old trace if conversation got too long.
+            if len(convo) > SUMMARIZE_AT_MSGS:
+                convo = _summarize_old_trace(convo, keep_recent=12)
+                print(f"[zeroshot] step={step_idx} convo summarized to "
+                       f"{len(convo)} msgs", flush=True)
+            print(f"[zeroshot] step={step_idx} convo_msgs={len(convo)} tools={len(tools)}", flush=True)
+            # Force a reflection turn periodically — don't let VLM grind 25 attempts
+            # without stepping back. Zero-shot loop pattern: "describe what happened,
+            # identify cause, plan next steps".
+            if step_idx > 0 and step_idx % REFLECT_EVERY == 0:
                 convo.append({"role": "user", "content": (
-                    "You returned no tool_use blocks. You MUST call at least "
-                    "one tool per turn — write text-only responses are not "
-                    "valid here. Look at the latest image, decide on the next "
-                    "action, and emit at least one tool_use block now. If you "
-                    "believe the goal is met, call done(success=True). If "
-                    "stuck, call look() and reassess."
+                    f"REFLECTION CHECKPOINT (step {step_idx}/{tool_budget}). Stop and analyse:\n"
+                    "  1. What's the current state of the scene + arms? (look at the latest image)\n"
+                    "  2. What have you tried? Which tool calls failed and why?\n"
+                    "  3. What's the failure pattern? (e.g. 'fingers close above the cube' / "
+                    "'gripper grabs bowl rim instead of cube')\n"
+                    "  4. What's the next plan? Try a DIFFERENT strategy than what already failed.\n"
+                    "  5. Issue your next tool call(s) — you may emit MULTIPLE tool_use blocks "
+                    "in one assistant turn to compose a multi-step plan (e.g. unproject + "
+                    "move_to_pose hover + move_to_pose descend + gripper close in one turn)."
                 )})
-                msg = _call_vlm_tools(model or DEFAULT_MODEL, convo, tools)
-                tool_calls = list(getattr(msg, "tool_calls", None) or [])
-                if tool_calls:
-                    break
+
+            print(f"[zeroshot] step={step_idx} calling _call_vlm_tools...", flush=True)
+            msg = call_vlm()
+            print(f"[zeroshot] step={step_idx} got response in {_t.time()-_t0:.1f}s "
+                  f"tool_calls={len(getattr(msg,'tool_calls',None) or [])}", flush=True)
+            tool_calls = list(getattr(msg, "tool_calls", None) or [])
             if not tool_calls:
-                trace.append({"step": step_idx, "tool_call": None,
-                              "raw": (getattr(msg, "content", "") or "")[:200],
-                              "no_tool_retry": "exhausted"})
-                convo.append({"role": "assistant",
-                              "content": getattr(msg, "content", "") or " "})
-                outcome = "vlm_no_tool_call"
-                break
+                # VLM produced text instead of a tool call. Retry up to 2 times by
+                # nudging it to act, then give up. Without this, GPT-5.4 sometimes
+                # returns a "let me think" text and we abandon the whole atomic.
+                for retry_idx in range(2):
+                    trace.append({"step": step_idx, "tool_call": None,
+                                  "raw": (getattr(msg, "content", "") or "")[:200],
+                                  "no_tool_retry": retry_idx})
+                    convo.append(serialize_assistant_message(msg))
+                    convo.append({"role": "user", "content": (
+                        "You returned no tool_use blocks. You MUST call at least "
+                        "one tool per turn — write text-only responses are not "
+                        "valid here. Look at the latest image, decide on the next "
+                        "action, and emit at least one tool_use block now. If you "
+                        "believe the goal is met, call done(success=True). If "
+                        "stuck, call look() and reassess."
+                    )})
+                    msg = call_vlm()
+                    tool_calls = list(getattr(msg, "tool_calls", None) or [])
+                    if tool_calls:
+                        break
+                if not tool_calls:
+                    trace.append({"step": step_idx, "tool_call": None,
+                                  "raw": (getattr(msg, "content", "") or "")[:200],
+                                  "no_tool_retry": "exhausted"})
+                    convo.append(serialize_assistant_message(msg))
+                    outcome = "vlm_no_tool_call"
+                    break
 
-        # Append the assistant's tool_calls turn to the convo (raw, so litellm
-        # can match tool_call_id on the next user message).
-        convo.append(_assistant_tool_calls_msg(msg, tool_calls))
+            # Append the assistant's tool_calls turn to the convo (raw, so litellm
+            # can match tool_call_id on the next user message).
+            convo.append(_assistant_tool_calls_msg(msg, tool_calls))
 
-        # Dispatch each tool call (Anthropic / litellm may emit multiple in one
-        # turn; we run them in order).
-        any_done = False
-        # Capture VLM reasoning text emitted before this turn's tool calls.
-        # For Anthropic via litellm, msg.content is a string; for OpenAI it's
-        # also a string. Either way we strip and truncate for trace+overlay.
-        reasoning_raw = getattr(msg, "content", None)
-        if isinstance(reasoning_raw, list):
-            reasoning_raw = " ".join(
-                getattr(b, "text", "") if hasattr(b, "text") else str(b.get("text", "") if isinstance(b, dict) else "")
-                for b in reasoning_raw
-            )
-        reasoning_text = (str(reasoning_raw or "")).strip()
-        # Surface the agent's reasoning to the CLI. It was captured for the trace
-        # but never printed, so a run showed only "calling..." / "dispatching
-        # tool=X" and the user watched a silent spinner with no view of WHY the
-        # agent chose each action. Print it (trimmed) so the thinking is visible.
-        if reasoning_text:
-            print(f"[zeroshot] step={step_idx} 💭 "
-                  f"{reasoning_text[:600]}", flush=True)
-        for tc in tool_calls:
-            name = tc.function.name
-            try:
-                args = json.loads(tc.function.arguments or "{}")
-            except (json.JSONDecodeError, TypeError):
-                args = {}
-            print(f"[zeroshot] step={step_idx} → {name}({_fmt_args(args)})",
-                  flush=True)
-            _t_dispatch = _t.time()
-            trace.append({"step": step_idx, "tool_call": {"tool": name, "args": args},
-                          "tool_call_id": tc.id,
-                          "reasoning": reasoning_text[:600]})
-            try:
-                from roborsi.channels.agent.feishu import live_trace as _lt
-                _lt.emit_inner("inner_tool_call", step=step_idx, tool=name,
-                                args=args, reasoning=reasoning_text[:600])
-            except Exception:
-                pass
-            if name == "done":
-                success = bool(args.get("success", False))
-                outcome = "vlm_declared_done"
-                trace[-1]["result"] = {"acknowledged": True}
-                trace[-1]["wallclock_s"] = 0.0
-                trace[-1]["timing_phase"] = "other"
-                convo.append({"role": "tool", "tool_call_id": tc.id, "name": name,
-                              "content": json.dumps({"acknowledged": True}, ensure_ascii=False)})
-                any_done = True
-                break
-            # exec_python lets Engineer write arbitrary sim loops; without
-            # a tight cap it can run 10+ min and bypass tool budget
-            # (V43/V44 hang root cause). Hard-cap at 60s to force Engineer
-            # back to atomic tools.
-            # cuRobo-heavy skills now run on SIGALRM-protected dispatch
-            # (V52 #1) so cap can be aggressive — 90s is plenty for any
-            # real plan_path; longer means the IK is infeasible.
-            # Once exec_python (or anything) times out, the worker thread
-            # cannot be killed (Python GIL limit) — it's still holding
-            # sim. Mark the state contaminated so subsequent dispatches
-            # fail fast and Engineer surrenders the attempt; next attempt
-            # gets a clean restore_scene.
-            if state._sim_contaminated:
-                result = ({"ok": False, "success": False,
-                            "reason": ("⚠ This attempt's sim state is "
-                                          "CONTAMINATED — a prior exec_python "
-                                          "/ long tool call timed out and its "
-                                          "worker thread is still holding the "
-                                          "sim. All subsequent tool calls in "
-                                          "this attempt will return ok=False. "
-                                          "Call done(success=False) now — the "
-                                          "next attempt will restore a clean "
-                                          "sim and you can try a different "
-                                          "approach.")},
-                           Observation())
-                after_obs = result[1]
-                result = result[0]
-                # Synthesize an "instant dispatch" log line.
+            # Dispatch each tool call (Anthropic / litellm may emit multiple in one
+            # turn; we run them in order).
+            any_done = False
+            # Capture VLM reasoning text emitted before this turn's tool calls.
+            # For Anthropic via litellm, msg.content is a string; for OpenAI it's
+            # also a string. Either way we strip and truncate for trace+overlay.
+            reasoning_raw = getattr(msg, "content", None)
+            if isinstance(reasoning_raw, list):
+                reasoning_raw = " ".join(
+                    getattr(b, "text", "") if hasattr(b, "text") else str(b.get("text", "") if isinstance(b, dict) else "")
+                    for b in reasoning_raw
+                )
+            reasoning_text = (str(reasoning_raw or "")).strip()
+            # Surface the agent's reasoning to the CLI. It was captured for the trace
+            # but never printed, so a run showed only "calling..." / "dispatching
+            # tool=X" and the user watched a silent spinner with no view of WHY the
+            # agent chose each action. Print it (trimmed) so the thinking is visible.
+            if reasoning_text:
+                print(f"[zeroshot] step={step_idx} 💭 "
+                      f"{reasoning_text[:600]}", flush=True)
+            for call_index, tc in enumerate(tool_calls):
+                name = tc.function.name
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                print(f"[zeroshot] step={step_idx} → {name}({_fmt_args(args)})",
+                      flush=True)
+                _t_dispatch = _t.time()
+                trace.append({"step": step_idx, "tool_call": {"tool": name, "args": args},
+                              "tool_call_id": tc.id,
+                              "reasoning": reasoning_text[:600]})
+                try:
+                    from roborsi.channels.agent.feishu import live_trace as _lt
+                    _lt.emit_inner("inner_tool_call", step=step_idx, tool=name,
+                                    args=args, reasoning=reasoning_text[:600])
+                except Exception:
+                    pass
+                if name == "done":
+                    success = bool(args.get("success", False))
+                    outcome = "vlm_declared_done"
+                    trace[-1]["result"] = {"acknowledged": True}
+                    trace[-1]["wallclock_s"] = 0.0
+                    trace[-1]["timing_phase"] = "other"
+                    convo.append({"role": "tool", "tool_call_id": tc.id, "name": name,
+                                  "content": json.dumps({"acknowledged": True}, ensure_ascii=False)})
+                    any_done = True
+                    convo.extend(skipped_results(tool_calls[call_index + 1:],
+                                                 "episode ended by done"))
+                    break
+                # exec_python lets Engineer write arbitrary sim loops; without
+                # a tight cap it can run 10+ min and bypass tool budget
+                # (V43/V44 hang root cause). Hard-cap at 60s to force Engineer
+                # back to atomic tools.
+                # cuRobo-heavy skills now run on SIGALRM-protected dispatch
+                # (V52 #1) so cap can be aggressive — 90s is plenty for any
+                # real plan_path; longer means the IK is infeasible.
+                # Once exec_python (or anything) times out, the worker thread
+                # cannot be killed (Python GIL limit) — it's still holding
+                # sim. Mark the state contaminated so subsequent dispatches
+                # fail fast and Engineer surrenders the attempt; next attempt
+                # gets a clean restore_scene.
+                if state._sim_contaminated:
+                    result = ({"ok": False, "success": False,
+                                "reason": ("⚠ This attempt's sim state is "
+                                              "CONTAMINATED — a prior exec_python "
+                                              "/ long tool call timed out and its "
+                                              "worker thread is still holding the "
+                                              "sim. All subsequent tool calls in "
+                                              "this attempt will return ok=False. "
+                                              "Call done(success=False) now — the "
+                                              "next attempt will restore a clean "
+                                              "sim and you can try a different "
+                                              "approach.")},
+                               Observation())
+                    after_obs = result[1]
+                    result = result[0]
+                    # Synthesize an "instant dispatch" log line.
+                    print(f"[zeroshot] step={step_idx} tool={name} "
+                           f"dispatched in 0.0s ok=False (contaminated)",
+                           flush=True)
+                else:
+                    # Per-tool wall-time cap. SIGALRM-backed (main thread).
+                    # exec_python = 60s (Engineer code, should be quick).
+                    # Other cuRobo-heavy tools = 600s. Raised from 300s: under
+                    # heavy GPU contention (a co-tenant training job pinning the
+                    # GPU to 100%) SAPIEN physics stepping slows ~30-90x, so a
+                    # single pick_actor (which internally tries 2 candidate grasps
+                    # at ~90s exec each) legitimately needs 180-300s and the old
+                    # 300s cap killed grasps that WOULD have completed (measured on
+                    # lift_pot). 600s lets contention-slowed-but-valid plans finish;
+                    # a true infinite hang still bails, just later.
+                    tool_timeout = 60.0 if name == "exec_python" else 600.0
+                    result, after_obs = _dispatch_with_timeout(
+                        state, {"tool": name, "args": args}, timeout_s=tool_timeout)
+                    # Contamination check: if this call timed out AND the
+                    # reason marker mentions wall-time, mark state dirty.
+                    if (isinstance(result, dict)
+                            and "TIMEOUT" in str(result.get("reason", ""))[:20]):
+                        state._sim_contaminated = True
+                dispatch_wallclock_s = _t.time() - _t_dispatch
                 print(f"[zeroshot] step={step_idx} tool={name} "
-                       f"dispatched in 0.0s ok=False (contaminated)",
-                       flush=True)
-            else:
-                # Per-tool wall-time cap. SIGALRM-backed (main thread).
-                # exec_python = 60s (Engineer code, should be quick).
-                # Other cuRobo-heavy tools = 600s. Raised from 300s: under
-                # heavy GPU contention (a co-tenant training job pinning the
-                # GPU to 100%) SAPIEN physics stepping slows ~30-90x, so a
-                # single pick_actor (which internally tries 2 candidate grasps
-                # at ~90s exec each) legitimately needs 180-300s and the old
-                # 300s cap killed grasps that WOULD have completed (measured on
-                # lift_pot). 600s lets contention-slowed-but-valid plans finish;
-                # a true infinite hang still bails, just later.
-                tool_timeout = 60.0 if name == "exec_python" else 600.0
-                result, after_obs = _dispatch_with_timeout(
-                    state, {"tool": name, "args": args}, timeout_s=tool_timeout)
-                # Contamination check: if this call timed out AND the
-                # reason marker mentions wall-time, mark state dirty.
-                if (isinstance(result, dict)
-                        and "TIMEOUT" in str(result.get("reason", ""))[:20]):
-                    state._sim_contaminated = True
-            dispatch_wallclock_s = _t.time() - _t_dispatch
-            print(f"[zeroshot] step={step_idx} tool={name} "
-                  f"dispatched in {dispatch_wallclock_s:.1f}s ok={result.get('ok')}", flush=True)
-            trace[-1]["result"] = result
-            trace[-1]["tick_end"] = tick_counter["n"]
-            trace[-1]["wallclock_s"] = round(dispatch_wallclock_s, 6)
-            trace[-1]["timing_phase"] = _tool_timing_phase(name)
-            try:
-                from roborsi.channels.agent.feishu import live_trace as _lt
-                ok = result.get("ok") if isinstance(result, dict) else None
-                _lt.emit_inner("inner_tool_result", step=step_idx, tool=name,
-                                ok=ok, preview=json.dumps(result, ensure_ascii=False)[:400])
-            except Exception:
-                pass
-            rollout.steps.append(Step(
-                obs=after_obs, action=after_obs.state,
-                info={"step": step_idx, "tool": name, "source": "tool_boundary"},
-            ))
-            convo.append({"role": "tool", "tool_call_id": tc.id, "name": name,
-                          "content": json.dumps(result, ensure_ascii=False)})
-        if any_done:
-            break
+                      f"dispatched in {dispatch_wallclock_s:.1f}s ok={result.get('ok')}", flush=True)
+                trace[-1]["result"] = result
+                trace[-1]["tick_end"] = tick_counter["n"]
+                trace[-1]["wallclock_s"] = round(dispatch_wallclock_s, 6)
+                trace[-1]["timing_phase"] = _tool_timing_phase(name)
+                try:
+                    from roborsi.channels.agent.feishu import live_trace as _lt
+                    ok = result.get("ok") if isinstance(result, dict) else None
+                    _lt.emit_inner("inner_tool_result", step=step_idx, tool=name,
+                                    ok=ok, preview=json.dumps(result, ensure_ascii=False)[:400])
+                except Exception:
+                    pass
+                rollout.steps.append(Step(
+                    obs=after_obs, action=after_obs.state,
+                    info={"step": step_idx, "tool": name, "source": "tool_boundary"},
+                ))
+                convo.append({"role": "tool", "tool_call_id": tc.id, "name": name,
+                              "content": json.dumps(result, ensure_ascii=False)})
+            # Select the latest pending observation stage after all tool results
+            # (including skipped calls). Existing conversation images stay intact.
+            convo = _append_pending_images(convo, state)
+            if any_done:
+                break
 
-        # CaP-X-inspired forced reflection after each turn: don't let VLM
-        # drift between turns without explicitly classifying what to do
-        # next. Replaces "VLM freelance" with a 3-way structured decision.
-        # Skip when the turn was pure-observation (look/find_pixel/etc.) —
-        # only inject after ACTION-class tools, where state actually changed.
-        ACTION_TOOLS = {
-            "move_to_pose", "move_fingertip_to", "move_to_pixel",
-            "gripper", "set_gripper", "home",
-            "grasp_then_lift", "grasp_then_lift_graspgen", "grasp_object",
-            "pick_actor_by_contact_point", "place_object_in",
-            "place_on_surface",
-            "tap_held_on_target", "execute_with_pi05",
-        }
-        had_action = any(tc.function.name in ACTION_TOOLS for tc in tool_calls)
-        if had_action and step_idx < tool_budget - 1:
-            convo.append({"role": "user", "content": _build_status_check_prompt()})
-    unhook()
+            # CaP-X-inspired forced reflection after each turn: don't let VLM
+            # drift between turns without explicitly classifying what to do
+            # next. Replaces "VLM freelance" with a 3-way structured decision.
+            # Skip when the turn was pure-observation (look/find_pixel/etc.) —
+            # only inject after ACTION-class tools, where state actually changed.
+            ACTION_TOOLS = {
+                "move_to_pose", "move_fingertip_to", "move_to_pixel",
+                "gripper", "set_gripper", "home",
+                "grasp_then_lift", "grasp_then_lift_graspgen", "grasp_object",
+                "pick_actor_by_contact_point", "place_object_in",
+                "place_on_surface",
+                "tap_held_on_target", "execute_with_pi05",
+            }
+            had_action = any(tc.function.name in ACTION_TOOLS for tc in tool_calls)
+            if had_action and step_idx < tool_budget - 1:
+                convo.append({"role": "user", "content": _build_status_check_prompt()})
+    finally:
+        unhook()
 
     # Persist trace for offline debugging — long_horizon executor doesn't save it.
     try:
@@ -744,7 +759,27 @@ def _dispatch(state: DispatchContext, call: dict[str, Any]) -> tuple[dict[str, A
         handler = _try_load_compound_dispatcher(name, state.task)
     if handler is None:
         return ({"ok": False, "reason": f"unknown tool '{name}'"}, state.env.take_snapshot())
-    return handler(state, args)
+    # LIBERO exposes a state generation. Other local backends (RoboTwin)
+    # expose physics hooks: count actual steps, including composite skills,
+    # instead of guessing which tool names can move the robot. Reuse the
+    # rollout/CodeAct hook when active. Standalone baseline dispatches install
+    # a temporary counter; nested calls share it and restore it on exit.
+    unhook = None
+    hook = getattr(state.env, "hook_physics_step", None)
+    if (not callable(getattr(state.env, "sensor_generation", None))
+            and not state._image_step_hook_active and callable(hook)):
+        def on_image_step():
+            state._image_physics_steps += 1
+        unhook = hook(on_image_step)
+        state._image_step_hook_active = True
+    try:
+        result = handler(state, args)
+        _capture_tool_image(state, name, args, result[0])
+        return result
+    finally:
+        if unhook is not None:
+            unhook()
+            state._image_step_hook_active = False
 
 
 def _dispatch_tool(state: "DispatchContext", tool_name: str,

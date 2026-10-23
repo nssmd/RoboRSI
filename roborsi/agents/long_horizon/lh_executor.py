@@ -400,6 +400,14 @@ class LHExecutor:
                             json.dumps(attempt_record, indent=2,
                                         default=str), encoding="utf-8")
                     except Exception as exc:
+                        from roborsi.embodied.agent_loop.vlm_io import ProviderError
+                        if isinstance(exc, ProviderError):
+                            (attempt_dir / "result.json").write_text(json.dumps({
+                                "attempt": attempt_n, "outcome": "api_error",
+                                "success": None, "category": exc.category,
+                                "exception": str(exc),
+                            }, indent=2), encoding="utf-8")
+                            raise
                         # sim crash mid-attempt (cuRobo / sapien / bad tool
                         # args) — don't kill the whole LH. Mark this attempt
                         # as failed, inject error text into the sustained

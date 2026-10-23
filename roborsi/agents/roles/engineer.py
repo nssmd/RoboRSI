@@ -36,17 +36,6 @@ _ENGINEER_MODEL = (
 )
 
 
-def _configure_perception_backend(ns: str, model: str | None) -> None:
-    """Keep LIBERO perception on the explicitly selected role provider."""
-    if ns != "libero" or not model:
-        return
-    os.environ.setdefault("ROBORSI_PERCEPTION_MODEL", model)
-    if model.startswith(
-        ("openai/", "azure/", "azure-openai/", "gpt-", "o3", "o4")
-    ):
-        os.environ.setdefault("ROBORSI_VLM_PROVIDER", "openai")
-
-
 def _count_active_skills(ns: str = "robotwin") -> int:
     """How many skills are callable in one backend namespace."""
     from roborsi.embodied.agent_loop.prompt_tools import (
@@ -164,10 +153,13 @@ class Engineer:
         from roborsi.runtime_mode import current_mode, evolution_enabled
         run_mode = current_mode().value
         can_evolve = evolution_enabled()
+        from roborsi.embodied.agent_loop.vlm_io import ProviderError, is_compatible_model
+        if can_evolve and is_compatible_model(self.model) and not os.environ.get("ROBORSI_GATE_MODEL"):
+            raise ProviderError("Set ROBORSI_GATE_MODEL for adaptive DeepSeek/Kimi execution (gate uses API roles)",
+                                category="configuration")
         ns = _skill_namespace(
             getattr(env, "backend_name", None) if env is not None else backend_name
         )
-        _configure_perception_backend(ns, self.model)
 
         # ── Skill selection: top-K when registry exceeds cap ──
         restrict: set[str] | None = None

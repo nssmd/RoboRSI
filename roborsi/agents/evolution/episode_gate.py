@@ -52,11 +52,32 @@ def run(q: dict, task_key: str | None, *, apply_candidate: bool = True,
     need = MIN_PASS if min_pass is None else min_pass
     if not task_key:
         return EpisodeGateReport(False, "no source task to validate on")
+    from roborsi.embodied.agent_loop.vlm_io import ProviderError, is_compatible_model, resolve_api_config
+    # eval-suite accepts a start/count, not an arbitrary list. Never silently
+    # measure different seeds from the ones advertised by this gate.
+    if not DEV_SEEDS or DEV_SEEDS != list(range(DEV_SEEDS[0], DEV_SEEDS[0] + len(DEV_SEEDS))):
+        raise ProviderError("ROBORSI_GATE_SEEDS must be a nonempty consecutive increasing list",
+                            category="configuration")
+    if not 0 <= need <= len(DEV_SEEDS):
+        raise ProviderError("Gate min_pass must be between 0 and the number of seeds",
+                            category="configuration")
+    model = os.environ.get("ROBORSI_GATE_MODEL") or os.environ.get(
+        "ROBORSI_EVAL_MODEL") or os.environ.get("ROBORSI_MANAGER_MODEL", "gpt-5.6-sol")
+    if (is_compatible_model(os.environ.get("ROBORSI_ENGINEER_MODEL"))
+            and not os.environ.get("ROBORSI_GATE_MODEL")):
+        raise ProviderError("Set ROBORSI_GATE_MODEL explicitly for adaptive DeepSeek/Kimi runs; gate roles use APIs",
+                            category="configuration")
+    api_config = resolve_api_config(model).public() if is_compatible_model(model) else None
     tmp = Path(tempfile.mkdtemp(prefix="roborsi-gate-"))
     tree = tmp / "tree"
     try:
         subprocess.run(["git", "worktree", "add", "--detach", str(tree), "HEAD"],
                        cwd=R, check=True, capture_output=True)
+        api_source = tree / "roborsi/embodied/agent_loop/vlm_io.py"
+        if api_config and (not api_source.is_file() or
+                           "def _chat_call_with_tools(" not in api_source.read_text(encoding="utf-8")):
+            raise ProviderError("Episode gate uses committed HEAD; commit the API changes before running skill evolution",
+                                category="configuration")
         if apply_candidate:
             _write_candidate(tree, q)
         # Eval mode needs a clean tree; commit the candidate in the throw-away worktree.
@@ -66,8 +87,6 @@ def run(q: dict, task_key: str | None, *, apply_candidate: bool = True,
                             "commit", "-q", "-m", "gate candidate"], cwd=tree, check=True,
                            capture_output=True)
         out = tmp / "campaign"
-        model = os.environ.get("ROBORSI_EVAL_MODEL") or os.environ.get(
-            "ROBORSI_MANAGER_MODEL", "gpt-5.6-sol")
         env = {**os.environ, "PYTHONPATH": str(tree), "ROBORSI_RUN_MODE": "frozen",
                # Gate episodes must not touch the campaign's role sessions.
                "ROBORSI_ROLE_SESSION": "0"}
@@ -93,11 +112,19 @@ def run(q: dict, task_key: str | None, *, apply_candidate: bool = True,
             if row.get("verdict") in ("success", "failure"):
                 verdicts[int(row["seed"])] = row["verdict"]
         passes = sum(v == "success" for v in verdicts.values())
-        ok = passes >= need and len(verdicts) == len(DEV_SEEDS)
+        if set(verdicts) != set(DEV_SEEDS) or proc.returncode != 0:
+            return EpisodeGateReport(False, "Episode gate incomplete; not a measured skill failure",
+                                     {"verdicts": verdicts, "passes": None,
+                                      "observed_passes": passes, "returncode": proc.returncode,
+                                      "complete": False, "expected_seeds": DEV_SEEDS,
+                                      "model": model, "api_config": api_config})
+        ok = passes >= need
         return EpisodeGateReport(
             ok, f"episode gate {passes}/{len(DEV_SEEDS)} on {task_key} "
                 f"seeds {DEV_SEEDS} (need {need})",
-            {"verdicts": verdicts, "passes": passes, "returncode": proc.returncode})
+            {"verdicts": verdicts, "passes": passes, "returncode": proc.returncode,
+             "complete": True, "expected_seeds": DEV_SEEDS,
+             "model": model, "api_config": api_config})
     finally:
         subprocess.run(["git", "worktree", "remove", "--force", str(tree)],
                        cwd=R, capture_output=True)
@@ -147,7 +174,9 @@ def cross_task_gate(q: dict, source_task: str | None) -> EpisodeGateReport:
         cand = run(q, task, min_pass=0)
         base = run(q, task, apply_candidate=False, min_pass=0)
         rows[task] = {"candidate": cand.details.get("passes"), "baseline": base.details.get("passes")}
-        if cand.details.get("passes") is None or base.details.get("passes") is None \
-                or cand.details["passes"] < base.details["passes"]:
+        if (not cand.overall_pass or not base.overall_pass
+                or cand.details.get("passes") is None or base.details.get("passes") is None):
+            return EpisodeGateReport(False, f"incomplete measurement on {task}", rows)
+        if cand.details["passes"] < base.details["passes"]:
             return EpisodeGateReport(False, f"regression on {task}", rows)
     return EpisodeGateReport(True, f"no regression on {len(others)} other tasks", rows)

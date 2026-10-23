@@ -34,6 +34,13 @@ import json
 import re
 from typing import Any
 
+from roborsi.embodied.agent_loop.messages import (
+    serialize_assistant_message,
+)
+from roborsi.embodied.agent_loop.vlm_io import (
+    ProviderError, with_perception_default,
+)
+
 #: Baseline orchestrations selectable via ``--agent-mode`` (the full triangle
 #: itself is selected as ``"roborsi"`` and never routes through this module).
 BASELINE_MODES = ("maestro", "openeta", "capx")
@@ -125,7 +132,6 @@ def run_baseline_atomic(
     from roborsi.agents.atomic_backend import resolve as _resolve_atomic
     from roborsi.agents.roles.engineer import (
         Engineer,
-        _configure_perception_backend,
         _summarize_trace,
     )
     from roborsi.embodied.agent_loop import get_backend
@@ -150,7 +156,6 @@ def run_baseline_atomic(
     resolved_backend = backend_name or ab.backend_name
     resolved_sim_task = sim_task or ab.sim_task
     ns = _skill_namespace(resolved_backend)
-    _configure_perception_backend(ns, resolved_model)
 
     backend = get_backend(resolved_backend)
     backend_ok, backend_reason = backend.available()
@@ -330,6 +335,7 @@ def _run_maestro(env: Any, *, atomic: str, seed: int, tool_budget: int,
 # ────────────────────────────────────────────────────────────────────────
 
 
+@with_perception_default
 def _run_openeta(env: Any, *, atomic: str, seed: int, tool_budget: int,
                  model: str, workspace: Any, task_instruction: str,
                  ns: str) -> dict[str, Any]:
@@ -337,7 +343,7 @@ def _run_openeta(env: Any, *, atomic: str, seed: int, tool_budget: int,
 
     from roborsi.agents.roles.engineer import _summarize_tool_timing
     from roborsi.embodied.agent_loop.messages import (
-        _append_image,
+        _append_pending_images,
         _assistant_tool_calls_msg,
         _initial_messages,
     )
@@ -395,10 +401,7 @@ def _run_openeta(env: Any, *, atomic: str, seed: int, tool_budget: int,
             "reply with EXACTLY ONE tool call. Call done(success=...) if "
             "the task is finished or clearly hopeless."
         )})
-        if (state.last_image_path is not None
-                and state.last_image_path != state._attached_image_path):
-            convo = _append_image(convo, state.last_image_path)
-            state._attached_image_path = state.last_image_path
+        convo = _append_pending_images(convo, state)
         if len(trace) >= tool_budget:
             break
 
@@ -406,8 +409,7 @@ def _run_openeta(env: Any, *, atomic: str, seed: int, tool_budget: int,
         msg = _call_vlm_tools(model, convo, tools)
         tool_calls = list(getattr(msg, "tool_calls", None) or [])
         if not tool_calls:
-            convo.append({"role": "assistant",
-                          "content": getattr(msg, "content", "") or " "})
+            convo.append(serialize_assistant_message(msg))
             convo.append({"role": "user", "content": (
                 "You must reply with exactly one tool_use block (the ACT "
                 "phase). Choose one action now, or call done(success=...) "
@@ -476,6 +478,7 @@ def _run_openeta(env: Any, *, atomic: str, seed: int, tool_budget: int,
 # ────────────────────────────────────────────────────────────────────────
 
 
+@with_perception_default
 def _run_capx(env: Any, *, atomic: str, seed: int, tool_budget: int,
               model: str, workspace: Any, task_instruction: str, ns: str,
               max_repairs: int = 3) -> dict[str, Any]:
@@ -488,7 +491,7 @@ def _run_capx(env: Any, *, atomic: str, seed: int, tool_budget: int,
     import numpy as np
 
     from roborsi.agents.roles.engineer import _summarize_tool_timing
-    from roborsi.embodied.agent_loop.messages import _append_image
+    from roborsi.embodied.agent_loop.messages import _append_pending_images
     from roborsi.embodied.agent_loop.prompt_tools import (
         _build_tool_specs,
         _build_tools_block,
@@ -588,14 +591,12 @@ def _run_capx(env: Any, *, atomic: str, seed: int, tool_budget: int,
         {"role": "system", "content": system},
         {"role": "user", "content": user_text},
     ]
-    if state.last_image_path is not None:
-        messages = _append_image(messages, state.last_image_path)
-
     exec_error: str | None = None
     executed = False
     for round_idx in range(1 + max_repairs):
+        messages = _append_pending_images(messages, state)
         reply = _call_vlm_no_tools(model, messages)
-        messages.append({"role": "assistant", "content": reply or " "})
+        messages.append(serialize_assistant_message(reply))
         code = _extract_code(reply or "")
         if not code:
             exec_error = "no fenced ```python block in the model reply"
@@ -617,6 +618,8 @@ def _run_capx(env: Any, *, atomic: str, seed: int, tool_budget: int,
             try:
                 _reject_sandbox_escape(code)
                 exec(compile(code, "<capx-policy>", "exec"), bound, bound)
+            except ProviderError:
+                raise
             except ToolBudgetExhausted as exc:
                 exec_error = f"ToolBudgetExhausted: {exc}"
                 budget_dead = True

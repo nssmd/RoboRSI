@@ -4,8 +4,8 @@ import os
 
 import numpy as np
 
-from roborsi.agents.roles.engineer import _configure_perception_backend
 from roborsi.agents.roles.planner import _libero_runtime_routing_block
+from roborsi.embodied.agent_loop.vlm_io import perception_default, resolve_perception_model
 from roborsi.embodied.skills.base._lib.libero._perception import (
     _project_world_to_head_pixel,
     _requires_orbit_product_identity,
@@ -28,10 +28,11 @@ def test_libero_perception_follows_explicit_openai_role_model(
     monkeypatch.delenv("ROBORSI_PERCEPTION_MODEL", raising=False)
     monkeypatch.delenv("ROBORSI_VLM_PROVIDER", raising=False)
 
-    _configure_perception_backend("libero", "gpt-5.6-sol")
-
-    assert os.environ["ROBORSI_PERCEPTION_MODEL"] == "gpt-5.6-sol"
-    assert os.environ["ROBORSI_VLM_PROVIDER"] == "openai"
+    with perception_default("gpt-5.6-sol"):
+        assert resolve_perception_model() == "gpt-5.6-sol"
+        assert "ROBORSI_PERCEPTION_MODEL" not in os.environ
+        assert "ROBORSI_VLM_PROVIDER" not in os.environ
+    assert resolve_perception_model() == "anthropic/claude-sonnet-4-6"
 
 
 def test_orbit_identity_is_reserved_for_exact_products() -> None:

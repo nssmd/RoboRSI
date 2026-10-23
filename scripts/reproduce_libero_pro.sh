@@ -12,8 +12,9 @@
 #
 # Requirements: Linux, git, python3.12+, an NVIDIA/CUDA stack for the LIBERO
 # renderer, and an OpenAI-compatible endpoint:
-#   OPENAI_API_KEY      API key for the endpoint (required)
-#   ROBORSI_EVAL_MODEL  model id served by the endpoint (required)
+#   ROBORSI_EVAL_MODEL  fallback model; per-role ROBORSI_*_MODEL takes priority
+#   API key for Engineer/perception: OPENAI_API_KEY, DEEPSEEK_API_KEY,
+#   MOONSHOT_API_KEY or ANTHROPIC_API_KEY. See docs/MODEL_API_ADAPTATION.md.
 #   OPENAI_BASE_URL     endpoint base URL (optional; default api.openai.com)
 #   ROBORSI_OPENAI_TRANSPORT  responses | chat_completions (default: responses)
 # Optional GraspGen grasp service (used for the reported results):
@@ -51,8 +52,43 @@ PY="$(command -v python3.12 || command -v python3 || true)"
 import sys
 assert sys.version_info >= (3, 12), f"python3.12+ required, found {sys.version}"
 EOF
-[ -n "${OPENAI_API_KEY:-}" ] || die "export OPENAI_API_KEY first (OpenAI-compatible endpoint)"
-[ -n "${ROBORSI_EVAL_MODEL:-}" ] || die "export ROBORSI_EVAL_MODEL to the model id served by your endpoint"
+# Model configuration: keep CLI roles separate from the API Engineer.
+export ROBORSI_PLANNER_MODEL="${ROBORSI_PLANNER_MODEL:-${ROBORSI_EVAL_MODEL:-}}"
+export ROBORSI_ENGINEER_MODEL="${ROBORSI_ENGINEER_MODEL:-${ROBORSI_EVAL_MODEL:-}}"
+export ROBORSI_REVIEWER_MODEL="${ROBORSI_REVIEWER_MODEL:-${ROBORSI_EVAL_MODEL:-}}"
+: "${ROBORSI_PLANNER_MODEL:?set ROBORSI_PLANNER_MODEL or ROBORSI_EVAL_MODEL}"
+: "${ROBORSI_ENGINEER_MODEL:?set ROBORSI_ENGINEER_MODEL or ROBORSI_EVAL_MODEL}"
+: "${ROBORSI_REVIEWER_MODEL:?set ROBORSI_REVIEWER_MODEL or ROBORSI_EVAL_MODEL}"
+roborsi_effort=medium
+case "$ROBORSI_ENGINEER_MODEL" in
+  deepseek/*|moonshot/*|kimi/*)
+    roborsi_effort=high ;;
+esac
+export ROBORSI_REASONING_EFFORT="${ROBORSI_REASONING_EFFORT:-$roborsi_effort}"
+roborsi_api_models=("$ROBORSI_ENGINEER_MODEL" "${ROBORSI_PERCEPTION_MODEL:-}")
+if [ "${ROBORSI_ROLE_SESSION:-1}" = 0 ]; then
+  roborsi_api_models+=("$ROBORSI_PLANNER_MODEL" "$ROBORSI_REVIEWER_MODEL")
+else
+  for roborsi_model in "$ROBORSI_PLANNER_MODEL" "$ROBORSI_REVIEWER_MODEL"; do
+    case "$roborsi_model" in
+      deepseek/*|moonshot/*|kimi/*)
+        echo 'Planner/Reviewer use CLI; set only ENGINEER/PERCEPTION to DeepSeek/Kimi, or set ROBORSI_ROLE_SESSION=0 for API roles' >&2
+        exit 1 ;;
+    esac
+  done
+fi
+for roborsi_model in "${roborsi_api_models[@]}"; do
+  case "$roborsi_model" in
+    "") continue ;;
+    deepseek/*) roborsi_key=DEEPSEEK_API_KEY ;;
+    moonshot/*|kimi/*) roborsi_key=MOONSHOT_API_KEY ;;
+    anthropic/*|claude-*) roborsi_key=ANTHROPIC_API_KEY ;;
+    *) roborsi_key=OPENAI_API_KEY
+       [ -n "${OPENAI_API_KEY:-}" ] || roborsi_key=ROBORSI_OPENAI_API_KEY ;;
+  esac
+  [ -n "${!roborsi_key:-}" ] || { echo "Set $roborsi_key for $roborsi_model" >&2; exit 1; }
+done
+# End model configuration.
 export ROBORSI_OPENAI_TRANSPORT="${ROBORSI_OPENAI_TRANSPORT:-responses}"
 command -v nvidia-smi >/dev/null || log "WARNING: nvidia-smi not found — the LIBERO renderer needs a working NVIDIA stack"
 if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then

@@ -486,6 +486,7 @@ def _orbit_product_identity_point(state: Any, obj: str) -> tuple[int, int] | Non
                 },
                 {"role": "user", "content": str(obj)},
             ],
+            request_kind="perception",
         )
         package_result = _parse_json(package_reply) or {}
         candidate_package = str(
@@ -1569,6 +1570,11 @@ def localize_precise(state, obj: str, route: str = "vlm_sam"):
 
     def remember(exc):
         nonlocal transport_exc
+        from roborsi.embodied.agent_loop.vlm_io import ProviderError
+        if isinstance(exc, ProviderError):
+            # A failed model request is not a negative visual observation.
+            # Do not turn it into "object not found" or switch providers.
+            raise exc
         if (
             transport_exc is None
             and classify_infrastructure_exception(exc)

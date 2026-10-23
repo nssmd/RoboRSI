@@ -631,6 +631,12 @@ def _load_or_create_campaign(
             if key != "runtime" and existing.get(key) != value
         ]
         if existing.get("runtime") != requested.get("runtime"):
+            from roborsi.embodied.agent_loop.vlm_io import is_compatible_model
+            active_models = [planner_model, engineer_model, reviewer_model,
+                             os.environ.get("ROBORSI_PERCEPTION_MODEL"), os.environ.get("ROBORSI_GATE_MODEL")]
+            if (any(is_compatible_model(model) for model in active_models)
+                    and (existing.get("runtime") or {}).get("api_adapter") != runtime.get("api_adapter")):
+                mismatches.append("api_adapter")
             if existing.get("run_mode", "frozen") in ("frozen", "eval"):
                 mismatches.append("runtime")
             else:
@@ -819,6 +825,73 @@ def _breakdown(per_task: list[dict[str, Any]], *, index: int) -> dict[str, dict[
     return out
 
 
+def _api_runtime_settings() -> dict[str, Any]:
+    """Non-secret configuration for evaluation resume fingerprints."""
+    from urllib.parse import urlsplit
+    from roborsi.embodied.agent_loop.messages import COMPRESSION_POLICY, OBSERVATION_POLICY
+
+    names = {
+        "DEEPSEEK_BASE_URL",
+        "MOONSHOT_BASE_URL",
+        "ROBORSI_DEEPSEEK_THINKING",
+        "ROBORSI_GATE_MODEL",
+        "ROBORSI_ROLE_BACKEND",
+        "ROBORSI_ROLE_SESSION",
+        "ROBORSI_PERCEPTION_MODEL",
+        "ROBORSI_JUDGE_MODEL",
+        "ROBORSI_SKILL_SELECTOR_MODEL",
+        "ROBORSI_API_TIMEOUT_S",
+        "ROBORSI_API_DEADLINE_S",
+        "ROBORSI_API_ATTEMPTS",
+        "ROBORSI_API_MAX_OUTPUT_TOKENS",
+        "ROBORSI_API_REASONING_EFFORT",
+    }
+    names.update(
+        f"ROBORSI_API_{purpose}_{setting}"
+        for purpose in ("TOOLS", "TEXT", "PERCEPTION", "REVIEWER")
+        for setting in ("MAX_OUTPUT_TOKENS", "REASONING_EFFORT")
+    )
+    values = {name: os.environ[name] for name in sorted(names) if name in os.environ}
+    for name in ("DEEPSEEK_BASE_URL", "MOONSHOT_BASE_URL"):
+        if name in values:
+            try:
+                url = urlsplit(values[name])
+                values[name] = (
+                    f"{url.scheme}://{url.hostname or ''}{':' + str(url.port) if url.port else ''}{url.path}"
+                )
+            except ValueError:
+                values[name] = "<invalid endpoint>"
+    from importlib.metadata import PackageNotFoundError, version
+
+    versions = {}
+    for package in ("openai", "anthropic", "litellm", "jsonschema"):
+        try:
+            versions[package] = version(package)
+        except PackageNotFoundError:
+            versions[package] = None
+    return {
+        "adapter_version": 4,
+        "compression_policy": COMPRESSION_POLICY,
+        "observation_policy": OBSERVATION_POLICY,
+        "rollout_tool_policy": {
+            "arguments": "legacy_json",
+            "done_results": "complete",
+        },
+        "settings": values,
+        "packages": versions,
+        "defaults": {
+            "reasoning_effort": "high",
+            "tools_output": 16384,
+            "text_output": 16384,
+            "reviewer_output": 16384,
+            "perception_output": 8192,
+            "timeout_s": 120,
+            "deadline_s": 300,
+            "attempts": 3,
+        },
+    }
+
+
 def _runtime_fingerprint(backend: str) -> dict[str, Any]:
     repo = Path(__file__).resolve().parents[2]
     result = {
@@ -835,6 +908,7 @@ def _runtime_fingerprint(backend: str) -> dict[str, Any]:
         ),
         "python": platform.python_version(),
         "platform": sys.platform,
+        "api_adapter": _api_runtime_settings(),
     }
     spec = importlib.util.find_spec("libero")
     if spec is not None and spec.origin:

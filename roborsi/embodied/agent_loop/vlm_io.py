@@ -1,21 +1,27 @@
 """LLM call / retry / provider helpers for the VLM tool loop.
 
-All litellm / OpenAI / Anthropic dispatch, retry, provider auth, and the
+All litellm / OpenAI / Anthropic / compatible Chat dispatch, retry, auth, and the
 small JSON/text/image parsing helpers the perception calls need. No sim
 dependencies — reusable by a real-robot agent loop.
 """
 
 from __future__ import annotations
 
-import base64
 import json
+import os
 import re
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import wraps
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlsplit
+
+from roborsi.embodied.agent_loop.messages import (
+    MessageError, normalize_chat_response, prepare_chat_messages, prepare_chat_tools,
+)
 
 
 @dataclass
@@ -131,6 +137,8 @@ def _log_tokens(resp) -> None:
 
 
 def _call_vlm(model: str, messages: list[dict[str, Any]]) -> str:
+    if is_compatible_model(model):
+        return _call_vlm_no_tools(model, messages)
     import litellm
 
     def request():
@@ -153,31 +161,49 @@ def _call_vlm_tools(model: str, messages: list[dict[str, Any]],
                    tools: list[dict[str, Any]],
                    thinking_budget: int = 0,
                    tool_choice: str | None = None,
-                   prefill: str | None = None) -> Any:
-    """Native tool_use call. Routes to OpenAI for openai/* and azure/* model
-    prefixes, else Anthropic. Returns object with .content and .tool_calls
-    in litellm shape.
+                   prefill: str | None = None,
+                   request_kind: str = "tools") -> Any:
+    """Native tool_use call. DeepSeek/Kimi use compatible Chat; OpenAI/Azure
+    and Anthropic retain their native transports. Returns .content and
+    .tool_calls in the original litellm shape.
 
     `thinking_budget` only applies to Anthropic models.
-    `tool_choice`: "none" to forbid tool use (Anthropic only) — forces text.
+    `tool_choice`: "none" forbids tools; each transport decides whether to
+        include their definitions in the API request.
     `prefill`: assistant-message prefill text (Anthropic only) — model
         must continue from this text. Strongest way to break silence:
         pre-fill with the response format prefix and the model fills
         in the rest."""
-    if model.startswith(("openai/", "azure/", "azure-openai/", "gpt-", "o3", "o4")):
-        return _retry_litellm(
-            lambda: _openai_call_with_tools(model, messages, tools)
-        )
-    return _retry_litellm(lambda: _anthropic_call_with_tools(
-        model, messages, tools, thinking_budget=thinking_budget,
-        tool_choice_override=tool_choice, prefill=prefill))
+    route = _model_route(model)
+    match route:
+        case "openai":
+            effective_tools = [] if tool_choice == "none" else tools
+            return _retry_litellm(
+                lambda: _openai_call_with_tools(model, messages, effective_tools)
+            )
+        case "anthropic":
+            return _retry_litellm(lambda: _anthropic_call_with_tools(
+                model, messages, tools, thinking_budget=thinking_budget,
+                tool_choice_override=tool_choice, prefill=prefill))
+        case "chat":
+            return _chat_call_with_tools(
+                model, messages, tools, tool_choice=tool_choice,
+                purpose=request_kind, prefill=prefill,
+            )
+    raise ValueError(f"Unknown model route: {route}")
 
 
-def _call_vlm_no_tools(model: str, messages: list[dict[str, Any]]) -> str:
+def _call_vlm_no_tools(model: str, messages: list[dict[str, Any]], *,
+                       request_kind: str = "text") -> str:
     """Plain text completion (no tools). Used by CaP-X-style code-as-policy
     loops where VLM emits a Python program in fenced ```python``` block.
     Returns the text content of the assistant's reply."""
-    msg = _call_vlm_tools(model, messages, tools=[])
+    if request_kind == "perception":
+        model = resolve_perception_model(model)
+    msg = _call_vlm_tools(model, messages, tools=[], request_kind=request_kind)
+    if hasattr(msg, "request_message"):
+        from roborsi.embodied.agent_loop.messages import TextReply
+        return TextReply(msg)
     content = getattr(msg, "content", None)
     if isinstance(content, list):
         # Anthropic via litellm sometimes wraps as content blocks.
@@ -190,6 +216,425 @@ def _call_vlm_no_tools(model: str, messages: list[dict[str, Any]]) -> str:
                 parts.append(text)
         return "".join(parts)
     return str(content or "")
+
+
+class ProviderError(RuntimeError):
+    """An API/configuration failure, not evidence of a failed robot skill."""
+
+    def __init__(self, message: str, *, category: str = "protocol"):
+        super().__init__(message)
+        self.category = category
+
+
+_MODEL_ROUTES = (
+    (("openai/", "azure/", "azure-openai/", "gpt-", "o3", "o4"), "openai"),
+    (("anthropic/", "claude-"), "anthropic"),
+    (("deepseek/", "moonshot/", "kimi/"), "chat"),
+)
+
+
+def _model_route(model: str | None) -> str:
+    """Resolve a model prefix once, preserving the original Claude fallback.
+
+    Routes select the existing request implementations, not a shared HTTP
+    payload. DeepSeek/Kimi still resolve their own credentials and model
+    capabilities inside the Chat implementation.
+    """
+    for prefixes, route in _MODEL_ROUTES:
+        if model and model.startswith(prefixes):
+            return route
+    return "anthropic"
+
+
+@dataclass(frozen=True)
+class _ChatModel:
+    provider: str
+    model_id: str
+    vision: bool
+    output_field: str
+    max_output: int
+    max_body_bytes: int
+    context_length: int = 1_000_000
+
+
+_CHAT_MODELS = {
+    ("deepseek", "deepseek-flash"): _ChatModel(
+        "deepseek", "deepseek-flash", True, "max_tokens", 393216, 48 * 1024**2
+    ),
+    ("deepseek", "deepseek-v4-pro"): _ChatModel(
+        "deepseek", "deepseek-v4-pro", False, "max_tokens", 393216, 48 * 1024**2
+    ),
+    ("moonshot", "kimi-k3"): _ChatModel(
+        "moonshot", "kimi-k3", True, "max_completion_tokens", 1048576, 100_000_000
+    ),
+}
+
+
+def is_compatible_model(model: str | None) -> bool:
+    """Compatibility helper for callers that need the Chat-specific policy."""
+    return _model_route(model) == "chat"
+
+
+def _chat_model(model: str) -> _ChatModel:
+    provider, _, model_id = model.partition("/")
+    if provider == "kimi":
+        provider = "moonshot"
+    try:
+        return _CHAT_MODELS[(provider, model_id)]
+    except KeyError:
+        raise ProviderError(
+            f"Unsupported API model {model!r}; supported: deepseek/deepseek-flash, "
+            "deepseek/deepseek-v4-pro (text only), moonshot/kimi-k3 (alias kimi/kimi-k3).",
+            category="configuration",
+        ) from None
+
+
+def _api_number(name: str, default: int | float, cast=int, *, minimum=1):
+    try:
+        value = cast(os.environ.get(name, str(default)))
+    except ValueError:
+        raise ProviderError(f"{name} must be a number", category="configuration") from None
+    import math
+
+    if not math.isfinite(value) or value < minimum:
+        raise ProviderError(f"{name} must be >= {minimum}", category="configuration")
+    return value
+
+
+@dataclass(frozen=True)
+class _ChatConfig:
+    profile: _ChatModel
+    base_url: str
+    api_key: str = field(repr=False)
+    purpose: str = "tools"
+    reasoning_effort: str = "high"
+    thinking: bool = True
+    max_output_tokens: int = 16384
+    timeout_s: float = 120.0
+    deadline_s: float = 300.0
+    attempts: int = 3
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "provider": self.profile.provider,
+            "model": self.profile.model_id,
+            "base_url": self.base_url,
+            "transport": "chat_completions",
+            "purpose": self.purpose,
+            "reasoning_effort": self.reasoning_effort,
+            "thinking": self.thinking,
+            "max_output_tokens": self.max_output_tokens,
+            "timeout_s": self.timeout_s,
+            "deadline_s": self.deadline_s,
+            "attempts": self.attempts,
+            "stream": False,
+        }
+
+
+def resolve_api_config(model: str, purpose: str = "tools", *, require_key=True) -> _ChatConfig:
+    profile = _chat_model(model)
+    if purpose not in {"tools", "text", "perception", "reviewer"}:
+        raise ProviderError(f"Unknown API purpose: {purpose}", category="configuration")
+    prefix = "DEEPSEEK" if profile.provider == "deepseek" else "MOONSHOT"
+    key = os.environ.get(f"{prefix}_API_KEY", "")
+    if require_key and not key:
+        raise ProviderError(f"Set {prefix}_API_KEY for {model}", category="configuration")
+    default_url = (
+        "https://api.deepseek.com" if prefix == "DEEPSEEK" else "https://api.moonshot.ai/v1"
+    )
+    base_url = os.environ.get(f"{prefix}_BASE_URL", default_url).rstrip("/")
+    try:
+        url = urlsplit(base_url)
+        _ = url.port
+    except ValueError:
+        raise ProviderError(f"Invalid {prefix}_BASE_URL", category="configuration") from None
+    if (
+        url.scheme not in {"https", "http"}
+        or not url.netloc
+        or url.username
+        or url.password
+        or url.query
+        or url.fragment
+    ):
+        raise ProviderError(
+            f"{prefix}_BASE_URL must be an HTTP(S) endpoint without credentials/query",
+            category="configuration",
+        )
+    effort = (
+        os.environ.get(f"ROBORSI_API_{purpose.upper()}_REASONING_EFFORT")
+        or os.environ.get("ROBORSI_API_REASONING_EFFORT")
+        or os.environ.get("ROBORSI_REASONING_EFFORT")
+        or "high"
+    ).lower()
+    thinking = True
+    if prefix == "DEEPSEEK":
+        toggle = os.environ.get("ROBORSI_DEEPSEEK_THINKING", "enabled").lower()
+        if toggle not in {"enabled", "disabled"}:
+            raise ProviderError(
+                "ROBORSI_DEEPSEEK_THINKING must be enabled or disabled", category="configuration"
+            )
+        thinking = toggle == "enabled" and effort != "none"
+        effort = {"minimal": "low", "medium": "high", "xhigh": "high", "ultra": "max"}.get(
+            effort, effort
+        )
+    if effort not in (
+        {"low", "high", "max", "none"} if prefix == "DEEPSEEK" else {"low", "high", "max"}
+    ):
+        raise ProviderError(
+            f"Invalid reasoning effort {effort!r} for {model}", category="configuration"
+        )
+    default_output = 8192 if purpose == "perception" else 16384
+    output = _api_number(
+        f"ROBORSI_API_{purpose.upper()}_MAX_OUTPUT_TOKENS",
+        _api_number("ROBORSI_API_MAX_OUTPUT_TOKENS", default_output),
+    )
+    if output > profile.max_output or output >= profile.context_length:
+        raise ProviderError(
+            f"Output budget exceeds {model}'s output/context limit", category="configuration"
+        )
+    return _ChatConfig(
+        profile,
+        base_url,
+        key,
+        purpose,
+        effort if thinking else "none",
+        thinking,
+        output,
+        _api_number("ROBORSI_API_TIMEOUT_S", 120, float),
+        _api_number("ROBORSI_API_DEADLINE_S", 300, float),
+        _api_number("ROBORSI_API_ATTEMPTS", 3),
+    )
+
+
+_PERCEPTION_DEFAULT: ContextVar[str | None] = ContextVar("perception_default", default=None)
+
+
+@contextmanager
+def perception_default(model: str | None):
+    token = _PERCEPTION_DEFAULT.set(model)
+    try:
+        yield
+    finally:
+        _PERCEPTION_DEFAULT.reset(token)
+
+
+def with_perception_default(fn):
+    """Keep inherited perception local to an execution, including worker contexts."""
+
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        from roborsi.embodied.agent_loop.config import DEFAULT_MODEL
+
+        # Use the execution loop's actual model, including its original default.
+        # Do not infer a different model from the environment or persist it there.
+        model = (
+            kwargs.get("model")
+            or fn.__globals__.get("DEFAULT_MODEL")
+            or DEFAULT_MODEL
+        )
+        kwargs["model"] = model
+        with perception_default(model):
+            return fn(*args, **kwargs)
+
+    return wrapped
+
+
+def resolve_perception_model(fallback: str | None = None) -> str:
+    return (
+        os.environ.get("ROBORSI_PERCEPTION_MODEL")
+        or _PERCEPTION_DEFAULT.get()
+        or fallback
+        or "anthropic/claude-sonnet-4-6"
+    )
+
+
+def _chat_request(
+    config: _ChatConfig, messages: list[dict], tools: list[dict], tool_choice: str | None = None
+) -> dict[str, Any]:
+    choice = tool_choice or "auto"
+    if choice not in {"auto", "none", "required"}:
+        raise ProviderError(
+            "Named tool choices are not supported in thinking mode", category="configuration"
+        )
+    if choice == "required" and (
+        not tools or (config.profile.provider == "deepseek" and config.thinking)
+    ):
+        raise ProviderError(
+            "required needs tools and is unsupported in DeepSeek thinking mode",
+            category="configuration",
+        )
+    try:
+        prepared = prepare_chat_messages(
+            messages, require_reasoning=config.thinking and (
+                bool(tools) or config.profile.provider == "moonshot"),
+            vision=config.profile.vision,
+            image_prefixes=("data:image/", "ms://") if config.profile.provider == "moonshot" else None,
+        )
+        prepared_tools = prepare_chat_tools(tools) if tools else []
+    except MessageError as exc:
+        raise ProviderError(str(exc), category=exc.category) from exc
+    kwargs: dict[str, Any] = {
+        "model": config.profile.model_id,
+        "messages": prepared,
+        config.profile.output_field: config.max_output_tokens,
+        "stream": False,
+    }
+    if config.profile.provider == "deepseek":
+        kwargs["extra_body"] = {"thinking": {"type": "enabled" if config.thinking else "disabled"}}
+    if config.thinking:
+        kwargs["reasoning_effort"] = config.reasoning_effort
+    if tools:
+        kwargs.update(tools=prepared_tools, tool_choice=choice)
+    body_size = len(json.dumps(kwargs, ensure_ascii=True).encode())
+    if body_size > config.profile.max_body_bytes:
+        raise ProviderError(
+            "Encoded API request exceeds the provider body-size limit", category="capacity"
+        )
+    _validate_chat_images(kwargs["messages"], config)
+    # UTF-8 byte length is a conservative text estimate, not a vendor tokenizer.
+    # Images have separate model-dependent token accounting, checked by the API.
+    text_bytes = 0
+    for message in kwargs["messages"]:
+        for key in ("content", "reasoning_content", "tool_calls"):
+            value = message.get(key)
+            if key == "content" and isinstance(value, list):
+                value = [part.get("text", "") for part in value if part.get("type") == "text"]
+            if value is not None:
+                text_bytes += len((value if isinstance(value, str) else json.dumps(value)).encode())
+    text_bytes += len(json.dumps(kwargs.get("tools", []), ensure_ascii=False).encode())
+    if text_bytes + config.max_output_tokens > config.profile.context_length:
+        raise ProviderError(
+            "Conservative text estimate plus output budget exceeds context; no history was silently removed",
+            category="capacity",
+        )
+    return kwargs
+
+
+def _validate_chat_images(messages: list[dict], config: _ChatConfig) -> None:
+    """Check local image inputs; remote references are validated by the API."""
+    urls = [
+        part["image_url"]["url"]
+        for message in messages
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image_url"
+    ]
+    if not urls:
+        return
+    import base64
+    import io
+
+    from PIL import Image, UnidentifiedImageError
+
+    deepseek = config.profile.provider == "deepseek"
+    if deepseek and len(urls) > 600:
+        raise ProviderError("DeepSeek supports at most 600 input images", category="capacity")
+    for url in urls:
+        if not url.startswith("data:"):
+            continue
+        try:
+            header, encoded = url.split(",", 1)
+            if not header.endswith(";base64"):
+                raise ValueError("expected base64")
+            raw = base64.b64decode(encoded, validate=True)
+            with Image.open(io.BytesIO(raw)) as img:
+                if header != f"data:{Image.MIME.get(img.format)};base64":
+                    raise ValueError("image MIME does not match the bytes")
+                max_side = 4096 if len(urls) >= 15 else 8192
+                if deepseek and (len(raw) > 32 * 1024**2 or max(img.size) > max_side):
+                    raise ProviderError(
+                        "DeepSeek input image exceeds its byte/dimension limit", category="capacity"
+                    )
+        except (ValueError, UnidentifiedImageError, OSError) as exc:
+            raise ProviderError("Invalid base64 image input", category="configuration") from exc
+
+
+def _chat_call_with_tools(
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    *,
+    tool_choice: str | None = None,
+    purpose="tools",
+    prefill: str | None = None,
+) -> Any:
+    """One bounded retry layer. Never retry or execute robot tools here."""
+    if prefill:
+        raise ProviderError("Assistant prefill is not enabled for this API adapter", category="configuration")
+    from openai import APIConnectionError, APIResponseValidationError, APIStatusError, OpenAI
+
+    config = resolve_api_config(model, purpose)
+    kwargs = _chat_request(config, messages, tools, tool_choice)
+    deadline = time.monotonic() + config.deadline_s
+    client = OpenAI(
+        api_key=config.api_key, base_url=config.base_url, max_retries=0, timeout=config.timeout_s
+    )
+    try:
+        for attempt in range(config.attempts):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProviderError("API retry deadline exceeded", category="transport")
+            try:
+                with _track_vlm_call():
+                    response = client.chat.completions.create(
+                        **kwargs, timeout=min(config.timeout_s, remaining)
+                    )
+                    _log_tokens(response)
+                if time.monotonic() > deadline:
+                    raise ProviderError(
+                        "API retry deadline exceeded; no action executed", category="transport"
+                    )
+                message = normalize_chat_response(
+                    response, forbid_tools=not tools or tool_choice == "none"
+                )
+                if (
+                    config.thinking
+                    and (tools or config.profile.provider == "moonshot")
+                    and "reasoning_content" not in message.request_message
+                ):
+                    raise ProviderError(
+                        "Thinking API response lacks reasoning_content; no action executed"
+                    )
+                return message
+            except (APIConnectionError, APIStatusError) as exc:
+                status = getattr(exc, "status_code", None)
+                retryable = status in {408, 409, 429, 500, 502, 503, 504} or isinstance(
+                    exc, APIConnectionError
+                )
+                category = (
+                    "rate_limit"
+                    if status == 429
+                    else "transport"
+                    if retryable
+                    else "configuration"
+                    if status in {401, 403, 404}
+                    else "protocol"
+                )
+                if not retryable or attempt + 1 == config.attempts:
+                    raise ProviderError(
+                        f"{config.profile.provider} API failed ({type(exc).__name__}, status={status}); no fallback provider used",
+                        category=category,
+                    ) from exc
+                delay = 1.5 * (2**attempt)
+                headers = getattr(getattr(exc, "response", None), "headers", {})
+                try:
+                    delay = max(delay, float(headers.get("retry-after", 0)))
+                except (TypeError, ValueError):
+                    pass
+                if delay >= deadline - time.monotonic():
+                    raise ProviderError(
+                        "API retry deadline exceeded", category="transport"
+                    ) from exc
+                time.sleep(delay)
+            except MessageError as exc:
+                raise ProviderError(str(exc), category=exc.category) from exc
+            except (APIResponseValidationError, json.JSONDecodeError) as exc:
+                raise ProviderError(
+                    "API returned an invalid completion response; no action executed"
+                ) from exc
+        raise ProviderError("API attempts exhausted", category="transport")
+    finally:
+        client.close()
 
 
 def _openai_call_with_tools(model: str, messages: list[dict[str, Any]],
@@ -669,6 +1114,8 @@ def _vlm_complete_openai(model: str, system: str, convo: list[dict[str, Any]]) -
     when env vars aren't set. Default model gpt-5 (Azure deployment name; override
     via ROBORSI_VLM_MODEL=openai/<deployment_id>).
     """
+    if is_compatible_model(model):
+        return _call_vlm_no_tools(model, [{"role": "system", "content": system}, *convo])
     client = _openai_client()
     model_id = model.split("/", 1)[1] if "/" in model else model
     if not model_id or model_id.startswith("anthropic"):
@@ -721,34 +1168,28 @@ def _call_vlm_image_impl(
     """Single-image perception query via anthropic SDK direct (proxy needs
     extra_body which litellm strips). Returns the model's text content.
 
-    Routes to OpenAI/Azure when ROBORSI_VLM_PROVIDER=openai OR the
-    perception model starts with openai/ / gpt- / o3 / o4. Else Claude."""
-    import os
-    # Default must be a model the configured account actually serves: the old
-    # "openai/gpt-5.4-6" default 404s ("not available on any configured Copilot
-    # account"), so any caller that does NOT set ROBORSI_PERCEPTION_MODEL
-    # (the harness gate, standalone skill tests — everything except cli_3role,
-    # which setdefault's it) crashed on the first VLM perception call. Match
-    # cli_3role's working value so the gate can validate perception-dependent
-    # grasp skills instead of ERRORing.
-    perception_model = os.environ.get(
-        "ROBORSI_PERCEPTION_MODEL", "anthropic/claude-sonnet-4-6")
-    is_openai_model = perception_model.startswith(
-        ("openai/", "azure/", "azure-openai/", "gpt-", "o3", "o4"))
-    if (os.environ.get("ROBORSI_VLM_PROVIDER", "anthropic").lower() == "openai"
-            or is_openai_model):
-        b64 = base64.b64encode(image_path.read_bytes()).decode()
-        suffix = image_path.suffix.lower().lstrip(".") or "jpeg"
+    An explicit perception model wins; otherwise inherit the current execution
+    model. Route by that model so a stale provider override cannot redirect it.
+    """
+    perception_model = resolve_perception_model(model)
+    route = _model_route(perception_model)
+    from roborsi.embodied.agent_loop.messages import image_block
+    image = image_block(image_path)
+    if route == "chat":
+        return _call_vlm_no_tools(perception_model, [
+            {"role": "system", "content": system},
+            {"role": "user", "content": [
+                {"type": "text", "text": user_text}, image,
+            ]},
+        ], request_kind="perception")
+    if route == "openai":
         convo = [{"role": "user", "content": [
             {"type": "text", "text": user_text},
-            {"type": "image_url", "image_url": {"url": f"data:image/{suffix};base64,{b64}"}},
+            image,
         ]}]
         return _vlm_complete_openai(perception_model, system, convo)
-    raw = image_path.read_bytes()
-    suffix = image_path.suffix.lower().lstrip(".") or "jpeg"
-    if suffix == "jpg":
-        suffix = "jpeg"
-    b64 = base64.b64encode(raw).decode()
+    header, b64 = image["image_url"]["url"].split(",", 1)
+    mime = header.removeprefix("data:").split(";", 1)[0]
     client = _anthropic_client()
     model_id = perception_model.split("/", 1)[1] if "/" in perception_model else perception_model
     def request():
@@ -760,7 +1201,7 @@ def _call_vlm_image_impl(
                     {"type": "text", "text": user_text},
                     {"type": "image", "source": {
                         "type": "base64",
-                        "media_type": f"image/{suffix}",
+                        "media_type": mime,
                         "data": b64,
                     }},
                 ]}],
@@ -780,18 +1221,14 @@ def _call_vlm_image_impl(
 
 
 def _parse_json(text: str) -> dict[str, Any] | None:
-    depth = 0
-    start = -1
-    for i, ch in enumerate(text):
-        if ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0 and start >= 0:
-                try:
-                    return json.loads(text[start:i + 1])
-                except json.JSONDecodeError:
-                    start = -1
+    # Decode JSON strings/escapes correctly; braces inside a reason or code
+    # string are not object boundaries. Keep accepting fenced/prose responses.
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            result, _ = decoder.raw_decode(text, match.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(result, dict):
+            return result
     return None

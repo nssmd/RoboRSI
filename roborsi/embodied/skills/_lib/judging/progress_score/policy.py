@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import base64
-import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -11,7 +10,6 @@ from typing import Any
 
 DEFAULT_MODEL = (
     os.environ.get("ROBORSI_JUDGE_MODEL")
-    or os.environ.get("ROBORSI_JUDGE_MODEL")
     or os.environ.get("ROBORSI_VLM_MODEL")
     or "anthropic/claude-sonnet-4-6"
 )
@@ -24,31 +22,32 @@ No other text.
 """
 
 
-def _encode(path: Path) -> tuple[str, str]:
-    raw = path.read_bytes()
-    suffix = path.suffix.lower().lstrip(".") or "jpeg"
-    if suffix == "jpg":
-        suffix = "jpeg"
-    return f"image/{suffix}", base64.b64encode(raw).decode()
-
-
 def _extract_first_json(text: str) -> dict[str, Any] | None:
-    depth = 0
-    start = -1
-    for i, ch in enumerate(text):
-        if ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0 and start >= 0:
-                candidate = text[start:i + 1]
-                try:
-                    return json.loads(candidate)
-                except json.JSONDecodeError:
-                    start = -1
-    return None
+    from roborsi.embodied.agent_loop.vlm_io import _parse_json
+    return _parse_json(text)
+
+
+def _normalize_result(parsed: dict[str, Any]) -> tuple[bool, float]:
+    """Accept unambiguous coercions without turning invalid evidence into success."""
+    from roborsi.embodied.agent_loop.vlm_io import ProviderError
+
+    done = parsed.get("done", False)
+    if isinstance(done, str):
+        done = {"true": True, "false": False, "1": True, "0": False}.get(done.strip().lower())
+    elif type(done) in (int, float) and done in (0, 1):
+        done = bool(done)
+    if not isinstance(done, bool):
+        raise ProviderError("Progress judge returned an ambiguous done value", category="response")
+    score = parsed.get("score", 0.0)
+    try:
+        if isinstance(score, bool):
+            raise ValueError("boolean score")
+        score = float(score)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ProviderError("Progress judge returned an invalid score", category="response") from exc
+    if not math.isfinite(score) or not 0 <= score <= 1:
+        raise ProviderError("Progress judge score must be finite and in [0, 1]", category="response")
+    return done, score
 
 
 def run(
@@ -63,27 +62,32 @@ def run(
     path = Path(image_path).expanduser()
     if not path.exists():
         raise FileNotFoundError(f"image not found: {path}")
-    import litellm
-    mime, b64 = _encode(path)
-    resp = litellm.completion(
-        model=model or DEFAULT_MODEL,
-        messages=[
+    from roborsi.embodied.agent_loop.messages import image_block
+    from roborsi.embodied.agent_loop.vlm_io import ProviderError, is_compatible_model
+    selected_model = model or os.environ.get("ROBORSI_JUDGE_MODEL") or DEFAULT_MODEL
+    messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": [
                 {"type": "text", "text": f"Phase: {phase}\nExpected: {expected}"},
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                image_block(path),
             ]},
-        ],
-        max_tokens=200,
-        temperature=0.0,
-    )
-    raw = resp.choices[0].message.content or ""
+        ]
+    if is_compatible_model(selected_model):
+        from roborsi.embodied.agent_loop.vlm_io import _call_vlm_tools
+        raw = _call_vlm_tools(selected_model, messages, [],
+                              request_kind="perception").content or ""
+    else:
+        import litellm
+        resp = litellm.completion(model=selected_model, messages=messages,
+                                  max_tokens=200, temperature=0.0)
+        raw = resp.choices[0].message.content or ""
     parsed = _extract_first_json(raw)
     if parsed is None:
-        raise RuntimeError(f"judge did not return JSON. raw={raw[:300]}")
+        raise ProviderError("Progress judge did not return a JSON object", category="response")
+    done, score = _normalize_result(parsed)
     return {
         "phase": phase,
-        "done": bool(parsed.get("done", False)),
-        "score": float(parsed.get("score", 0.0)),
+        "done": done,
+        "score": score,
         "reason": str(parsed.get("reason", "")),
     }

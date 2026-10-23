@@ -31,6 +31,9 @@ from pathlib import Path
 from typing import Any
 
 from roborsi.embodied.agent_loop.env import Observation, Rollout, Step
+from roborsi.embodied.agent_loop.vlm_io import (
+    ProviderError, is_compatible_model, with_perception_default,
+)
 
 
 SYSTEM_PROMPT_CODEACT_HEADER = """\
@@ -248,6 +251,7 @@ class CodeactResult:
     saved_program_path: str | None
 
 
+@with_perception_default
 def run_codeact_episode(
     env: Any,
     *,
@@ -267,8 +271,9 @@ def run_codeact_episode(
     it to its permanent home).
     """
     from roborsi.embodied.agent_loop.config import DEFAULT_MODEL
-    from roborsi.embodied.agent_loop.messages import _convert_messages_to_anthropic
-    from roborsi.embodied.agent_loop.vlm_io import _anthropic_call_with_tools
+    from roborsi.embodied.agent_loop.messages import (
+        _append_pending_images, _capture_tool_image, serialize_assistant_message,
+    )
     from roborsi.embodied.agent_loop.rollout import DispatchContext as _State, _snapshot, _dispatch
     from roborsi.embodied.sim.robotwin.robotwin_agent import _write_jpg
     workdir = (workdir or Path("/tmp/roborsi-codeact")) / f"{task_name}-{seed}"
@@ -285,6 +290,7 @@ def run_codeact_episode(
     if head is not None:
         _write_jpg(init_path, head)
         state.last_image_path = init_path
+        _capture_tool_image(state, "initial", {"camera": "head_camera"})
 
     # Build tool namespace (each function calls _dispatch + returns the result dict).
     # Positional args are mapped to SKILL.md `args` order so VLM can call
@@ -360,11 +366,6 @@ def run_codeact_episode(
             )},
         ]},
     ]
-    if init_path.exists():
-        convo[0]["content"].append({"type": "image_url", "image_url": {
-            "url": f"data:image/jpeg;base64,{_b64_image(init_path)}"
-        }})
-
     # Hook scene.step for dense per-tick capture.
     impl = env._impl
     scene = impl.scene
@@ -375,6 +376,7 @@ def run_codeact_episode(
         from roborsi.embodied.sim.robotwin.adapter import _to_sim_obs
         result = original_step()
         tick_counter["n"] += 1
+        state._image_physics_steps += 1
         if tick_counter["n"] % subsample_every == 0:
             sim_obs = _to_sim_obs(impl.get_obs())
             rollout.steps.append(Step(
@@ -383,6 +385,7 @@ def run_codeact_episode(
             ))
         return result
     scene.step = _hooked_step
+    state._image_step_hook_active = True
 
     success = False
     outcome = "budget_exceeded"
@@ -392,21 +395,15 @@ def run_codeact_episode(
 
     try:
         for turn_idx in range(max_turns):
-            # Refresh image attachment if a tool produced one and we haven't shown it
-            if state.last_image_path is not None and state.last_image_path.exists():
-                # Replace last user content image — append at last user turn
-                if convo[-1]["role"] == "user":
-                    if isinstance(convo[-1]["content"], list):
-                        convo[-1]["content"].append({"type": "image_url", "image_url": {
-                            "url": f"data:image/jpeg;base64,{_b64_image(state.last_image_path)}"
-                        }})
-                state.last_image_path = None
+            # Select pending views including the existing end-of-script scene.
+            # Preserve the latest file path for zoom/crop tools in this script.
+            convo = _append_pending_images(convo, state)
 
             # Call VLM (no tools= — code-as-action means we want plain text + code).
             full_system = SYSTEM_PROMPT_CODEACT + "\n\n" + instruction
             response_text = _vlm_complete_text(model or DEFAULT_MODEL, full_system, convo)
             trace.append({"turn": turn_idx, "vlm_response": response_text[:600]})
-            convo.append({"role": "assistant", "content": response_text})
+            convo.append(serialize_assistant_message(response_text, empty=""))
 
             code = _extract_code_block(response_text)
             if not code:
@@ -429,6 +426,8 @@ def run_codeact_episode(
                     exec(compile(code, program_path.name, "exec"), persistent_ns)
             except _DoneSignal as ds:
                 done_signal = ds
+            except ProviderError:
+                raise
             except Exception as exc:
                 err_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
 
@@ -455,6 +454,7 @@ def run_codeact_episode(
                 new_img = workdir / f"after_turn_{turn_idx:02d}.jpg"
                 _write_jpg(new_img, head)
                 state.last_image_path = new_img
+                _capture_tool_image(state, "after_script", {"camera": "head_camera"})
 
             user_content: list[dict[str, Any]] = [{"type": "text", "text": (
                 f"Script turn {turn_idx} executed.\n"
@@ -462,13 +462,10 @@ def run_codeact_episode(
                 + (f"ERROR:\n{err_text[-800:]}\n\n" if err_text else "")
                 + "Write the next script (or call done()). Image of current scene attached."
             )}]
-            if new_img is not None and new_img.exists():
-                user_content.append({"type": "image_url", "image_url": {
-                    "url": f"data:image/jpeg;base64,{_b64_image(new_img)}"
-                }})
             convo.append({"role": "user", "content": user_content})
     finally:
         scene.step = original_step
+        state._image_step_hook_active = False
 
     rollout.success = success
     rollout.outcome = outcome
@@ -531,11 +528,6 @@ def _extract_code_block(text: str) -> str | None:
     return None
 
 
-def _b64_image(path: Path) -> str:
-    import base64
-    return base64.b64encode(path.read_bytes()).decode()
-
-
 def _vlm_complete_text(model: str, system: str, convo: list[dict[str, Any]]) -> str:
     """Free-form text completion (no tools). Used by codeact mode.
 
@@ -544,6 +536,9 @@ def _vlm_complete_text(model: str, system: str, convo: list[dict[str, Any]]) -> 
       ROBORSI_VLM_PROVIDER=anthropic (default) → Claude Messages API
     """
     import os
+    if is_compatible_model(model):
+        from roborsi.embodied.agent_loop.vlm_io import _call_vlm_no_tools
+        return _call_vlm_no_tools(model, [{"role": "system", "content": system}, *convo])
     provider = os.environ.get("ROBORSI_VLM_PROVIDER", "anthropic").lower()
     if provider == "openai":
         from roborsi.embodied.agent_loop.vlm_io import _vlm_complete_openai

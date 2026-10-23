@@ -2085,6 +2085,15 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": text})
     tools = _outer_tool_specs(can_evolve=can_evolve)
+    from roborsi.embodied.agent_loop.messages import (
+        _assistant_tool_calls_msg, serialize_assistant_message,
+    )
+    from roborsi.embodied.agent_loop.vlm_io import is_compatible_model
+    compatible = is_compatible_model(DEFAULT_MODEL)
+
+    def save_reply(reply, text):
+        return serialize_assistant_message(reply, legacy_content=text, empty="")
+
     final_text = ""
     try:
         for hop in range(max_hops):
@@ -2103,7 +2112,7 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                 # Final reply with no further tool calls. Append it to
                 # history so subsequent stateful turns can see it.
                 if content:
-                    messages.append({"role": "assistant", "content": content})
+                    messages.append(save_reply(msg, content))
                     if can_evolve and _needs_force_propose(content, messages):
                         sess.append("opus_force_propose",
                                       text="diagnosed failure but no propose_* call")
@@ -2129,13 +2138,12 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                         if isinstance(fc, list):
                             fc = "".join(_extract_text_block(c) for c in fc)
                         if f_tool_calls:
-                            messages.append({
-                                "role": "assistant", "content": fc or None,
-                                "tool_calls": [{"id": tc.id, "type": "function",
-                                                  "function": {"name": tc.function.name,
-                                                                "arguments": tc.function.arguments}}
-                                                 for tc in f_tool_calls],
-                            })
+                            messages.append(_assistant_tool_calls_msg(forced, f_tool_calls)
+                                            if compatible else {
+                                                "role": "assistant", "content": fc or None,
+                                                "tool_calls": [{"id": tc.id, "type": "function",
+                                                    "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                                                    for tc in f_tool_calls]})
                             for tc in f_tool_calls:
                                 try:
                                     args = json.loads(tc.function.arguments or "{}")
@@ -2145,9 +2153,7 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                                               args=args, forced=True)
                                 print(f"  [tool-forced] {tc.function.name}("
                                       f"{json.dumps(args)[:120]})", flush=True)
-                                result = _exec_tool(tc.function.name, args,
-                                                      target_chat_id,
-                                                      channel=channel, ctx=ctx)
+                                result = _exec_tool(tc.function.name, args, target_chat_id, channel=channel, ctx=ctx)
                                 sess.append("tool_result", name=tc.function.name,
                                               result_preview=result[:300],
                                               length=len(result))
@@ -2157,7 +2163,7 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                                 })
                             # After forced propose, do ONE more synthesis turn
                             # to get Format B text.
-                            synth = _call_vlm_tools(DEFAULT_MODEL, messages, [],
+                            synth = _call_vlm_tools(DEFAULT_MODEL, messages, tools,
                                                         thinking_budget=0,
                                                         tool_choice="none")
                             sc = getattr(synth, "content", "") or ""
@@ -2165,16 +2171,18 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                                 sc = "".join(_extract_text_block(c) for c in sc)
                             if sc:
                                 final_text = sc
-                                messages.append({"role": "assistant", "content": sc})
+                                messages.append(save_reply(synth, sc))
                                 sess.append("opus_thinking", text=sc)
                         elif fc:
                             final_text = fc
-                            messages.append({"role": "assistant", "content": fc})
+                            messages.append(save_reply(forced, fc))
                             sess.append("opus_thinking", text=fc)
                     break
                 # Empty content + no tool_calls = LLM went silent. Force one
                 # final synthesis turn with an explicit user prompt telling
                 # the LLM to produce the A/B/C/D format reply NOW.
+                if compatible:
+                    messages.append(save_reply(msg, content))
                 messages.append({"role": "user", "content": (
                     "You stopped without writing a final reply. Per the "
                     "MANDATORY FINAL REPLY rule, you MUST emit one of "
@@ -2186,7 +2194,7 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                     "Empty response is forbidden — write at least 'Format C: "
                     "no progress' if absolutely nothing else.")})
                 sess.append("opus_force_synth", text="injected synthesis demand")
-                forced = _call_vlm_tools(DEFAULT_MODEL, messages, [],
+                forced = _call_vlm_tools(DEFAULT_MODEL, messages, tools,
                                             thinking_budget=0,
                                             tool_choice="none")
                 fc = getattr(forced, "content", "") or ""
@@ -2194,10 +2202,10 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                     fc = "".join(_extract_text_block(c) for c in fc)
                 if fc:
                     final_text = fc
-                    messages.append({"role": "assistant", "content": fc})
+                    messages.append(save_reply(forced, fc))
                     sess.append("opus_thinking", text=fc)
                 break
-            messages.append({
+            messages.append(_assistant_tool_calls_msg(msg, tool_calls) if compatible else {
                 "role": "assistant", "content": content or None,
                 "tool_calls": [{"id": tc.id, "type": "function",
                                   "function": {"name": tc.function.name,
@@ -2212,8 +2220,7 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                     args = {}
                 sess.append("tool_call", name=tc.function.name, args=args)
                 print(f"  [tool] {tc.function.name}({json.dumps(args)[:120]})", flush=True)
-                result = _exec_tool(tc.function.name, args, target_chat_id,
-                                      channel=channel, ctx=ctx)
+                result = _exec_tool(tc.function.name, args, target_chat_id, channel=channel, ctx=ctx)
                 preview = result[:300]
                 sess.append("tool_result", name=tc.function.name,
                               result_preview=preview, length=len(result))
@@ -2232,7 +2239,7 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                     "all data you gathered — no more tools allowed. "
                     "Empty response is forbidden — write at least "
                     "'Format C: hop limit reached, no synthesis attempted'.")})
-                forced = _call_vlm_tools(DEFAULT_MODEL, messages, [],
+                forced = _call_vlm_tools(DEFAULT_MODEL, messages, tools,
                                             thinking_budget=0,
                                             tool_choice="none")
                 fc = getattr(forced, "content", "") or ""
@@ -2240,6 +2247,8 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                     fc = "".join(_extract_text_block(c) for c in fc)
                 if fc:
                     final_text = fc
+                    if compatible:
+                        messages.append(save_reply(forced, fc))
                     sess.append("opus_thinking", text=final_text)
         # Post-loop force-propose check: catches the hop-exhausted exit
         # (V23 R1 case — 21 tools > max_hops=15, agent emitted ESCALATE
@@ -2264,7 +2273,7 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
             if isinstance(fc, list):
                 fc = "".join(_extract_text_block(c) for c in fc)
             if f_tool_calls:
-                messages.append({
+                messages.append(_assistant_tool_calls_msg(forced, f_tool_calls) if compatible else {
                     "role": "assistant", "content": fc or None,
                     "tool_calls": [{"id": tc.id, "type": "function",
                                       "function": {"name": tc.function.name,
@@ -2280,13 +2289,11 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                                   args=args, forced=True)
                     print(f"  [tool-forced-post] {tc.function.name}("
                           f"{json.dumps(args)[:120]})", flush=True)
-                    result = _exec_tool(tc.function.name, args,
-                                          target_chat_id, channel=channel,
-                                          ctx=ctx)
+                    result = _exec_tool(tc.function.name, args, target_chat_id, channel=channel, ctx=ctx)
                     messages.append({"role": "tool",
                                       "tool_call_id": tc.id,
                                       "content": result})
-                synth = _call_vlm_tools(DEFAULT_MODEL, messages, [],
+                synth = _call_vlm_tools(DEFAULT_MODEL, messages, tools,
                                             thinking_budget=0,
                                             tool_choice="none")
                 sc = getattr(synth, "content", "") or ""
@@ -2294,9 +2301,13 @@ def handle_user_message(text: str, target_chat_id: str | None = None,
                     sc = "".join(_extract_text_block(c) for c in sc)
                 if sc:
                     final_text = sc
+                    if compatible:
+                        messages.append(save_reply(synth, sc))
                     sess.append("opus_thinking", text=sc)
             elif fc:
                 final_text = fc
+                if compatible:
+                    messages.append(save_reply(forced, fc))
                 sess.append("opus_thinking", text=fc)
     except AgentInterrupted as e:
         sess.append("interrupted", reason=str(e))

@@ -59,6 +59,9 @@ _INFRA_MESSAGE_MARKERS = (
 
 def classify_attempt_exception(exc: Exception) -> str:
     """Separate infrastructure interruption from implementation defects."""
+    from roborsi.embodied.agent_loop.vlm_io import ProviderError
+    if isinstance(exc, ProviderError):
+        return "infra" if exc.category in {"transport", "rate_limit"} else "implementation_error"
     if type(exc).__name__ in _INFRA_EXCEPTION_NAMES:
         return "infra"
     message = str(exc).lower()
